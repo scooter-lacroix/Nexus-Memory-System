@@ -1,10 +1,10 @@
 //! Embedding cache for reducing redundant computations
 
+use crate::Result;
+use parking_lot::RwLock;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
-use parking_lot::RwLock;
-use crate::Result;
 
 /// Cache entry containing an embedding and access metadata
 #[derive(Debug, Clone)]
@@ -89,18 +89,18 @@ impl EmbeddingCache {
         // Check if we need to evict entries
         if cache.len() >= self.max_size && !cache.contains_key(&hash) {
             // Simple eviction: remove the entry with lowest access count
-            if let Some((&min_key, _)) = cache
-                .iter()
-                .min_by_key(|(_, entry)| entry.access_count)
-            {
+            if let Some((&min_key, _)) = cache.iter().min_by_key(|(_, entry)| entry.access_count) {
                 cache.remove(&min_key);
             }
         }
 
-        cache.insert(hash, CacheEntry {
-            embedding,
-            access_count: 1,
-        });
+        cache.insert(
+            hash,
+            CacheEntry {
+                embedding,
+                access_count: 1,
+            },
+        );
     }
 
     /// Get or compute an embedding
@@ -273,19 +273,23 @@ mod tests {
         let mut compute_count = 0;
 
         // First call should compute
-        let result = cache.get_or_compute("test", || {
-            compute_count += 1;
-            Ok(vec![1.0, 2.0, 3.0])
-        }).unwrap();
+        let result = cache
+            .get_or_compute("test", || {
+                compute_count += 1;
+                Ok(vec![1.0, 2.0, 3.0])
+            })
+            .unwrap();
 
         assert_eq!(result, vec![1.0, 2.0, 3.0]);
         assert_eq!(compute_count, 1);
 
         // Second call should use cache
-        let result = cache.get_or_compute("test", || {
-            compute_count += 1;
-            Ok(vec![1.0, 2.0, 3.0])
-        }).unwrap();
+        let result = cache
+            .get_or_compute("test", || {
+                compute_count += 1;
+                Ok(vec![1.0, 2.0, 3.0])
+            })
+            .unwrap();
 
         assert_eq!(result, vec![1.0, 2.0, 3.0]);
         assert_eq!(compute_count, 1); // Should not have computed again

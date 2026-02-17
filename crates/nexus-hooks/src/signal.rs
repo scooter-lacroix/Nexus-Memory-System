@@ -3,9 +3,9 @@
 //! This module provides cross-platform signal handling to ensure
 //! buffer flush before exit on SIGTERM/SIGINT.
 
+use futures::StreamExt;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
-use futures::StreamExt;
 
 use crate::error::{HookError, Result};
 
@@ -113,8 +113,9 @@ impl SignalHandler {
             signals_to_handle.push(SIGHUP);
         }
 
-        let mut signals = Signals::new(signals_to_handle)
-            .map_err(|e| HookError::SignalError(format!("Failed to create signal handler: {}", e)))?;
+        let mut signals = Signals::new(signals_to_handle).map_err(|e| {
+            HookError::SignalError(format!("Failed to create signal handler: {}", e))
+        })?;
 
         let event_sender = self.event_sender.clone();
         let _installed_flag = self.installed.clone();

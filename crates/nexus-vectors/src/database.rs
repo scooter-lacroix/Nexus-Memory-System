@@ -297,10 +297,7 @@ impl VectorDatabase {
             .unwrap_or_default();
 
         // Intersect namespace and category
-        let candidate_ids: Vec<i64> = category_ids
-            .intersection(&namespace_ids)
-            .copied()
-            .collect();
+        let candidate_ids: Vec<i64> = category_ids.intersection(&namespace_ids).copied().collect();
 
         // Calculate similarities
         let mut results: Vec<VectorSearchResult> = candidate_ids
@@ -401,9 +398,10 @@ impl VectorDatabase {
     ) -> crate::Result<(Vec<VectorSearchResult>, SearchLatency)> {
         let start = Instant::now();
 
-        let entry = self.vectors.get(&memory_id).ok_or_else(|| {
-            nexus_core::NexusError::MemoryNotFound(memory_id)
-        })?;
+        let entry = self
+            .vectors
+            .get(&memory_id)
+            .ok_or_else(|| nexus_core::NexusError::MemoryNotFound(memory_id))?;
 
         let query = entry.embedding.clone();
         let namespace_id = entry.namespace_id;
@@ -462,11 +460,7 @@ impl VectorDatabase {
     }
 
     /// Update an existing vector's embedding
-    pub fn update_embedding(
-        &mut self,
-        id: i64,
-        new_embedding: Vec<f32>,
-    ) -> crate::Result<()> {
+    pub fn update_embedding(&mut self, id: i64, new_embedding: Vec<f32>) -> crate::Result<()> {
         if new_embedding.len() != self.dimension {
             return Err(nexus_core::NexusError::InvalidInput(format!(
                 "Vector dimension mismatch: expected {}, got {}",
@@ -475,9 +469,10 @@ impl VectorDatabase {
             )));
         }
 
-        let entry = self.vectors.get_mut(&id).ok_or_else(|| {
-            nexus_core::NexusError::MemoryNotFound(id)
-        })?;
+        let entry = self
+            .vectors
+            .get_mut(&id)
+            .ok_or_else(|| nexus_core::NexusError::MemoryNotFound(id))?;
 
         entry.embedding = new_embedding;
         entry.created_at = chrono::Utc::now();
@@ -577,10 +572,7 @@ pub fn top_k_similar(
         .collect();
 
     // Partial sort for top-k
-    scored.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(k);
     scored
 }
@@ -591,11 +583,21 @@ mod tests {
     use crate::VectorEntry;
 
     fn create_test_entry(id: i64, namespace_id: i64) -> VectorEntry {
-        VectorEntry::new(id, vec![0.1; EMBEDDING_DIMENSION], "general".to_string(), namespace_id)
+        VectorEntry::new(
+            id,
+            vec![0.1; EMBEDDING_DIMENSION],
+            "general".to_string(),
+            namespace_id,
+        )
     }
 
     fn create_test_entry_with_embedding(id: i64, namespace_id: i64, value: f32) -> VectorEntry {
-        VectorEntry::new(id, vec![value; EMBEDDING_DIMENSION], "general".to_string(), namespace_id)
+        VectorEntry::new(
+            id,
+            vec![value; EMBEDDING_DIMENSION],
+            "general".to_string(),
+            namespace_id,
+        )
     }
 
     #[test]
@@ -725,7 +727,9 @@ mod tests {
         db.insert(entry2).unwrap();
 
         let query = vec![0.5; EMBEDDING_DIMENSION];
-        let (results, _) = db.search_by_category(&query, 1, "general", 10, 0.0).unwrap();
+        let (results, _) = db
+            .search_by_category(&query, 1, "general", 10, 0.0)
+            .unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, 1);
@@ -833,8 +837,10 @@ mod tests {
 
         db.insert(VectorEntry::new(1, e1.clone(), "general".to_string(), 1))
             .unwrap();
-        db.insert(VectorEntry::new(2, e2, "general".to_string(), 1)).unwrap();
-        db.insert(VectorEntry::new(3, e3, "general".to_string(), 1)).unwrap();
+        db.insert(VectorEntry::new(2, e2, "general".to_string(), 1))
+            .unwrap();
+        db.insert(VectorEntry::new(3, e3, "general".to_string(), 1))
+            .unwrap();
 
         let (results, _) = db.find_similar(1, 10, 0.0).unwrap();
 
@@ -847,12 +853,27 @@ mod tests {
     #[test]
     fn test_stats() {
         let mut db = VectorDatabase::new();
-        db.insert(VectorEntry::new(1, vec![0.1; EMBEDDING_DIMENSION], "general".to_string(), 1))
-            .unwrap();
-        db.insert(VectorEntry::new(2, vec![0.1; EMBEDDING_DIMENSION], "general".to_string(), 1))
-            .unwrap();
-        db.insert(VectorEntry::new(3, vec![0.1; EMBEDDING_DIMENSION], "facts".to_string(), 2))
-            .unwrap();
+        db.insert(VectorEntry::new(
+            1,
+            vec![0.1; EMBEDDING_DIMENSION],
+            "general".to_string(),
+            1,
+        ))
+        .unwrap();
+        db.insert(VectorEntry::new(
+            2,
+            vec![0.1; EMBEDDING_DIMENSION],
+            "general".to_string(),
+            1,
+        ))
+        .unwrap();
+        db.insert(VectorEntry::new(
+            3,
+            vec![0.1; EMBEDDING_DIMENSION],
+            "facts".to_string(),
+            2,
+        ))
+        .unwrap();
 
         let stats = db.stats();
         assert_eq!(stats.total_vectors, 3);
@@ -927,10 +948,10 @@ mod tests {
     fn test_top_k_similar() {
         let query = vec![1.0, 0.0];
         let vectors: Vec<(i64, &[f32])> = vec![
-            (1, &[1.0, 0.0].as_slice()),   // similarity 1.0
-            (2, &[0.0, 1.0].as_slice()),   // similarity 0.0
+            (1, &[1.0, 0.0].as_slice()),     // similarity 1.0
+            (2, &[0.0, 1.0].as_slice()),     // similarity 0.0
             (3, &[0.707, 0.707].as_slice()), // similarity ~0.707
-            (4, &[0.9, 0.1].as_slice()),   // similarity ~0.9
+            (4, &[0.9, 0.1].as_slice()),     // similarity ~0.9
         ];
 
         let top_k = top_k_similar(&query, &vectors, 2, 0.0);

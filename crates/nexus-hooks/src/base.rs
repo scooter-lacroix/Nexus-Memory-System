@@ -66,7 +66,11 @@ impl HookResult {
     }
 
     /// Create a failed result
-    pub fn failure(agent_type: impl Into<String>, source: ExtractionSource, error: impl Into<String>) -> Self {
+    pub fn failure(
+        agent_type: impl Into<String>,
+        source: ExtractionSource,
+        error: impl Into<String>,
+    ) -> Self {
         Self {
             success: false,
             agent_type: agent_type.into(),

@@ -22,15 +22,15 @@
 //! ```
 
 pub mod analyzer;
-pub mod phases;
 pub mod integration;
+pub mod phases;
 
 pub use analyzer::PhaseAnalyzer;
-pub use phases::{Phase, PhaseType};
 pub use integration::{
-    LePhaseIntegration, CompressionMode, CompressedMemory, CompressionStats,
-    TokenFormatter, TokenSavings,
+    CompressedMemory, CompressionMode, CompressionStats, LePhaseIntegration, TokenFormatter,
+    TokenSavings,
 };
+pub use phases::{Phase, PhaseType};
 
 use serde::{Deserialize, Serialize};
 

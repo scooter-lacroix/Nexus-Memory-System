@@ -16,9 +16,7 @@ use crate::{
 };
 
 /// Get global statistics
-pub async fn get_stats(
-    State(state): State<Arc<RwLock<AppState>>>,
-) -> Result<Json<StatsResponse>> {
+pub async fn get_stats(State(state): State<Arc<RwLock<AppState>>>) -> Result<Json<StatsResponse>> {
     let state = state.read().await;
 
     // Get all namespaces

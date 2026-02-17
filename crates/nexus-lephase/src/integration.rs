@@ -536,10 +536,7 @@ impl LePhaseIntegration {
         // 3. Compress common patterns
         // 4. Truncate if still too long
 
-        let normalized: String = content
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let normalized: String = content.split_whitespace().collect::<Vec<_>>().join(" ");
 
         // Apply pattern-based compression
         let compressed = self.apply_compression_patterns(&normalized);
@@ -682,19 +679,16 @@ impl LePhaseIntegration {
         let mut word_counts: HashMap<String, usize> = HashMap::new();
 
         let stop_words = [
-            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
-            "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
-            "have", "has", "had", "do", "does", "did", "will", "would", "could",
-            "should", "may", "might", "must", "this", "that", "these", "those",
-            "i", "you", "he", "she", "it", "we", "they", "what", "which", "who",
+            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
+            "by", "from", "is", "are", "was", "were", "be", "been", "have", "has", "had", "do",
+            "does", "did", "will", "would", "could", "should", "may", "might", "must", "this",
+            "that", "these", "those", "i", "you", "he", "she", "it", "we", "they", "what", "which",
+            "who",
         ];
 
         for word in content.split_whitespace() {
             let lower = word.to_lowercase();
-            let trimmed: String = lower
-                .chars()
-                .filter(|c| c.is_alphanumeric())
-                .collect();
+            let trimmed: String = lower.chars().filter(|c| c.is_alphanumeric()).collect();
 
             if trimmed.len() > 2 && !stop_words.contains(&trimmed.as_str()) {
                 *word_counts.entry(trimmed).or_insert(0) += 1;
@@ -1036,9 +1030,18 @@ mod tests {
 
     #[test]
     fn test_compression_mode_from_str() {
-        assert_eq!(CompressionMode::from_str("ultra"), Some(CompressionMode::Ultra));
-        assert_eq!(CompressionMode::from_str("balanced"), Some(CompressionMode::Balanced));
-        assert_eq!(CompressionMode::from_str("verbose"), Some(CompressionMode::Verbose));
+        assert_eq!(
+            CompressionMode::from_str("ultra"),
+            Some(CompressionMode::Ultra)
+        );
+        assert_eq!(
+            CompressionMode::from_str("balanced"),
+            Some(CompressionMode::Balanced)
+        );
+        assert_eq!(
+            CompressionMode::from_str("verbose"),
+            Some(CompressionMode::Verbose)
+        );
         assert_eq!(CompressionMode::from_str("invalid"), None);
     }
 
@@ -1076,8 +1079,14 @@ mod tests {
     fn test_estimate_token_savings() {
         let integration = LePhaseIntegration::new();
         let memories = vec![
-            create_test_memory(1, &"I need to implement the feature because it is very important ".repeat(20)),
-            create_test_memory(2, &"Another memory with some content to compress ".repeat(15)),
+            create_test_memory(
+                1,
+                &"I need to implement the feature because it is very important ".repeat(20),
+            ),
+            create_test_memory(
+                2,
+                &"Another memory with some content to compress ".repeat(15),
+            ),
         ];
 
         let savings = integration.estimate_token_savings(&memories);

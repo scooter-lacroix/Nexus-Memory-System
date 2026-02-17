@@ -5,8 +5,10 @@
 //! - Concurrent sessions: 10,000+
 //! - Session creation: <100μs
 
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
-use nexus_orchestrator::{EventBus, Event, EventType, SessionManager, SessionConfig, Orchestrator, OrchestratorConfig};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use nexus_orchestrator::{
+    Event, EventBus, EventType, Orchestrator, OrchestratorConfig, SessionConfig, SessionManager,
+};
 use std::time::Duration;
 
 fn bench_session_creation(c: &mut Criterion) {
@@ -53,7 +55,11 @@ fn bench_concurrent_sessions(c: &mut Criterion) {
                 // Create sessions
                 let mut sessions = Vec::with_capacity(size);
                 for i in 0..size {
-                    sessions.push(manager.create_session(&format!("agent-{}", i % 10)).unwrap());
+                    sessions.push(
+                        manager
+                            .create_session(&format!("agent-{}", i % 10))
+                            .unwrap(),
+                    );
                 }
 
                 // Verify count

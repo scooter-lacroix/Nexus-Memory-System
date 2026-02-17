@@ -1,8 +1,8 @@
 //! Benchmarks for the embedding service
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use nexus_embeddings::{MockEmbeddingService, EMBEDDING_DIMENSION};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use nexus_core::traits::EmbeddingService;
+use nexus_embeddings::{MockEmbeddingService, EMBEDDING_DIMENSION};
 
 fn bench_single_embedding(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -11,9 +11,8 @@ fn bench_single_embedding(c: &mut Criterion) {
     let text = "This is a sample text for benchmarking the embedding service.";
 
     c.bench_function("single_embed_mock", |b| {
-        b.to_async(&rt).iter(|| async {
-            service.embed(black_box(text)).await.unwrap()
-        });
+        b.to_async(&rt)
+            .iter(|| async { service.embed(black_box(text)).await.unwrap() });
     });
 }
 
@@ -29,9 +28,8 @@ fn bench_batch_embedding(c: &mut Criterion) {
             .collect();
 
         group.bench_with_input(BenchmarkId::new("mock", size), size, |b, _| {
-            b.to_async(&rt).iter(|| async {
-                service.embed_batch(black_box(&texts)).await.unwrap()
-            });
+            b.to_async(&rt)
+                .iter(|| async { service.embed_batch(black_box(&texts)).await.unwrap() });
         });
     }
 
@@ -48,9 +46,8 @@ fn bench_embedding_dimension(c: &mut Criterion) {
         let text = "Text for dimension benchmark";
 
         group.bench_with_input(BenchmarkId::new("dim", dim), dim, |b, _| {
-            b.to_async(&rt).iter(|| async {
-                service.embed(black_box(text)).await.unwrap()
-            });
+            b.to_async(&rt)
+                .iter(|| async { service.embed(black_box(text)).await.unwrap() });
         });
     }
 
@@ -65,12 +62,7 @@ fn bench_cosine_similarity(c: &mut Criterion) {
     let e2 = rt.block_on(async { service.embed("text two").await.unwrap() });
 
     c.bench_function("cosine_similarity", |b| {
-        b.iter(|| {
-            MockEmbeddingService::cosine_similarity(
-                black_box(&e1),
-                black_box(&e2)
-            )
-        });
+        b.iter(|| MockEmbeddingService::cosine_similarity(black_box(&e1), black_box(&e2)));
     });
 }
 

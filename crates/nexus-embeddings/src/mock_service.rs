@@ -5,7 +5,7 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{EMBEDDING_DIMENSION, DEFAULT_MODEL_NAME};
+use crate::{DEFAULT_MODEL_NAME, EMBEDDING_DIMENSION};
 
 /// Mock embedding service for testing purposes
 ///
@@ -109,7 +109,9 @@ impl MockEmbeddingService {
 
         for _ in 0..self.dimension {
             // LCG: state = state * 6364136223846793005 + 1442695040888963407
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
 
             // Convert to float between -1 and 1
             let value = ((state >> 32) as i32 as f32) / (i32::MAX as f32);
@@ -185,7 +187,7 @@ impl nexus_core::traits::EmbeddingService for MockEmbeddingService {
     async fn embed(&self, text: &str) -> nexus_core::Result<Vec<f32>> {
         if text.trim().is_empty() {
             return Err(nexus_core::NexusError::InvalidInput(
-                "Cannot embed empty text".to_string()
+                "Cannot embed empty text".to_string(),
             ));
         }
         Ok(self.generate_embedding(text))
@@ -199,12 +201,15 @@ impl nexus_core::traits::EmbeddingService for MockEmbeddingService {
         for text in texts {
             if text.trim().is_empty() {
                 return Err(nexus_core::NexusError::InvalidInput(
-                    "Cannot embed empty text".to_string()
+                    "Cannot embed empty text".to_string(),
                 ));
             }
         }
 
-        Ok(texts.iter().map(|text| self.generate_embedding(text)).collect())
+        Ok(texts
+            .iter()
+            .map(|text| self.generate_embedding(text))
+            .collect())
     }
 
     fn dimension(&self) -> usize {

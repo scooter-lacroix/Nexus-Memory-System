@@ -15,7 +15,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, error, trace};
 use uuid::Uuid;
@@ -173,7 +172,9 @@ impl Event {
 
     /// Get a data field
     pub fn get<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Option<T> {
-        self.data.get(key).and_then(|v| serde_json::from_value(v.clone()).ok())
+        self.data
+            .get(key)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 }
 
@@ -186,9 +187,7 @@ pub struct EventBusConfig {
 
 impl Default for EventBusConfig {
     fn default() -> Self {
-        Self {
-            capacity: 1000,
-        }
+        Self { capacity: 1000 }
     }
 }
 
@@ -306,9 +305,11 @@ impl EventReceiver {
     /// Receive the next event (filtered if filter is set)
     pub async fn recv(&mut self) -> Result<Event> {
         loop {
-            let event = self.receiver.recv().await.map_err(|e| {
-                OrchestratorError::EventBus(format!("Receive error: {}", e))
-            })?;
+            let event = self
+                .receiver
+                .recv()
+                .await
+                .map_err(|e| OrchestratorError::EventBus(format!("Receive error: {}", e)))?;
 
             // Check filter
             if let Some(ref filter) = self.filter {

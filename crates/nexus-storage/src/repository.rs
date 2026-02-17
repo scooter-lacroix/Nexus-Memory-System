@@ -3,7 +3,7 @@
 use crate::models::{AgentNamespaceRow, MemoryRow};
 use crate::{db_error, Result};
 use chrono::Utc;
-use nexus_core::{AgentNamespace, MemoryCategory, Memory, MemoryLaneType};
+use nexus_core::{AgentNamespace, Memory, MemoryCategory, MemoryLaneType};
 use sqlx::SqlitePool;
 
 /// Type alias for backward compatibility
@@ -132,8 +132,7 @@ impl MemoryRepository {
     }
 
     fn row_to_memory(&self, row: MemoryRow) -> Memory {
-        let labels: Vec<String> =
-            serde_json::from_str(&row.labels).unwrap_or_default();
+        let labels: Vec<String> = serde_json::from_str(&row.labels).unwrap_or_default();
         let metadata: serde_json::Value =
             serde_json::from_str(&row.metadata).unwrap_or(serde_json::Value::Null);
         let embedding: Option<Vec<f32>> = row
@@ -145,7 +144,10 @@ impl MemoryRepository {
             namespace_id: row.namespace_id,
             content: row.content,
             category: parse_category(&row.category),
-            memory_lane_type: row.memory_lane_type.as_deref().and_then(parse_memory_lane_type),
+            memory_lane_type: row
+                .memory_lane_type
+                .as_deref()
+                .and_then(parse_memory_lane_type),
             labels,
             metadata,
             similarity_score: row.similarity_score,
@@ -256,7 +258,10 @@ mod tests {
     #[test]
     fn test_parse_category() {
         assert!(matches!(parse_category("facts"), Category::Facts));
-        assert!(matches!(parse_category("preferences"), Category::Preferences));
+        assert!(matches!(
+            parse_category("preferences"),
+            Category::Preferences
+        ));
         assert!(matches!(parse_category("unknown"), Category::General));
     }
 
@@ -271,7 +276,9 @@ mod tests {
         let pattern_seed = parse_memory_lane_type("pattern_seed");
         assert!(matches!(
             pattern_seed,
-            Some(MemoryLaneType::Priority(MemoryLanePriorityType::PatternSeed))
+            Some(MemoryLaneType::Priority(
+                MemoryLanePriorityType::PatternSeed
+            ))
         ));
 
         assert!(matches!(parse_memory_lane_type("unknown"), None));

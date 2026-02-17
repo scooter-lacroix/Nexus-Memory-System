@@ -66,27 +66,27 @@
 //! }
 //! ```
 
+pub mod context;
 pub mod error;
 pub mod event_bus;
+pub mod orchestrator;
 pub mod session;
 pub mod sync;
-pub mod context;
-pub mod orchestrator;
 
 // Re-exports
-pub use error::{OrchestratorError, Result};
-pub use event_bus::{EventBus, Event, EventPriority, EventType};
-pub use session::{SessionManager, Session, SessionId, SessionState};
-pub use sync::{SyncCoordinator, SyncPolicy, SyncResult, SyncStatus};
 pub use context::{ContextEnhancer, EnhancedContext};
+pub use error::{OrchestratorError, Result};
+pub use event_bus::{Event, EventBus, EventPriority, EventType};
 pub use orchestrator::{Orchestrator, OrchestratorConfig};
+pub use session::{Session, SessionId, SessionManager, SessionState};
+pub use sync::{SyncCoordinator, SyncPolicy, SyncResult, SyncStatus};
 
 /// Prelude for commonly used types
 pub mod prelude {
-    pub use crate::{EventBus, Event, EventType, EventPriority};
-    pub use crate::{SessionManager, Session, SessionId, SessionState};
-    pub use crate::{SyncCoordinator, SyncPolicy, SyncResult};
-    pub use crate::{ContextEnhancer, EnhancedContext};
-    pub use crate::{Orchestrator, OrchestratorConfig};
     pub use crate::Result;
+    pub use crate::{ContextEnhancer, EnhancedContext};
+    pub use crate::{Event, EventBus, EventPriority, EventType};
+    pub use crate::{Orchestrator, OrchestratorConfig};
+    pub use crate::{Session, SessionId, SessionManager, SessionState};
+    pub use crate::{SyncCoordinator, SyncPolicy, SyncResult};
 }

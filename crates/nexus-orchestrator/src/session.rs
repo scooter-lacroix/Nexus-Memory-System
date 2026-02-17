@@ -15,11 +15,15 @@ impl SessionId {
     pub fn new() -> Self {
         Self(Uuid::new_v4().to_string())
     }
-    pub fn as_str(&self) -> &str { &self.0 }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl Default for SessionId {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl std::fmt::Display for SessionId {
@@ -29,7 +33,11 @@ impl std::fmt::Display for SessionId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SessionState { Active, Idle, Ended }
+pub enum SessionState {
+    Active,
+    Idle,
+    Ended,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -43,9 +51,17 @@ pub struct Session {
 impl Session {
     pub fn new(agent_type: impl Into<String>) -> Self {
         let now = Utc::now();
-        Self { id: SessionId::new(), agent_type: agent_type.into(), created_at: now, last_activity: now, state: SessionState::Active }
+        Self {
+            id: SessionId::new(),
+            agent_type: agent_type.into(),
+            created_at: now,
+            last_activity: now,
+            state: SessionState::Active,
+        }
     }
-    pub fn touch(&mut self) { self.last_activity = Utc::now(); }
+    pub fn touch(&mut self) {
+        self.last_activity = Utc::now();
+    }
 }
 
 pub struct SessionManager {
@@ -55,11 +71,20 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new() -> Self {
-        Self { sessions: Arc::new(RwLock::new(HashMap::new())), idle_timeout_secs: 300 }
+        Self::with_idle_timeout(300)
+    }
+    pub fn with_idle_timeout(idle_timeout_secs: u64) -> Self {
+        Self {
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            idle_timeout_secs,
+        }
     }
     pub async fn create_session(&self, agent_type: impl Into<String>) -> Session {
         let session = Session::new(agent_type);
-        self.sessions.write().await.insert(session.id.clone(), session.clone());
+        self.sessions
+            .write()
+            .await
+            .insert(session.id.clone(), session.clone());
         session
     }
     pub async fn end_session(&self, id: &SessionId) -> Option<Session> {
@@ -68,8 +93,13 @@ impl SessionManager {
     pub async fn active_count(&self) -> usize {
         self.sessions.read().await.len()
     }
+    pub fn idle_timeout_secs(&self) -> u64 {
+        self.idle_timeout_secs
+    }
 }
 
 impl Default for SessionManager {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

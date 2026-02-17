@@ -50,15 +50,27 @@ impl PhaseAnalyzer {
 
         // Simple keyword-based phase detection
         // Order matters: more specific checks should come first
-        let phase_type = if content.contains("todo") || content.contains("task") || content.contains("plan") {
+        let phase_type = if content.contains("todo")
+            || content.contains("task")
+            || content.contains("plan")
+        {
             PhaseType::Planning
-        } else if content.contains("test") || content.contains("verify") || content.contains("check") {
+        } else if content.contains("test")
+            || content.contains("verify")
+            || content.contains("check")
+        {
             PhaseType::Verification
-        } else if content.contains("implement") || content.contains("code") || content.contains("write") {
+        } else if content.contains("implement")
+            || content.contains("code")
+            || content.contains("write")
+        {
             PhaseType::Execution
         } else if content.contains("fix") || content.contains("bug") || content.contains("error") {
             PhaseType::Debugging
-        } else if content.contains("refactor") || content.contains("improve") || content.contains("optimize") {
+        } else if content.contains("refactor")
+            || content.contains("improve")
+            || content.contains("optimize")
+        {
             PhaseType::Refinement
         } else {
             PhaseType::General
@@ -73,7 +85,9 @@ impl PhaseAnalyzer {
         let mut confidence: f32 = 0.5;
 
         // Boost confidence if memory has relevant category
-        if phase.phase_type == PhaseType::Planning && memory.category.to_string() == "specifications" {
+        if phase.phase_type == PhaseType::Planning
+            && memory.category.to_string() == "specifications"
+        {
             confidence += 0.2;
         }
 

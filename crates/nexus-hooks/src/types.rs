@@ -73,10 +73,9 @@ impl AgentType {
             | AgentType::PiMono
             | AgentType::OhMyPi
             | AgentType::PiSkills => DetectionLayer::Native,
-            AgentType::OpenCode
-            | AgentType::Codex
-            | AgentType::Amp
-            | AgentType::Droid => DetectionLayer::CLI,
+            AgentType::OpenCode | AgentType::Codex | AgentType::Amp | AgentType::Droid => {
+                DetectionLayer::CLI
+            }
             AgentType::Generic => DetectionLayer::CLI,
         }
     }
@@ -287,7 +286,10 @@ mod tests {
 
     #[test]
     fn test_agent_type_from_str() {
-        assert_eq!(AgentType::from_str("claude-code"), Some(AgentType::ClaudeCode));
+        assert_eq!(
+            AgentType::from_str("claude-code"),
+            Some(AgentType::ClaudeCode)
+        );
         assert_eq!(AgentType::from_str("claude"), Some(AgentType::ClaudeCode));
         assert_eq!(AgentType::from_str("pi"), Some(AgentType::PiMono));
         assert_eq!(AgentType::from_str("omp"), Some(AgentType::OhMyPi));
@@ -296,7 +298,10 @@ mod tests {
 
     #[test]
     fn test_agent_type_detection_layer() {
-        assert_eq!(AgentType::ClaudeCode.detection_layer(), DetectionLayer::Native);
+        assert_eq!(
+            AgentType::ClaudeCode.detection_layer(),
+            DetectionLayer::Native
+        );
         assert_eq!(AgentType::PiMono.detection_layer(), DetectionLayer::Native);
         assert_eq!(AgentType::Amp.detection_layer(), DetectionLayer::CLI);
     }

@@ -72,48 +72,42 @@ fn store_memory_tool() -> Tool {
 
 /// Search memories tool definition
 fn search_memories_tool() -> Tool {
-    Tool::new(
-        "search_memories",
-        "Search memories by semantic similarity",
+    Tool::new("search_memories", "Search memories by semantic similarity").with_schema(
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query to find relevant memories"
+                },
+                "agent_type": {
+                    "type": "string",
+                    "description": "Filter by agent type (optional)",
+                    "default": "general"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results",
+                    "default": 10,
+                    "minimum": 1,
+                    "maximum": 100
+                },
+                "threshold": {
+                    "type": "number",
+                    "description": "Minimum similarity threshold (0.0-1.0)",
+                    "default": 0.7,
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                }
+            },
+            "required": ["query"]
+        }),
     )
-    .with_schema(serde_json::json!({
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Search query to find relevant memories"
-            },
-            "agent_type": {
-                "type": "string",
-                "description": "Filter by agent type (optional)",
-                "default": "general"
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Maximum number of results",
-                "default": 10,
-                "minimum": 1,
-                "maximum": 100
-            },
-            "threshold": {
-                "type": "number",
-                "description": "Minimum similarity threshold (0.0-1.0)",
-                "default": 0.7,
-                "minimum": 0.0,
-                "maximum": 1.0
-            }
-        },
-        "required": ["query"]
-    }))
 }
 
 /// Get memory tool definition
 fn get_memory_tool() -> Tool {
-    Tool::new(
-        "get_memory",
-        "Get a specific memory by ID",
-    )
-    .with_schema(serde_json::json!({
+    Tool::new("get_memory", "Get a specific memory by ID").with_schema(serde_json::json!({
         "type": "object",
         "properties": {
             "memory_id": {
@@ -164,11 +158,7 @@ fn list_memories_tool() -> Tool {
 
 /// Delete memory tool definition
 fn delete_memory_tool() -> Tool {
-    Tool::new(
-        "delete_memory",
-        "Delete a memory by ID",
-    )
-    .with_schema(serde_json::json!({
+    Tool::new("delete_memory", "Delete a memory by ID").with_schema(serde_json::json!({
         "type": "object",
         "properties": {
             "memory_id": {
@@ -182,11 +172,7 @@ fn delete_memory_tool() -> Tool {
 
 /// List namespaces tool definition
 fn list_namespaces_tool() -> Tool {
-    Tool::new(
-        "list_namespaces",
-        "List all agent namespaces",
-    )
-    .with_schema(serde_json::json!({
+    Tool::new("list_namespaces", "List all agent namespaces").with_schema(serde_json::json!({
         "type": "object",
         "properties": {},
         "required": []
@@ -195,21 +181,19 @@ fn list_namespaces_tool() -> Tool {
 
 /// Get stats tool definition
 fn get_stats_tool() -> Tool {
-    Tool::new(
-        "get_stats",
-        "Get memory statistics for an agent namespace",
+    Tool::new("get_stats", "Get memory statistics for an agent namespace").with_schema(
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "agent_type": {
+                    "type": "string",
+                    "description": "Agent type to get stats for (optional, defaults to all)",
+                    "default": null
+                }
+            },
+            "required": []
+        }),
     )
-    .with_schema(serde_json::json!({
-        "type": "object",
-        "properties": {
-            "agent_type": {
-                "type": "string",
-                "description": "Agent type to get stats for (optional, defaults to all)",
-                "default": null
-            }
-        },
-        "required": []
-    }))
 }
 
 /// Initialize system tool definition
@@ -237,7 +221,11 @@ impl ToolHandler {
     }
 
     /// Handle a tool call
-    pub async fn handle(&self, name: &str, args: &serde_json::Map<String, JsonValue>) -> CallToolResult {
+    pub async fn handle(
+        &self,
+        name: &str,
+        args: &serde_json::Map<String, JsonValue>,
+    ) -> CallToolResult {
         tracing::debug!("Handling tool call: {} with args: {:?}", name, args);
 
         match name {
@@ -254,7 +242,10 @@ impl ToolHandler {
     }
 
     /// Handle store_memory tool
-    async fn handle_store_memory(&self, args: &serde_json::Map<String, JsonValue>) -> CallToolResult {
+    async fn handle_store_memory(
+        &self,
+        args: &serde_json::Map<String, JsonValue>,
+    ) -> CallToolResult {
         // Extract content (required)
         let content = match args.get("content").and_then(|v| v.as_str()) {
             Some(c) if !c.is_empty() => c.to_string(),
@@ -295,21 +286,26 @@ impl ToolHandler {
         let ns_repo = NamespaceRepository::new(self.pool.clone());
         let namespace = match ns_repo.get_or_create(agent_type, agent_type).await {
             Ok(ns) => ns,
-            Err(e) => return CallToolResult::error(format!("Failed to get/create namespace: {}", e)),
+            Err(e) => {
+                return CallToolResult::error(format!("Failed to get/create namespace: {}", e))
+            }
         };
 
         // Store the memory
         let mem_repo = MemoryRepository::new(self.pool.clone());
-        match mem_repo.store(
-            namespace.id,
-            &content,
-            &category,
-            None as Option<&MemoryLaneType>,
-            &labels,
-            &metadata,
-            None,  // No embedding for now
-            None,  // No embedding model
-        ).await {
+        match mem_repo
+            .store(
+                namespace.id,
+                &content,
+                &category,
+                None as Option<&MemoryLaneType>,
+                &labels,
+                &metadata,
+                None, // No embedding for now
+                None, // No embedding model
+            )
+            .await
+        {
             Ok(memory) => CallToolResult::json(serde_json::json!({
                 "success": true,
                 "memory": memory_to_json(&memory),
@@ -320,7 +316,10 @@ impl ToolHandler {
     }
 
     /// Handle search_memories tool
-    async fn handle_search_memories(&self, args: &serde_json::Map<String, JsonValue>) -> CallToolResult {
+    async fn handle_search_memories(
+        &self,
+        args: &serde_json::Map<String, JsonValue>,
+    ) -> CallToolResult {
         // Extract query (required)
         let query = match args.get("query").and_then(|v| v.as_str()) {
             Some(q) if !q.is_empty() => q.to_string(),
@@ -334,10 +333,7 @@ impl ToolHandler {
             .unwrap_or("general");
 
         // Extract limit (optional, default 10)
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
         // Get namespace
         let ns_repo = NamespaceRepository::new(self.pool.clone());
@@ -360,10 +356,7 @@ impl ToolHandler {
         let mem_repo = MemoryRepository::new(self.pool.clone());
         match mem_repo.search_by_namespace(namespace.id, limit, 0).await {
             Ok(memories) => {
-                let results: Vec<_> = memories
-                    .iter()
-                    .map(|m| memory_to_json(m))
-                    .collect();
+                let results: Vec<_> = memories.iter().map(|m| memory_to_json(m)).collect();
 
                 CallToolResult::json(serde_json::json!({
                     "success": true,
@@ -402,7 +395,10 @@ impl ToolHandler {
     }
 
     /// Handle list_memories tool
-    async fn handle_list_memories(&self, args: &serde_json::Map<String, JsonValue>) -> CallToolResult {
+    async fn handle_list_memories(
+        &self,
+        args: &serde_json::Map<String, JsonValue>,
+    ) -> CallToolResult {
         // Extract agent_type (optional)
         let agent_type = args
             .get("agent_type")
@@ -410,16 +406,10 @@ impl ToolHandler {
             .unwrap_or("general");
 
         // Extract limit (optional, default 50)
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(50) as usize;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
         // Extract offset (optional, default 0)
-        let offset = args
-            .get("offset")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
+        let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
         // Get namespace
         let ns_repo = NamespaceRepository::new(self.pool.clone());
@@ -438,12 +428,12 @@ impl ToolHandler {
 
         // List memories
         let mem_repo = MemoryRepository::new(self.pool.clone());
-        match mem_repo.search_by_namespace(namespace.id, limit, offset).await {
+        match mem_repo
+            .search_by_namespace(namespace.id, limit, offset)
+            .await
+        {
             Ok(memories) => {
-                let results: Vec<_> = memories
-                    .iter()
-                    .map(|m| memory_to_json(m))
-                    .collect();
+                let results: Vec<_> = memories.iter().map(|m| memory_to_json(m)).collect();
 
                 // Get total count
                 let total = mem_repo.count_by_namespace(namespace.id).await.unwrap_or(0);
@@ -462,7 +452,10 @@ impl ToolHandler {
     }
 
     /// Handle delete_memory tool
-    async fn handle_delete_memory(&self, args: &serde_json::Map<String, JsonValue>) -> CallToolResult {
+    async fn handle_delete_memory(
+        &self,
+        args: &serde_json::Map<String, JsonValue>,
+    ) -> CallToolResult {
         // Extract memory_id (required)
         let memory_id = match args.get("memory_id").and_then(|v| v.as_i64()) {
             Some(id) => id,
@@ -481,16 +474,16 @@ impl ToolHandler {
     }
 
     /// Handle list_namespaces tool
-    async fn handle_list_namespaces(&self, args: &serde_json::Map<String, JsonValue>) -> CallToolResult {
+    async fn handle_list_namespaces(
+        &self,
+        args: &serde_json::Map<String, JsonValue>,
+    ) -> CallToolResult {
         let _ = args; // No arguments needed
 
         let ns_repo = NamespaceRepository::new(self.pool.clone());
         match ns_repo.list_all().await {
             Ok(namespaces) => {
-                let results: Vec<_> = namespaces
-                    .iter()
-                    .map(|ns| namespace_to_json(ns))
-                    .collect();
+                let results: Vec<_> = namespaces.iter().map(|ns| namespace_to_json(ns)).collect();
 
                 CallToolResult::json(serde_json::json!({
                     "success": true,
@@ -562,18 +555,19 @@ impl ToolHandler {
     }
 
     /// Handle initialize_nexus_system tool
-    async fn handle_initialize_system(&self, args: &serde_json::Map<String, JsonValue>) -> CallToolResult {
+    async fn handle_initialize_system(
+        &self,
+        args: &serde_json::Map<String, JsonValue>,
+    ) -> CallToolResult {
         let _ = args; // No arguments needed
 
         // Run migrations
         match nexus_storage::migrations::run_migrations(&self.pool).await {
-            Ok(_) => {
-                CallToolResult::json(serde_json::json!({
-                    "success": true,
-                    "message": "Nexus memory system initialized successfully",
-                    "version": env!("CARGO_PKG_VERSION")
-                }))
-            }
+            Ok(_) => CallToolResult::json(serde_json::json!({
+                "success": true,
+                "message": "Nexus memory system initialized successfully",
+                "version": env!("CARGO_PKG_VERSION")
+            })),
             Err(e) => CallToolResult::error(format!("Failed to initialize database: {}", e)),
         }
     }

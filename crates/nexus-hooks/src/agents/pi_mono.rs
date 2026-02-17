@@ -13,7 +13,9 @@ use std::path::PathBuf;
 use crate::base::{AgentHook, BaseHook, SessionEndCallback};
 use crate::error::{HookError, Result};
 use crate::monitor::ProcessMonitor;
-use crate::session::{FileInfo, FileAction, SessionContext, SubagentExecution, TaskInfo, TaskStatus};
+use crate::session::{
+    FileAction, FileInfo, SessionContext, SubagentExecution, TaskInfo, TaskStatus,
+};
 use crate::types::{AgentType, SessionActivity, SkillMetadata};
 
 /// Pi-Mono hook for extracting memory from pi-mono session execution.
@@ -109,12 +111,14 @@ impl PiMonoHook {
 
     /// Install the nexus-memory-extraction skill
     fn install_skill(&mut self) -> Result<()> {
-        std::fs::create_dir_all(&self.skills_dir)
-            .map_err(|e| HookError::InstallationFailed(format!("Failed to create skills dir: {}", e)))?;
+        std::fs::create_dir_all(&self.skills_dir).map_err(|e| {
+            HookError::InstallationFailed(format!("Failed to create skills dir: {}", e))
+        })?;
 
         let skill_dir = self.skills_dir.join("nexus-memory-extraction");
-        std::fs::create_dir_all(&skill_dir)
-            .map_err(|e| HookError::InstallationFailed(format!("Failed to create skill dir: {}", e)))?;
+        std::fs::create_dir_all(&skill_dir).map_err(|e| {
+            HookError::InstallationFailed(format!("Failed to create skill dir: {}", e))
+        })?;
 
         let skill_md = skill_dir.join("SKILL.md");
 
@@ -145,6 +149,12 @@ Set environment variables:
 - `NEXUS_SERVER_URL=http://localhost:8768`
 "#;
 
+        if self.parse_skill_metadata(skill_content).is_none() {
+            return Err(HookError::InstallationFailed(
+                "Generated SKILL.md frontmatter is invalid".to_string(),
+            ));
+        }
+
         std::fs::write(&skill_md, skill_content)
             .map_err(|e| HookError::InstallationFailed(format!("Failed to write skill: {}", e)))?;
 
@@ -165,7 +175,12 @@ Set environment variables:
         if let Ok(entries) = std::fs::read_dir(&self.session_dir) {
             let mut session_files: Vec<_> = entries
                 .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().map(|ext| ext == "json").unwrap_or(false))
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .map(|ext| ext == "json")
+                        .unwrap_or(false)
+                })
                 .collect();
 
             // Sort by modification time, most recent first
@@ -200,7 +215,12 @@ Set environment variables:
         if let Ok(entries) = std::fs::read_dir(&logs_dir) {
             let mut log_files: Vec<_> = entries
                 .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().map(|ext| ext == "log").unwrap_or(false))
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .map(|ext| ext == "log")
+                        .unwrap_or(false)
+                })
                 .collect();
 
             log_files.sort_by(|a, b| {
@@ -273,7 +293,12 @@ impl AgentHook for PiMonoHook {
             if let Ok(entries) = std::fs::read_dir(&self.session_dir) {
                 if let Some(most_recent) = entries
                     .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().map(|ext| ext == "json").unwrap_or(false))
+                    .filter(|e| {
+                        e.path()
+                            .extension()
+                            .map(|ext| ext == "json")
+                            .unwrap_or(false)
+                    })
                     .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
                 {
                     if let Ok(metadata) = most_recent.metadata() {
@@ -285,8 +310,14 @@ impl AgentHook for PiMonoHook {
                             // Consider active if modified in last 5 minutes
                             if age.as_secs() < 300 {
                                 activity.is_active = true;
-                                activity.session_id =
-                                    Some(most_recent.path().file_stem().unwrap().to_string_lossy().to_string());
+                                activity.session_id = Some(
+                                    most_recent
+                                        .path()
+                                        .file_stem()
+                                        .unwrap()
+                                        .to_string_lossy()
+                                        .to_string(),
+                                );
                             }
                         }
                     }
@@ -316,20 +347,30 @@ impl AgentHook for PiMonoHook {
             .with_reliability(1.0);
 
         // Track role usage
-        let mut role_usage: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
+        let mut role_usage: std::collections::HashMap<String, i32> =
+            std::collections::HashMap::new();
 
         // Extract from session files
         for session_data in self.read_session_files() {
             // Extract session info
             if let Some(timestamp) = session_data.get("timestamp").and_then(|t| t.as_str()) {
-                context.add_custom("session_timestamp", serde_json::Value::String(timestamp.to_string()));
+                context.add_custom(
+                    "session_timestamp",
+                    serde_json::Value::String(timestamp.to_string()),
+                );
             }
 
             // Extract tasks
             if let Some(tasks) = session_data.get("tasks").and_then(|t| t.as_array()) {
                 for task in tasks {
-                    let description = task.get("description").and_then(|d| d.as_str()).unwrap_or("");
-                    let role = task.get("role").and_then(|r| r.as_str()).unwrap_or("unknown");
+                    let description = task
+                        .get("description")
+                        .and_then(|d| d.as_str())
+                        .unwrap_or("");
+                    let role = task
+                        .get("role")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("unknown");
 
                     let mut task_info = TaskInfo::new(description);
                     task_info.subagent = Some(role.to_string());
@@ -361,7 +402,10 @@ impl AgentHook for PiMonoHook {
             }
 
             // Extract files modified
-            if let Some(files) = session_data.get("files_modified").and_then(|f| f.as_array()) {
+            if let Some(files) = session_data
+                .get("files_modified")
+                .and_then(|f| f.as_array())
+            {
                 for file in files {
                     if let Some(path) = file.as_str() {
                         context.add_file(FileInfo::new(path, FileAction::Modified));

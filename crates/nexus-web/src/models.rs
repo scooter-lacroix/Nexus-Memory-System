@@ -1,7 +1,7 @@
 //! Request and response models for the web dashboard API
 
-use chrono::{DateTime, Utc};
-use nexus_core::{Memory, MemoryCategory, MemoryLaneType, AgentNamespace};
+use chrono::Utc;
+use nexus_core::{AgentNamespace, Memory, MemoryCategory, MemoryLaneType};
 use serde::{Deserialize, Serialize};
 
 // =============================================================================

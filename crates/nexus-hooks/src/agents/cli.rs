@@ -100,7 +100,12 @@ impl AgentHook for CLIHook {
             if let Ok(entries) = std::fs::read_dir(&session_dir) {
                 let most_recent = entries
                     .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().map(|ext| ext == "json").unwrap_or(false))
+                    .filter(|e| {
+                        e.path()
+                            .extension()
+                            .map(|ext| ext == "json")
+                            .unwrap_or(false)
+                    })
                     .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()));
 
                 if let Some(entry) = most_recent {
@@ -113,8 +118,14 @@ impl AgentHook for CLIHook {
                             // Consider active if modified in last 5 minutes
                             if age.as_secs() < 300 {
                                 activity.is_active = true;
-                                activity.session_id =
-                                    Some(entry.path().file_stem().unwrap().to_string_lossy().to_string());
+                                activity.session_id = Some(
+                                    entry
+                                        .path()
+                                        .file_stem()
+                                        .unwrap()
+                                        .to_string_lossy()
+                                        .to_string(),
+                                );
                             }
                         }
                     }
@@ -134,7 +145,10 @@ impl AgentHook for CLIHook {
         if let Some(session) = self.read_session_data() {
             if let Some(messages) = session.get("messages").and_then(|m| m.as_array()) {
                 for msg in messages {
-                    let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("unknown");
+                    let role = msg
+                        .get("role")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("unknown");
                     let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
                     context.add_message(role, content);
                 }

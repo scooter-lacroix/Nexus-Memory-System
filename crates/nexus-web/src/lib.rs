@@ -29,7 +29,7 @@ pub mod state;
 pub mod websocket;
 
 use axum::{
-    routing::{get, post, put, delete},
+    routing::{get, post},
     Router,
 };
 use std::net::SocketAddr;
@@ -38,16 +38,15 @@ use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
-use tracing::{info, error};
+use tracing::info;
 
-pub use error::{WebError, Result};
+pub use error::{Result, WebError};
 pub use models::*;
 pub use state::AppState;
 
 use api::{
-    health_check, list_memories, create_memory, get_memory, update_memory, delete_memory,
-    search_memories, list_namespaces, get_namespace, create_namespace,
-    get_stats, get_agent_stats,
+    create_memory, create_namespace, delete_memory, get_agent_stats, get_memory, get_namespace,
+    get_stats, health_check, list_memories, list_namespaces, search_memories, update_memory,
 };
 use websocket::websocket_handler;
 
@@ -81,7 +80,10 @@ impl WebDashboard {
         let api_routes = Router::new()
             // Memory endpoints
             .route("/memories", get(list_memories).post(create_memory))
-            .route("/memories/:id", get(get_memory).put(update_memory).delete(delete_memory))
+            .route(
+                "/memories/:id",
+                get(get_memory).put(update_memory).delete(delete_memory),
+            )
             .route("/memories/search", post(search_memories))
             // Namespace endpoints
             .route("/namespaces", get(list_namespaces).post(create_namespace))
@@ -93,8 +95,7 @@ impl WebDashboard {
             .route("/health", get(health_check));
 
         // WebSocket route
-        let ws_route = Router::new()
-            .route("/ws", get(websocket_handler));
+        let ws_route = Router::new().route("/ws", get(websocket_handler));
 
         // Combine all routes
         Router::new()
@@ -111,7 +112,8 @@ impl WebDashboard {
     pub async fn serve(self, addr: SocketAddr) -> Result<()> {
         info!("Starting Nexus Web Dashboard on {}", addr);
 
-        let listener = tokio::net::TcpListener::bind(addr).await
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
             .map_err(|e| WebError::ServerStart(e.to_string()))?;
 
         info!("Web Dashboard listening on http://{}", addr);

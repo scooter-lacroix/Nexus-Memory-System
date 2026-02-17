@@ -4,7 +4,9 @@
 //! - memory:// namespace for individual memories
 //! - agent:// namespace for agent information
 
-use crate::protocol::{ListResourcesResult, ReadResourceResult, Resource, ResourceContents, ResourceTemplate};
+use crate::protocol::{
+    ListResourcesResult, ReadResourceResult, Resource, ResourceContents, ResourceTemplate,
+};
 use nexus_core::Memory;
 use nexus_storage::{MemoryRepository, NamespaceRepository};
 use sqlx::SqlitePool;
@@ -132,7 +134,7 @@ impl ResourceHandler {
                             uri.to_string(),
                             format!("Unknown sub-resource: {}", parts[1]),
                         )],
-                    }
+                    },
                 }
             }
         }
@@ -172,7 +174,7 @@ impl ResourceHandler {
                     "memory://".to_string(),
                     format!("Failed to list memories: {}", e),
                 )],
-            }
+            },
         }
     }
 
@@ -204,7 +206,7 @@ impl ResourceHandler {
                     format!("memory://{}", memory_id),
                     format!("Failed to get memory: {}", e),
                 )],
-            }
+            },
         }
     }
 
@@ -216,12 +218,14 @@ impl ResourceHandler {
             Ok(namespaces) => {
                 let agents: Vec<_> = namespaces
                     .iter()
-                    .map(|ns| serde_json::json!({
-                        "name": ns.name,
-                        "agent_type": ns.agent_type,
-                        "description": ns.description,
-                        "created_at": ns.created_at.to_rfc3339()
-                    }))
+                    .map(|ns| {
+                        serde_json::json!({
+                            "name": ns.name,
+                            "agent_type": ns.agent_type,
+                            "description": ns.description,
+                            "created_at": ns.created_at.to_rfc3339()
+                        })
+                    })
                     .collect();
 
                 let value = serde_json::json!({
@@ -238,7 +242,7 @@ impl ResourceHandler {
                     "agent://".to_string(),
                     format!("Failed to list agents: {}", e),
                 )],
-            }
+            },
         }
     }
 
@@ -278,7 +282,7 @@ impl ResourceHandler {
                     format!("agent://{}", agent_type),
                     format!("Failed to get agent info: {}", e),
                 )],
-            }
+            },
         }
     }
 
@@ -288,35 +292,30 @@ impl ResourceHandler {
         let mem_repo = MemoryRepository::new(self.pool.clone());
 
         match ns_repo.get_by_name(agent_type).await {
-            Ok(Some(ns)) => {
-                match mem_repo.search_by_namespace(ns.id, 100, 0).await {
-                    Ok(memories) => {
-                        let memory_list: Vec<_> = memories
-                            .iter()
-                            .map(|m| memory_to_json(m))
-                            .collect();
+            Ok(Some(ns)) => match mem_repo.search_by_namespace(ns.id, 100, 0).await {
+                Ok(memories) => {
+                    let memory_list: Vec<_> = memories.iter().map(|m| memory_to_json(m)).collect();
 
-                        let value = serde_json::json!({
-                            "agent_type": agent_type,
-                            "memories": memory_list,
-                            "total": memory_list.len()
-                        });
+                    let value = serde_json::json!({
+                        "agent_type": agent_type,
+                        "memories": memory_list,
+                        "total": memory_list.len()
+                    });
 
-                        ReadResourceResult {
-                            contents: vec![ResourceContents::json(
-                                format!("agent://{}/memories", agent_type),
-                                &value,
-                            )],
-                        }
-                    }
-                    Err(e) => ReadResourceResult {
-                        contents: vec![ResourceContents::text(
+                    ReadResourceResult {
+                        contents: vec![ResourceContents::json(
                             format!("agent://{}/memories", agent_type),
-                            format!("Failed to get agent memories: {}", e),
+                            &value,
                         )],
                     }
                 }
-            }
+                Err(e) => ReadResourceResult {
+                    contents: vec![ResourceContents::text(
+                        format!("agent://{}/memories", agent_type),
+                        format!("Failed to get agent memories: {}", e),
+                    )],
+                },
+            },
             Ok(None) => ReadResourceResult {
                 contents: vec![ResourceContents::text(
                     format!("agent://{}/memories", agent_type),
@@ -328,7 +327,7 @@ impl ResourceHandler {
                     format!("agent://{}/memories", agent_type),
                     format!("Failed to get agent: {}", e),
                 )],
-            }
+            },
         }
     }
 
@@ -366,7 +365,7 @@ impl ResourceHandler {
                     format!("agent://{}/stats", agent_type),
                     format!("Failed to get agent stats: {}", e),
                 )],
-            }
+            },
         }
     }
 }
@@ -421,7 +420,10 @@ mod tests {
         let memory_template = templates.iter().find(|t| t.name == "Memory by ID").unwrap();
         assert_eq!(memory_template.uri_template, "memory://{memory_id}");
 
-        let agent_memories = templates.iter().find(|t| t.name == "Agent Memories").unwrap();
+        let agent_memories = templates
+            .iter()
+            .find(|t| t.name == "Agent Memories")
+            .unwrap();
         assert_eq!(agent_memories.uri_template, "agent://{agent_type}/memories");
     }
 }

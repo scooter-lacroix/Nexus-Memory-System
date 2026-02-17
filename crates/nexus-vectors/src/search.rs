@@ -2,7 +2,7 @@
 //!
 //! This module provides semantic search capabilities for vector embeddings.
 
-use crate::{VectorEntry, EMBEDDING_DIMENSION, graph::GraphTree};
+use crate::{graph::GraphTree, VectorEntry, EMBEDDING_DIMENSION};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -100,7 +100,9 @@ impl Ord for SearchResult {
         // Sort by boosted score if available, otherwise by base score
         let self_score = self.boosted_score.unwrap_or(self.score);
         let other_score = other.boosted_score.unwrap_or(other.score);
-        other_score.partial_cmp(&self_score).unwrap_or(std::cmp::Ordering::Equal)
+        other_score
+            .partial_cmp(&self_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
     }
 }
 
@@ -292,6 +294,7 @@ mod tests {
         let (results, latency) = search.search(&query, &vectors, &opts).unwrap();
 
         assert_eq!(results.len(), 2);
+        assert!(latency.total_ms < 5_000);
         // First result should be more similar
         assert!(results[0].score >= results[1].score);
     }
@@ -327,7 +330,9 @@ mod tests {
 
         let vectors = vec![entry1, entry2];
 
-        let opts = SearchOptions::with_limit(10).with_threshold(0.0).with_category("facts");
+        let opts = SearchOptions::with_limit(10)
+            .with_threshold(0.0)
+            .with_category("facts");
         let (results, _) = search.search(&query, &vectors, &opts).unwrap();
 
         assert_eq!(results.len(), 1);

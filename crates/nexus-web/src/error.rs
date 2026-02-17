@@ -61,8 +61,12 @@ impl From<nexus_core::NexusError> for WebError {
     fn from(err: nexus_core::NexusError) -> Self {
         match err {
             nexus_core::NexusError::Storage(msg) => WebError::Storage(msg),
-            nexus_core::NexusError::MemoryNotFound(id) => WebError::NotFound(format!("Memory not found: {}", id)),
-            nexus_core::NexusError::NamespaceNotFound(name) => WebError::NotFound(format!("Namespace not found: {}", name)),
+            nexus_core::NexusError::MemoryNotFound(id) => {
+                WebError::NotFound(format!("Memory not found: {}", id))
+            }
+            nexus_core::NexusError::NamespaceNotFound(name) => {
+                WebError::NotFound(format!("Namespace not found: {}", name))
+            }
             nexus_core::NexusError::InvalidInput(msg) => WebError::InvalidRequest(msg),
             nexus_core::NexusError::InvalidConfig(msg) => WebError::InvalidRequest(msg),
             _ => WebError::Storage(err.to_string()),

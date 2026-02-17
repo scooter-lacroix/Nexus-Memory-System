@@ -4,14 +4,25 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SyncPolicy { Manual, Auto, Aggressive }
+pub enum SyncPolicy {
+    Manual,
+    Auto,
+    Aggressive,
+}
 
 impl Default for SyncPolicy {
-    fn default() -> Self { Self::Manual }
+    fn default() -> Self {
+        Self::Manual
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SyncStatus { Pending, InProgress, Complete, Failed }
+pub enum SyncStatus {
+    Pending,
+    InProgress,
+    Complete,
+    Failed,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncResult {
@@ -27,10 +38,18 @@ pub struct SyncCoordinator {
 }
 
 impl SyncCoordinator {
-    pub fn new() -> Self { Self { policy: SyncPolicy::default() } }
-    pub fn policy(&self) -> SyncPolicy { self.policy }
+    pub fn new() -> Self {
+        Self {
+            policy: SyncPolicy::default(),
+        }
+    }
+    pub fn policy(&self) -> SyncPolicy {
+        self.policy
+    }
 }
 
 impl Default for SyncCoordinator {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

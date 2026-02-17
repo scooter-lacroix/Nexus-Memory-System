@@ -49,7 +49,8 @@ impl EmbeddingConfig {
     /// Create a new configuration with the specified model path
     pub fn new(model_path: impl Into<PathBuf>) -> Self {
         let path = model_path.into();
-        let tokenizer_path = path.parent()
+        let tokenizer_path = path
+            .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .to_path_buf();
 
@@ -69,7 +70,8 @@ impl EmbeddingConfig {
         let tokenizer_path = std::env::var("NEXUS_TOKENIZER_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
-                model_path.parent()
+                model_path
+                    .parent()
                     .unwrap_or_else(|| std::path::Path::new("."))
                     .to_path_buf()
             });

@@ -97,7 +97,10 @@ impl AgentHook for GeminiHook {
         if let Some(session) = self.read_session_data() {
             if let Some(messages) = session.get("messages").and_then(|m| m.as_array()) {
                 for msg in messages {
-                    let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("unknown");
+                    let role = msg
+                        .get("role")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("unknown");
                     let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
                     context.add_message(role, content);
                 }

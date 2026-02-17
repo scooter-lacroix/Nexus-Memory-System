@@ -30,12 +30,11 @@ pub mod graph;
 pub mod search;
 
 pub use database::{
-    VectorDatabase, VectorDatabaseStats, VectorSearchResult,
-    cosine_similarity, euclidean_distance, dot_product, normalize_vector,
-    batch_cosine_similarity, top_k_similar,
-    DEFAULT_SEARCH_LIMIT, DEFAULT_SIMILARITY_THRESHOLD,
+    batch_cosine_similarity, cosine_similarity, dot_product, euclidean_distance, normalize_vector,
+    top_k_similar, VectorDatabase, VectorDatabaseStats, VectorSearchResult, DEFAULT_SEARCH_LIMIT,
+    DEFAULT_SIMILARITY_THRESHOLD,
 };
-pub use graph::{GraphNode, GraphTree, TreeNode, GraphNode as Node, NodeType, TreeStats};
+pub use graph::{GraphNode, GraphNode as Node, GraphTree, NodeType, TreeNode, TreeStats};
 pub use search::{SearchOptions, SearchResult, SemanticSearch};
 
 use serde::{Deserialize, Serialize};
@@ -73,12 +72,7 @@ pub struct VectorEntry {
 
 impl VectorEntry {
     /// Create a new vector entry
-    pub fn new(
-        id: i64,
-        embedding: Embedding,
-        category: String,
-        namespace_id: i64,
-    ) -> Self {
+    pub fn new(id: i64, embedding: Embedding, category: String, namespace_id: i64) -> Self {
         Self {
             id,
             embedding,

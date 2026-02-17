@@ -92,9 +92,9 @@ impl GraphNode {
     /// Set weight based on priority level
     pub fn set_priority_weight(&mut self, priority: u8) {
         self.weight = match priority {
-            1 => 1.5,  // High priority
-            2 => 1.2,  // Medium priority
-            _ => 1.0,  // Low/default priority
+            1 => 1.5, // High priority
+            2 => 1.2, // Medium priority
+            _ => 1.0, // Low/default priority
         };
     }
 }
@@ -291,11 +291,7 @@ impl GraphTree {
     }
 
     /// Calculate boosted relevance score based on tree structure
-    pub fn calculate_boosted_score(
-        &self,
-        memory_id: NodeId,
-        base_similarity: f32,
-    ) -> f32 {
+    pub fn calculate_boosted_score(&self, memory_id: NodeId, base_similarity: f32) -> f32 {
         if let Some(node) = self.nodes.get(&memory_id) {
             // Apply weight from node
             let weight = node.weight;
@@ -627,7 +623,10 @@ impl GraphTree {
         let mut level_weights: HashMap<u32, Vec<f32>> = HashMap::new();
 
         for node in self.nodes.values() {
-            level_weights.entry(node.depth).or_default().push(node.weight);
+            level_weights
+                .entry(node.depth)
+                .or_default()
+                .push(node.weight);
         }
 
         let mut level_avgs: HashMap<u32, f32> = HashMap::new();

@@ -54,8 +54,8 @@ pub async fn get_namespace(
         state.namespace_repo.get_by_name(&id).await?
     };
 
-    let namespace = namespace
-        .ok_or_else(|| WebError::NotFound(format!("Namespace '{}' not found", id)))?;
+    let namespace =
+        namespace.ok_or_else(|| WebError::NotFound(format!("Namespace '{}' not found", id)))?;
 
     Ok(Json(NamespaceResponse::from(namespace)))
 }
@@ -85,7 +85,10 @@ pub async fn create_namespace(
         .get_or_create(&request.name, &request.agent_type)
         .await?;
 
-    info!("Namespace created: id={}, name={}", namespace.id, namespace.name);
+    info!(
+        "Namespace created: id={}, name={}",
+        namespace.id, namespace.name
+    );
 
     Ok((
         StatusCode::CREATED,

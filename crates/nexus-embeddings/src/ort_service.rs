@@ -1,7 +1,7 @@
 //! ONNX Runtime embedding service implementation
 
 use async_trait::async_trait;
-use ort::session::{Session, builder::GraphOptimizationLevel};
+use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Value;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -11,7 +11,7 @@ use tracing::{debug, info};
 use crate::cache::EmbeddingCache;
 use crate::config::EmbeddingConfig;
 use crate::error::{EmbeddingError, Result};
-use crate::{EMBEDDING_DIMENSION, DEFAULT_MODEL_NAME};
+use crate::{DEFAULT_MODEL_NAME, EMBEDDING_DIMENSION};
 
 /// ONNX Runtime-based embedding service
 ///
@@ -39,7 +39,7 @@ impl OrtEmbeddingService {
         // Verify model file exists
         if !config.model_path.exists() {
             return Err(EmbeddingError::ModelNotFound(
-                config.model_path.display().to_string()
+                config.model_path.display().to_string(),
             ));
         }
 
@@ -62,19 +62,24 @@ impl OrtEmbeddingService {
                 .map_err(|e| EmbeddingError::TokenizationError(e.to_string()))?
         } else {
             // Try to load from the model directory directly
-            let alt_path = config.model_path.parent()
-                .ok_or_else(|| EmbeddingError::TokenizationError(
-                    "Cannot determine tokenizer directory".to_string()
-                ))?
+            let alt_path = config
+                .model_path
+                .parent()
+                .ok_or_else(|| {
+                    EmbeddingError::TokenizationError(
+                        "Cannot determine tokenizer directory".to_string(),
+                    )
+                })?
                 .join("tokenizer.json");
 
             if alt_path.exists() {
                 Tokenizer::from_file(&alt_path)
                     .map_err(|e| EmbeddingError::TokenizationError(e.to_string()))?
             } else {
-                return Err(EmbeddingError::TokenizationError(
-                    format!("Tokenizer not found at {:?} or {:?}", tokenizer_path, alt_path)
-                ));
+                return Err(EmbeddingError::TokenizationError(format!(
+                    "Tokenizer not found at {:?} or {:?}",
+                    tokenizer_path, alt_path
+                )));
             }
         };
 
@@ -107,16 +112,15 @@ impl OrtEmbeddingService {
 
     /// Tokenize text for the model
     fn tokenize(&self, text: &str) -> Result<(Vec<i64>, Vec<i64>)> {
-        let encoding = self.tokenizer
+        let encoding = self
+            .tokenizer
             .encode(text, true)
             .map_err(|e| EmbeddingError::TokenizationError(e.to_string()))?;
 
-        let input_ids: Vec<i64> = encoding.get_ids()
-            .iter()
-            .map(|&id| id as i64)
-            .collect();
+        let input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
 
-        let attention_mask: Vec<i64> = encoding.get_attention_mask()
+        let attention_mask: Vec<i64> = encoding
+            .get_attention_mask()
             .iter()
             .map(|&mask| mask as i64)
             .collect();
@@ -137,7 +141,9 @@ impl OrtEmbeddingService {
             .map_err(|e: ort::Error| EmbeddingError::InferenceError(e.to_string()))?;
 
         // Lock the session and run inference
-        let mut session = self.session.lock()
+        let mut session = self
+            .session
+            .lock()
             .map_err(|_| EmbeddingError::InferenceError("Failed to lock session".to_string()))?;
 
         // Run inference
@@ -146,10 +152,9 @@ impl OrtEmbeddingService {
             .map_err(|e: ort::Error| EmbeddingError::InferenceError(e.to_string()))?;
 
         // Extract the output embedding - get the first output
-        let (_name, output_value) = outputs.iter().next()
-            .ok_or_else(|| EmbeddingError::InferenceError(
-                "No output found in model".to_string()
-            ))?;
+        let (_name, output_value) = outputs.iter().next().ok_or_else(|| {
+            EmbeddingError::InferenceError("No output found in model".to_string())
+        })?;
 
         // Try to extract as f32 tensor - returns (&Shape, &[f32])
         let (shape, data) = output_value
@@ -178,9 +183,10 @@ impl OrtEmbeddingService {
             // Already pooled output - flatten to vec
             data.to_vec()
         } else {
-            return Err(EmbeddingError::InferenceError(
-                format!("Unexpected output shape: {:?}", dims)
-            ));
+            return Err(EmbeddingError::InferenceError(format!(
+                "Unexpected output shape: {:?}",
+                dims
+            )));
         };
 
         // Normalize if configured
@@ -255,7 +261,7 @@ impl nexus_core::traits::EmbeddingService for OrtEmbeddingService {
     async fn embed(&self, text: &str) -> nexus_core::Result<Vec<f32>> {
         if text.trim().is_empty() {
             return Err(nexus_core::NexusError::InvalidInput(
-                "Cannot embed empty text".to_string()
+                "Cannot embed empty text".to_string(),
             ));
         }
 
@@ -271,7 +277,7 @@ impl nexus_core::traits::EmbeddingService for OrtEmbeddingService {
         for text in texts {
             if text.trim().is_empty() {
                 return Err(nexus_core::NexusError::InvalidInput(
-                    "Cannot embed empty text".to_string()
+                    "Cannot embed empty text".to_string(),
                 ));
             }
         }
@@ -294,7 +300,7 @@ impl OrtEmbeddingService {
     pub fn embed_sync(&self, text: &str) -> Result<Vec<f32>> {
         if text.trim().is_empty() {
             return Err(EmbeddingError::InvalidInput(
-                "Cannot embed empty text".to_string()
+                "Cannot embed empty text".to_string(),
             ));
         }
         self.encode_sync(text)

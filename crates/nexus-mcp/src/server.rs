@@ -3,8 +3,8 @@
 //! This module provides the main MCP server implementation for the Nexus Memory System.
 
 use crate::protocol::*;
-use crate::tools::ToolHandler;
 use crate::resources::ResourceHandler;
+use crate::tools::ToolHandler;
 use crate::McpConfig;
 use nexus_storage::StorageManager;
 use std::io::{self, BufRead, Write};
@@ -87,13 +87,12 @@ impl McpServer {
         *self.state.write().await = ServerState::Starting;
 
         // Initialize storage
-        let db_path = std::env::var("NEXUS_DATABASE_PATH")
-            .unwrap_or_else(|_| {
-                let home = dirs::data_local_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join("nexus");
-                format!("sqlite:{}/nexus.db?mode=rwc", home.to_string_lossy())
-            });
+        let db_path = std::env::var("NEXUS_DATABASE_PATH").unwrap_or_else(|_| {
+            let home = dirs::data_local_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("nexus");
+            format!("sqlite:{}/nexus.db?mode=rwc", home.to_string_lossy())
+        });
 
         tracing::info!("Connecting to database: {}", db_path);
 
@@ -101,7 +100,8 @@ impl McpServer {
             .await
             .map_err(|e| nexus_core::NexusError::Database(e.to_string()))?;
 
-        storage.initialize()
+        storage
+            .initialize()
             .await
             .map_err(|e| nexus_core::NexusError::Database(e.to_string()))?;
 
@@ -123,9 +123,12 @@ impl McpServer {
         let transport = match self.config.transport.as_str() {
             "stdio" => TransportType::Stdio,
             "http" => TransportType::Http,
-            _ => return Err(nexus_core::NexusError::InvalidConfig(format!(
-                "Unknown transport: {}", self.config.transport
-            ))),
+            _ => {
+                return Err(nexus_core::NexusError::InvalidConfig(format!(
+                    "Unknown transport: {}",
+                    self.config.transport
+                )))
+            }
         };
 
         match transport {
@@ -160,6 +163,11 @@ impl McpServer {
         &self.config
     }
 
+    /// Generate the next internal request sequence number.
+    fn next_request_sequence(&self) -> u64 {
+        self.request_counter.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
     /// Start stdio transport
     async fn start_stdio(&mut self) -> crate::Result<()> {
         tracing::info!("Starting MCP server with stdio transport");
@@ -171,7 +179,9 @@ impl McpServer {
         let mut stdout_lock = stdout.lock();
 
         // Get pool from storage
-        let pool = self.storage.as_ref()
+        let pool = self
+            .storage
+            .as_ref()
             .ok_or_else(|| nexus_core::NexusError::NotInitialized)?
             .pool()
             .clone();
@@ -199,11 +209,19 @@ impl McpServer {
                 continue;
             }
 
-            tracing::debug!("Received request: {}", line);
+            let request_seq = self.next_request_sequence();
+            tracing::debug!(
+                request_seq,
+                payload = %line,
+                "Received MCP request payload"
+            );
 
             // Parse and handle the request
             let response = match serde_json::from_str::<JsonRpcRequest>(&line) {
-                Ok(request) => self.handle_request(request, &tool_handler, &resource_handler).await,
+                Ok(request) => {
+                    self.handle_request(request, &tool_handler, &resource_handler)
+                        .await
+                }
                 Err(e) => {
                     tracing::error!("Failed to parse request: {}", e);
                     JsonRpcMessage::Error(JsonRpcErrorResponse {
@@ -225,12 +243,15 @@ impl McpServer {
 
     /// Start HTTP transport
     async fn start_http(&mut self) -> crate::Result<()> {
-        tracing::info!("Starting MCP server with HTTP transport on port {}", self.config.port);
+        tracing::info!(
+            "Starting MCP server with HTTP transport on port {}",
+            self.config.port
+        );
 
         // HTTP transport is more complex and would typically use axum or hyper
         // For now, we'll return an error suggesting stdio transport
         Err(nexus_core::NexusError::InvalidConfig(
-            "HTTP transport not yet implemented. Use stdio transport for now.".to_string()
+            "HTTP transport not yet implemented. Use stdio transport for now.".to_string(),
         ))
     }
 
@@ -241,7 +262,12 @@ impl McpServer {
         tool_handler: &ToolHandler,
         resource_handler: &ResourceHandler,
     ) -> JsonRpcMessage {
-        tracing::debug!("Handling request: method={}", request.method);
+        let total_requests = self.request_counter.load(Ordering::Relaxed);
+        tracing::debug!(
+            method = %request.method,
+            total_requests,
+            "Handling MCP request"
+        );
 
         // Handle notifications (no response needed)
         if request.is_notification() {
@@ -264,7 +290,10 @@ impl McpServer {
 
             // Resources
             "resources/list" => self.handle_resources_list(resource_handler).await,
-            "resources/read" => self.handle_resources_read(request.params, resource_handler).await,
+            "resources/read" => {
+                self.handle_resources_read(request.params, resource_handler)
+                    .await
+            }
 
             // Prompts
             "prompts/list" => self.handle_prompts_list().await,
@@ -291,7 +320,10 @@ impl McpServer {
     }
 
     /// Handle initialize request
-    async fn handle_initialize(&self, params: Option<serde_json::Value>) -> Result<serde_json::Value, JsonRpcError> {
+    async fn handle_initialize(
+        &self,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, JsonRpcError> {
         let params: InitializeParams = params
             .and_then(|p| serde_json::from_value(p).ok())
             .ok_or_else(|| JsonRpcError::invalid_params("Missing initialize params"))?;
@@ -339,7 +371,10 @@ impl McpServer {
     }
 
     /// Handle resources/list request
-    async fn handle_resources_list(&self, handler: &ResourceHandler) -> Result<serde_json::Value, JsonRpcError> {
+    async fn handle_resources_list(
+        &self,
+        handler: &ResourceHandler,
+    ) -> Result<serde_json::Value, JsonRpcError> {
         let result = handler.list_resources();
         Ok(serde_json::to_value(result).unwrap_or_default())
     }
@@ -406,15 +441,26 @@ impl McpServer {
     }
 
     /// Handle prompts/get request
-    async fn handle_prompts_get(&self, params: Option<serde_json::Value>) -> Result<serde_json::Value, JsonRpcError> {
+    async fn handle_prompts_get(
+        &self,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, JsonRpcError> {
         let params: GetPromptParams = params
             .and_then(|p| serde_json::from_value(p).ok())
             .ok_or_else(|| JsonRpcError::invalid_params("Missing prompt get params"))?;
 
         let result = match params.name.as_str() {
             "store_memory" => {
-                let content = params.arguments.get("content").map(|s| s.as_str()).unwrap_or("");
-                let agent_type = params.arguments.get("agent_type").map(|s| s.as_str()).unwrap_or("general");
+                let content = params
+                    .arguments
+                    .get("content")
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+                let agent_type = params
+                    .arguments
+                    .get("agent_type")
+                    .map(|s| s.as_str())
+                    .unwrap_or("general");
 
                 GetPromptResult {
                     description: Some("Store a new memory".to_string()),
@@ -427,21 +473,30 @@ impl McpServer {
                 }
             }
             "search_memories" => {
-                let query = params.arguments.get("query").map(|s| s.as_str()).unwrap_or("");
-                let agent_type = params.arguments.get("agent_type").map(|s| s.as_str()).unwrap_or("general");
+                let query = params
+                    .arguments
+                    .get("query")
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+                let agent_type = params
+                    .arguments
+                    .get("agent_type")
+                    .map(|s| s.as_str())
+                    .unwrap_or("general");
 
                 GetPromptResult {
                     description: Some("Search memories".to_string()),
-                    messages: vec![
-                        PromptMessage::user(format!(
-                            "Search for memories matching '{}' for agent '{}'",
-                            query, agent_type
-                        )),
-                    ],
+                    messages: vec![PromptMessage::user(format!(
+                        "Search for memories matching '{}' for agent '{}'",
+                        query, agent_type
+                    ))],
                 }
             }
             _ => {
-                return Err(JsonRpcError::invalid_params(format!("Unknown prompt: {}", params.name)));
+                return Err(JsonRpcError::invalid_params(format!(
+                    "Unknown prompt: {}",
+                    params.name
+                )));
             }
         };
 

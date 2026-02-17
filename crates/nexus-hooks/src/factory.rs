@@ -3,8 +3,7 @@
 use std::collections::HashMap;
 
 use crate::agents::{
-    ClaudeCodeHook, GeminiHook, QwenHook, CLIHook,
-    PiMonoHook, OhMyPiHook, PiSkillsHook,
+    CLIHook, ClaudeCodeHook, GeminiHook, OhMyPiHook, PiMonoHook, PiSkillsHook, QwenHook,
 };
 use crate::base::AgentHook;
 use crate::error::{HookError, Result};
@@ -95,9 +94,7 @@ impl HookFactory {
             | Some(AgentType::Codex)
             | Some(AgentType::Amp)
             | Some(AgentType::Droid)
-            | Some(AgentType::Generic) => {
-                Ok(Box::new(CLIHook::new(normalized.clone())))
-            }
+            | Some(AgentType::Generic) => Ok(Box::new(CLIHook::new(normalized.clone()))),
             None => Err(HookError::AgentNotFound(format!(
                 "Unknown agent type: {}",
                 agent_type
@@ -141,7 +138,8 @@ impl HookFactory {
 
     /// Register a custom alias
     pub fn register_alias(&mut self, alias: &str, target: &str) {
-        self.aliases.insert(alias.to_lowercase(), target.to_lowercase());
+        self.aliases
+            .insert(alias.to_lowercase(), target.to_lowercase());
     }
 }
 

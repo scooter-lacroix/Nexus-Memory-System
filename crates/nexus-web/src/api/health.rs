@@ -12,6 +12,12 @@ pub async fn health_check(
     State(state): State<Arc<RwLock<AppState>>>,
 ) -> Result<Json<HealthResponse>> {
     let state = state.read().await;
+    sqlx::query_scalar::<_, i64>("SELECT 1")
+        .fetch_one(state.pool())
+        .await
+        .map_err(|e| {
+            crate::error::WebError::Storage(format!("Health check database probe failed: {}", e))
+        })?;
 
     Ok(Json(HealthResponse {
         status: "healthy".to_string(),

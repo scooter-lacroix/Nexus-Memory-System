@@ -175,10 +175,16 @@ impl SessionContext {
 
         parts.push(format!("Agent: {}", self.agent_type));
         parts.push(format!("Source: {}", self.extraction_source));
-        parts.push(format!("Reliability: {:.0}%", self.reliability_score * 100.0));
+        parts.push(format!(
+            "Reliability: {:.0}%",
+            self.reliability_score * 100.0
+        ));
 
         if !self.conversation.is_empty() {
-            parts.push(format!("\nConversation: {} messages", self.conversation.len()));
+            parts.push(format!(
+                "\nConversation: {} messages",
+                self.conversation.len()
+            ));
         }
 
         if !self.decisions.is_empty() {

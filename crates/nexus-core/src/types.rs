@@ -410,14 +410,20 @@ mod tests {
 
     #[test]
     fn test_category_from_str() {
-        assert_eq!(MemoryCategory::from_str("facts"), Some(MemoryCategory::Facts));
+        assert_eq!(
+            MemoryCategory::from_str("facts"),
+            Some(MemoryCategory::Facts)
+        );
         assert_eq!(MemoryCategory::from_str("invalid"), None);
     }
 
     #[test]
     fn test_category_description() {
         assert_eq!(MemoryCategory::Facts.description(), "Factual information");
-        assert_eq!(MemoryCategory::General.description(), "General purpose memories");
+        assert_eq!(
+            MemoryCategory::General.description(),
+            "General purpose memories"
+        );
     }
 
     #[test]
@@ -429,7 +435,10 @@ mod tests {
     #[test]
     fn test_memory_lane_priority_type_display() {
         assert_eq!(MemoryLanePriorityType::Correction.to_string(), "correction");
-        assert_eq!(MemoryLanePriorityType::PatternSeed.to_string(), "pattern_seed");
+        assert_eq!(
+            MemoryLanePriorityType::PatternSeed.to_string(),
+            "pattern_seed"
+        );
     }
 
     #[test]
@@ -442,10 +451,16 @@ mod tests {
     #[test]
     fn test_memory_lane_type_from_str() {
         let cognitive = MemoryLaneType::from_str("semantic");
-        assert!(matches!(cognitive, Some(MemoryLaneType::Cognitive(MemoryLaneCognitiveType::Semantic))));
+        assert!(matches!(
+            cognitive,
+            Some(MemoryLaneType::Cognitive(MemoryLaneCognitiveType::Semantic))
+        ));
 
         let priority = MemoryLaneType::from_str("correction");
-        assert!(matches!(priority, Some(MemoryLaneType::Priority(MemoryLanePriorityType::Correction))));
+        assert!(matches!(
+            priority,
+            Some(MemoryLaneType::Priority(MemoryLanePriorityType::Correction))
+        ));
     }
 
     #[test]

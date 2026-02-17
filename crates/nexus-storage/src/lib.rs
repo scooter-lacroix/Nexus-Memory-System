@@ -2,12 +2,12 @@
 //!
 //! This crate provides SQLite-based storage using SQLx.
 
-pub mod repository;
 pub mod migrations;
 pub mod models;
+pub mod repository;
 
-pub use repository::{MemoryRepository, NamespaceRepository};
 pub use models::*;
+pub use repository::{MemoryRepository, NamespaceRepository};
 
 use sqlx::SqlitePool;
 

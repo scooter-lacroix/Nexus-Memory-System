@@ -21,7 +21,9 @@ use std::path::PathBuf;
 use crate::base::{AgentHook, BaseHook, SessionEndCallback};
 use crate::error::{HookError, Result};
 use crate::monitor::ProcessMonitor;
-use crate::session::{FileInfo, FileAction, SessionContext, SubagentExecution, TaskInfo, TaskStatus};
+use crate::session::{
+    FileAction, FileInfo, SessionContext, SubagentExecution, TaskInfo, TaskStatus,
+};
 use crate::types::{AgentType, SessionActivity};
 
 /// Oh-My-Pi hook for extracting memory from OMP session execution.
@@ -143,12 +145,14 @@ impl OhMyPiHook {
 
     /// Install the nexus-memory-extraction skill with TTSR support
     fn install_skill(&mut self) -> Result<()> {
-        std::fs::create_dir_all(&self.skills_dir)
-            .map_err(|e| HookError::InstallationFailed(format!("Failed to create skills dir: {}", e)))?;
+        std::fs::create_dir_all(&self.skills_dir).map_err(|e| {
+            HookError::InstallationFailed(format!("Failed to create skills dir: {}", e))
+        })?;
 
         let skill_dir = self.skills_dir.join("nexus-memory-extraction");
-        std::fs::create_dir_all(&skill_dir)
-            .map_err(|e| HookError::InstallationFailed(format!("Failed to create skill dir: {}", e)))?;
+        std::fs::create_dir_all(&skill_dir).map_err(|e| {
+            HookError::InstallationFailed(format!("Failed to create skill dir: {}", e))
+        })?;
 
         let skill_md = skill_dir.join("SKILL.md");
 
@@ -211,7 +215,12 @@ Set environment variables:
         if let Ok(entries) = std::fs::read_dir(&self.session_dir) {
             let mut session_files: Vec<_> = entries
                 .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().map(|ext| ext == "json").unwrap_or(false))
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .map(|ext| ext == "json")
+                        .unwrap_or(false)
+                })
                 .collect();
 
             session_files.sort_by(|a, b| {
@@ -245,7 +254,10 @@ Set environment variables:
             let mut log_files: Vec<_> = entries
                 .filter_map(|e| e.ok())
                 .filter(|e| {
-                    e.path().extension().map(|ext| ext == "log" || ext == "txt").unwrap_or(false)
+                    e.path()
+                        .extension()
+                        .map(|ext| ext == "log" || ext == "txt")
+                        .unwrap_or(false)
                 })
                 .collect();
 
@@ -258,7 +270,10 @@ Set environment variables:
             for entry in log_files.into_iter().take(5) {
                 if let Ok(content) = std::fs::read_to_string(entry.path()) {
                     for line in content.lines() {
-                        if line.contains("Executing:") || line.contains("Command:") || line.contains("OMP:") {
+                        if line.contains("Executing:")
+                            || line.contains("Command:")
+                            || line.contains("OMP:")
+                        {
                             commands.push(line.to_string());
                         }
                     }
@@ -289,15 +304,32 @@ Set environment variables:
 
         matches!(
             feature,
-            "grep" | "shell" | "text" | "keys" | "highlight" | "glob" | "task" | "ps" | "prof" | "clipboard"
+            "grep"
+                | "shell"
+                | "text"
+                | "keys"
+                | "highlight"
+                | "glob"
+                | "task"
+                | "ps"
+                | "prof"
+                | "clipboard"
         )
     }
 
     /// Get list of available native features
     pub fn native_features(&self) -> &'static [&'static str] {
         &[
-            "grep", "shell", "text", "keys", "highlight",
-            "glob", "task", "ps", "prof", "clipboard",
+            "grep",
+            "shell",
+            "text",
+            "keys",
+            "highlight",
+            "glob",
+            "task",
+            "ps",
+            "prof",
+            "clipboard",
         ]
     }
 }
@@ -337,7 +369,12 @@ impl AgentHook for OhMyPiHook {
             if let Ok(entries) = std::fs::read_dir(&self.session_dir) {
                 if let Some(most_recent) = entries
                     .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().map(|ext| ext == "json").unwrap_or(false))
+                    .filter(|e| {
+                        e.path()
+                            .extension()
+                            .map(|ext| ext == "json")
+                            .unwrap_or(false)
+                    })
                     .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
                 {
                     if let Ok(metadata) = most_recent.metadata() {
@@ -348,8 +385,14 @@ impl AgentHook for OhMyPiHook {
 
                             if age.as_secs() < 300 {
                                 activity.is_active = true;
-                                activity.session_id =
-                                    Some(most_recent.path().file_stem().unwrap().to_string_lossy().to_string());
+                                activity.session_id = Some(
+                                    most_recent
+                                        .path()
+                                        .file_stem()
+                                        .unwrap()
+                                        .to_string_lossy()
+                                        .to_string(),
+                                );
                             }
                         }
                     }
@@ -379,7 +422,8 @@ impl AgentHook for OhMyPiHook {
             .with_reliability(1.0);
 
         // Track fork-specific features
-        let mut fork_features: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
+        let mut fork_features: std::collections::HashMap<String, i32> =
+            std::collections::HashMap::new();
 
         // Add native engine info
         context.add_custom(
@@ -398,14 +442,22 @@ impl AgentHook for OhMyPiHook {
         for session_data in self.read_session_files() {
             // Extract session info
             if let Some(timestamp) = session_data.get("timestamp").and_then(|t| t.as_str()) {
-                context.add_custom("session_timestamp", serde_json::Value::String(timestamp.to_string()));
+                context.add_custom(
+                    "session_timestamp",
+                    serde_json::Value::String(timestamp.to_string()),
+                );
             }
 
             // Extract tasks with OMP-specific features
             if let Some(tasks) = session_data.get("tasks").and_then(|t| t.as_array()) {
                 for task in tasks {
-                    let description = task.get("description").and_then(|d| d.as_str()).unwrap_or("");
-                    let feature = task.get("feature").or_else(|| task.get("role"))
+                    let description = task
+                        .get("description")
+                        .and_then(|d| d.as_str())
+                        .unwrap_or("");
+                    let feature = task
+                        .get("feature")
+                        .or_else(|| task.get("role"))
                         .and_then(|r| r.as_str())
                         .unwrap_or("unknown");
 
@@ -439,7 +491,10 @@ impl AgentHook for OhMyPiHook {
             }
 
             // Extract files modified
-            if let Some(files) = session_data.get("files_modified").and_then(|f| f.as_array()) {
+            if let Some(files) = session_data
+                .get("files_modified")
+                .and_then(|f| f.as_array())
+            {
                 for file in files {
                     if let Some(path) = file.as_str() {
                         context.add_file(FileInfo::new(path, FileAction::Modified));
@@ -448,7 +503,10 @@ impl AgentHook for OhMyPiHook {
             }
 
             // Extract extensions used (OMP-specific)
-            if let Some(extensions) = session_data.get("extensions_used").and_then(|e| e.as_array()) {
+            if let Some(extensions) = session_data
+                .get("extensions_used")
+                .and_then(|e| e.as_array())
+            {
                 for ext in extensions {
                     if let Some(ext_str) = ext.as_str() {
                         context.add_custom(

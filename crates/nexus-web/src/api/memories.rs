@@ -6,13 +6,11 @@ use axum::{
     Json,
 };
 use chrono::Utc;
-use nexus_core::{MemoryCategory, MemoryLaneType};
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::{
     error::{Result, WebError},
@@ -93,7 +91,9 @@ pub async fn create_memory(
 
     // Validate content
     if request.content.trim().is_empty() {
-        return Err(WebError::InvalidRequest("Content cannot be empty".to_string()));
+        return Err(WebError::InvalidRequest(
+            "Content cannot be empty".to_string(),
+        ));
     }
 
     // Get or create namespace
@@ -200,10 +200,7 @@ pub async fn update_memory(
 
     if let Some(metadata) = request.metadata {
         let metadata_json = serde_json::to_string(&metadata).unwrap_or_default();
-        updates.push(format!(
-            "metadata = '{}'",
-            metadata_json.replace("'", "''")
-        ));
+        updates.push(format!("metadata = '{}'", metadata_json.replace("'", "''")));
     }
 
     if let Some(is_active) = request.is_active {
@@ -220,10 +217,7 @@ pub async fn update_memory(
 
     updates.push(format!("updated_at = '{}'", Utc::now().to_rfc3339()));
 
-    let query = format!(
-        "UPDATE memories SET {} WHERE id = ?",
-        updates.join(", ")
-    );
+    let query = format!("UPDATE memories SET {} WHERE id = ?", updates.join(", "));
 
     sqlx::query(&query)
         .bind(id)
@@ -262,14 +256,12 @@ pub async fn delete_memory(
         .ok_or_else(|| WebError::NotFound(format!("Memory {} not found", id)))?;
 
     // Soft delete: mark as inactive and archived
-    sqlx::query(
-        "UPDATE memories SET is_active = 0, is_archived = 1, updated_at = ? WHERE id = ?",
-    )
-    .bind(Utc::now())
-    .bind(id)
-    .execute(state.pool())
-    .await
-    .map_err(|e| WebError::Storage(e.to_string()))?;
+    sqlx::query("UPDATE memories SET is_active = 0, is_archived = 1, updated_at = ? WHERE id = ?")
+        .bind(Utc::now())
+        .bind(id)
+        .execute(state.pool())
+        .await
+        .map_err(|e| WebError::Storage(e.to_string()))?;
 
     // Broadcast deletion
     let ws_msg = WebSocketMessage::memory_deleted(id);
@@ -289,7 +281,9 @@ pub async fn search_memories(
 
     // Validate query
     if request.query.trim().is_empty() {
-        return Err(WebError::InvalidRequest("Query cannot be empty".to_string()));
+        return Err(WebError::InvalidRequest(
+            "Query cannot be empty".to_string(),
+        ));
     }
 
     // Get namespace
@@ -300,7 +294,10 @@ pub async fn search_memories(
 
     // For now, use text-based search (semantic search would require embeddings)
     // Search in content using LIKE
-    let search_pattern = format!("%{}%", request.query.replace("%", "\\%").replace("_", "\\_"));
+    let search_pattern = format!(
+        "%{}%",
+        request.query.replace("%", "\\%").replace("_", "\\_")
+    );
 
     let query_str = format!(
         "SELECT * FROM memories WHERE namespace_id = ? AND is_active = 1 AND content LIKE ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
@@ -316,10 +313,8 @@ pub async fn search_memories(
         .map_err(|e| WebError::Storage(e.to_string()))?;
 
     // Convert rows to memories
-    let memories: Vec<nexus_core::Memory> = rows
-        .into_iter()
-        .map(|row| row_to_memory(row))
-        .collect();
+    let memories: Vec<nexus_core::Memory> =
+        rows.into_iter().map(|row| row_to_memory(row)).collect();
 
     let results: Vec<MemoryResponse> = memories.into_iter().map(MemoryResponse::from).collect();
 
@@ -358,7 +353,10 @@ fn row_to_memory(row: nexus_storage::models::MemoryRow) -> nexus_core::Memory {
         namespace_id: row.namespace_id,
         content: row.content,
         category: MemoryCategory::from_str(&row.category).unwrap_or(MemoryCategory::General),
-        memory_lane_type: row.memory_lane_type.as_deref().and_then(MemoryLaneType::from_str),
+        memory_lane_type: row
+            .memory_lane_type
+            .as_deref()
+            .and_then(MemoryLaneType::from_str),
         labels,
         metadata,
         similarity_score: row.similarity_score,

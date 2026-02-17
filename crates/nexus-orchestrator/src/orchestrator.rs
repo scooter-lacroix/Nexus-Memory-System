@@ -1,7 +1,6 @@
 //! Main orchestrator combining all components
 
 use crate::context::ContextEnhancer;
-use crate::error::Result;
 use crate::event_bus::EventBus;
 use crate::session::{Session, SessionId, SessionManager};
 use crate::sync::SyncCoordinator;
@@ -15,7 +14,10 @@ pub struct OrchestratorConfig {
 
 impl Default for OrchestratorConfig {
     fn default() -> Self {
-        Self { session_idle_timeout_secs: 300, max_sessions: 10000 }
+        Self {
+            session_idle_timeout_secs: 300,
+            max_sessions: 10000,
+        }
     }
 }
 
@@ -29,8 +31,10 @@ pub struct Orchestrator {
 
 impl Orchestrator {
     pub fn new(config: OrchestratorConfig) -> Self {
+        let session_manager = SessionManager::with_idle_timeout(config.session_idle_timeout_secs);
+
         Self {
-            session_manager: SessionManager::new(),
+            session_manager,
             event_bus: EventBus::new(1024),
             sync_coordinator: SyncCoordinator::new(),
             context_enhancer: ContextEnhancer::new(),
@@ -53,8 +57,22 @@ impl Orchestrator {
     pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<crate::event_bus::Event> {
         self.event_bus.subscribe()
     }
+
+    pub fn config(&self) -> &OrchestratorConfig {
+        &self.config
+    }
+
+    pub fn sync_policy(&self) -> crate::sync::SyncPolicy {
+        self.sync_coordinator.policy()
+    }
+
+    pub fn enhance_context(&self, query: impl Into<String>) -> crate::context::EnhancedContext {
+        self.context_enhancer.enhance(query)
+    }
 }
 
 impl Default for Orchestrator {
-    fn default() -> Self { Self::new(OrchestratorConfig::default()) }
+    fn default() -> Self {
+        Self::new(OrchestratorConfig::default())
+    }
 }

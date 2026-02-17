@@ -317,7 +317,11 @@ impl PersistentBuffer {
     /// Check if buffer exists for agent
     pub async fn has_buffer(&self, agent_type: &str) -> bool {
         let buffers = self.buffers.read().await;
-        buffers.contains_key(agent_type) || self.buffer_dir.join(format!("{}.json", agent_type)).exists()
+        buffers.contains_key(agent_type)
+            || self
+                .buffer_dir
+                .join(format!("{}.json", agent_type))
+                .exists()
     }
 }
 

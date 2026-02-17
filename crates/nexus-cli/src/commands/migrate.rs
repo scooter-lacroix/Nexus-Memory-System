@@ -86,9 +86,11 @@ pub enum MigrateCommands {
 /// Execute migration command
 pub async fn execute(cmd: MigrateCommands) -> Result<()> {
     match cmd {
-        MigrateCommands::Discover { path, hidden, depth } => {
-            discover_databases(path.as_deref(), hidden, depth).await
-        }
+        MigrateCommands::Discover {
+            path,
+            hidden,
+            depth,
+        } => discover_databases(path.as_deref(), hidden, depth).await,
         MigrateCommands::Status { db } => show_status(db.as_deref()).await,
         MigrateCommands::Run {
             from,
@@ -96,7 +98,16 @@ pub async fn execute(cmd: MigrateCommands) -> Result<()> {
             backup,
             no_backup,
             dry_run,
-        } => run_migration(from.as_deref(), to.as_deref(), backup.as_deref(), no_backup, dry_run).await,
+        } => {
+            run_migration(
+                from.as_deref(),
+                to.as_deref(),
+                backup.as_deref(),
+                no_backup,
+                dry_run,
+            )
+            .await
+        }
         MigrateCommands::Validate { from, to } => {
             validate_migration(from.as_deref(), to.as_deref()).await
         }
@@ -218,7 +229,10 @@ async fn discover_databases(
 }
 
 /// Find Nexus databases using ripgrep or file traversal
-async fn find_nexus_databases(start_path: &Path, max_depth: usize) -> Result<Vec<DiscoveredDatabase>> {
+async fn find_nexus_databases(
+    start_path: &Path,
+    max_depth: usize,
+) -> Result<Vec<DiscoveredDatabase>> {
     let mut databases = Vec::new();
 
     // First, try using ripgrep for speed
@@ -227,11 +241,7 @@ async fn find_nexus_databases(start_path: &Path, max_depth: usize) -> Result<Vec
     }
 
     // Also check common locations directly
-    let common_patterns = vec![
-        "nexus.db",
-        ".nexus/nexus.db",
-        ".local/share/nexus/nexus.db",
-    ];
+    let common_patterns = vec!["nexus.db", ".nexus/nexus.db", ".local/share/nexus/nexus.db"];
 
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     for pattern in common_patterns {
@@ -239,7 +249,10 @@ async fn find_nexus_databases(start_path: &Path, max_depth: usize) -> Result<Vec
         if full_path.exists() {
             if let Ok(db) = inspect_database(&full_path).await {
                 // Avoid duplicates
-                if !databases.iter().any(|d: &DiscoveredDatabase| d.path == full_path) {
+                if !databases
+                    .iter()
+                    .any(|d: &DiscoveredDatabase| d.path == full_path)
+                {
                     databases.push(db);
                 }
             }
@@ -249,7 +262,10 @@ async fn find_nexus_databases(start_path: &Path, max_depth: usize) -> Result<Vec
     // Also do a manual search in the start path
     if let Ok(dbs) = find_databases_manually(start_path, max_depth).await {
         for db in dbs {
-            if !databases.iter().any(|d: &DiscoveredDatabase| d.path == db.path) {
+            if !databases
+                .iter()
+                .any(|d: &DiscoveredDatabase| d.path == db.path)
+            {
                 databases.push(db);
             }
         }
@@ -291,14 +307,7 @@ async fn find_databases_with_ripgrep(start_path: &Path) -> Result<Vec<Discovered
 
     // Also try finding .db files and filtering for SQLite
     let output = Command::new("rg")
-        .args([
-            "--files",
-            "--glob",
-            "*.db",
-            "--hidden",
-            "--max-depth",
-            "8",
-        ])
+        .args(["--files", "--glob", "*.db", "--hidden", "--max-depth", "8"])
         .current_dir(start_path)
         .output();
 
@@ -311,7 +320,10 @@ async fn find_databases_with_ripgrep(start_path: &Path) -> Result<Vec<Discovered
                 if path.exists() && is_nexus_database(&path)? {
                     if let Ok(db) = inspect_database(&path).await {
                         // Avoid duplicates
-                        if !databases.iter().any(|d: &DiscoveredDatabase| d.path == db.path) {
+                        if !databases
+                            .iter()
+                            .any(|d: &DiscoveredDatabase| d.path == db.path)
+                        {
                             databases.push(db);
                         }
                     }
@@ -324,7 +336,10 @@ async fn find_databases_with_ripgrep(start_path: &Path) -> Result<Vec<Discovered
 }
 
 /// Find databases by manual traversal
-async fn find_databases_manually(start_path: &Path, max_depth: usize) -> Result<Vec<DiscoveredDatabase>> {
+async fn find_databases_manually(
+    start_path: &Path,
+    max_depth: usize,
+) -> Result<Vec<DiscoveredDatabase>> {
     let mut databases = Vec::new();
     find_databases_recursive(start_path, &mut databases, 0, max_depth)?;
     Ok(databases)
@@ -365,26 +380,20 @@ fn find_databases_recursive(
             if path.file_name().map(|n| n == ".nexus").unwrap_or(false) {
                 let db_path = path.join("nexus.db");
                 if db_path.exists() {
-                    if let Ok(db) = tokio::runtime::Handle::current()
-                        .block_on(inspect_database(&db_path))
+                    if let Ok(db) =
+                        tokio::runtime::Handle::current().block_on(inspect_database(&db_path))
                     {
                         databases.push(db);
                     }
                 }
             } else {
                 // Recurse into subdirectory
-                find_databases_recursive(
-                    &path,
-                    databases,
-                    current_depth + 1,
-                    max_depth,
-                )?;
+                find_databases_recursive(&path, databases, current_depth + 1, max_depth)?;
             }
         } else if path.extension().map(|e| e == "db").unwrap_or(false) {
             // Check if this is a Nexus database
             if is_nexus_database(&path)? {
-                if let Ok(db) = tokio::runtime::Handle::current()
-                    .block_on(inspect_database(&path))
+                if let Ok(db) = tokio::runtime::Handle::current().block_on(inspect_database(&path))
                 {
                     databases.push(db);
                 }
@@ -625,8 +634,7 @@ async fn run_migration(
         println!("Creating backup at {}...", backup_path.display());
 
         if target_path.exists() {
-            std::fs::copy(&target_path, &backup_path)
-                .context("Failed to create backup")?;
+            std::fs::copy(&target_path, &backup_path).context("Failed to create backup")?;
             report.backup_path = Some(backup_path);
             println!("Backup created.");
         } else {
@@ -652,8 +660,7 @@ async fn run_migration(
     // Ensure target parent directory exists
     if let Some(parent) = target_path.parent() {
         if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .context("Failed to create target directory")?;
+            std::fs::create_dir_all(parent).context("Failed to create target directory")?;
         }
     }
 
@@ -665,7 +672,9 @@ async fn run_migration(
     let pb = ProgressBar::new(total_records as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+            .template(
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+            )
             .unwrap()
             .progress_chars("#>-"),
     );
@@ -683,7 +692,10 @@ async fn run_migration(
     // Step 2: Migrate namespaces
     println!("\nMigrating namespaces...");
     migrate_namespaces(&source_path, &pool, &pb, &mut report).await?;
-    pb.println(format!("  Migrated {} namespaces", report.namespaces_migrated));
+    pb.println(format!(
+        "  Migrated {} namespaces",
+        report.namespaces_migrated
+    ));
 
     // Step 3: Migrate memories
     println!("Migrating memories...");
@@ -693,12 +705,18 @@ async fn run_migration(
     // Step 4: Migrate specifications
     println!("Migrating task specifications...");
     migrate_specifications(&source_path, &pool, &pb, &mut report).await?;
-    pb.println(format!("  Migrated {} specifications", report.specifications_migrated));
+    pb.println(format!(
+        "  Migrated {} specifications",
+        report.specifications_migrated
+    ));
 
     // Step 5: Migrate relations
     println!("Migrating memory relations...");
     migrate_relations(&source_path, &pool, &pb, &mut report).await?;
-    pb.println(format!("  Migrated {} relations", report.relations_migrated));
+    pb.println(format!(
+        "  Migrated {} relations",
+        report.relations_migrated
+    ));
 
     // Step 6: Migrate metrics
     println!("Migrating system metrics...");
@@ -720,7 +738,10 @@ async fn run_migration(
     println!("{}", "=".repeat(50));
     println!("Namespaces migrated: {}", report.namespaces_migrated);
     println!("Memories migrated: {}", report.memories_migrated);
-    println!("Specifications migrated: {}", report.specifications_migrated);
+    println!(
+        "Specifications migrated: {}",
+        report.specifications_migrated
+    );
     println!("Relations migrated: {}", report.relations_migrated);
     println!("Metrics migrated: {}", report.metrics_migrated);
     println!("Duration: {:.2} seconds", report.duration_secs);
@@ -770,7 +791,9 @@ async fn migrate_namespaces(
         .context("Failed to read namespaces from source")?;
 
     if !output.status.success() {
-        report.warnings.push("Could not read namespaces from source".to_string());
+        report
+            .warnings
+            .push("Could not read namespaces from source".to_string());
         return Ok(());
     }
 
@@ -779,8 +802,8 @@ async fn migrate_namespaces(
         return Ok(());
     }
 
-    let namespaces: Vec<serde_json::Value> = serde_json::from_str(&stdout)
-        .context("Failed to parse namespaces JSON")?;
+    let namespaces: Vec<serde_json::Value> =
+        serde_json::from_str(&stdout).context("Failed to parse namespaces JSON")?;
 
     for ns in namespaces {
         let name = ns["name"].as_str().unwrap_or("");
@@ -788,13 +811,12 @@ async fn migrate_namespaces(
         let description = ns["description"].as_str();
 
         // Check if namespace already exists
-        let existing: Option<(i64,)> = sqlx::query_as(
-            "SELECT id FROM agent_namespaces WHERE name = ?",
-        )
-        .bind(name)
-        .fetch_optional(pool)
-        .await
-        .context("Failed to check existing namespace")?;
+        let existing: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM agent_namespaces WHERE name = ?")
+                .bind(name)
+                .fetch_optional(pool)
+                .await
+                .context("Failed to check existing namespace")?;
 
         if existing.is_none() {
             sqlx::query(
@@ -809,7 +831,9 @@ async fn migrate_namespaces(
 
             report.namespaces_migrated += 1;
         } else {
-            report.warnings.push(format!("Namespace '{}' already exists, skipping", name));
+            report
+                .warnings
+                .push(format!("Namespace '{}' already exists, skipping", name));
         }
 
         pb.inc(1);
@@ -840,7 +864,9 @@ async fn migrate_memories(
         .context("Failed to read memories from source")?;
 
     if !output.status.success() {
-        report.warnings.push("Could not read memories from source".to_string());
+        report
+            .warnings
+            .push("Could not read memories from source".to_string());
         return Ok(());
     }
 
@@ -849,8 +875,8 @@ async fn migrate_memories(
         return Ok(());
     }
 
-    let memories: Vec<serde_json::Value> = serde_json::from_str(&stdout)
-        .context("Failed to parse memories JSON")?;
+    let memories: Vec<serde_json::Value> =
+        serde_json::from_str(&stdout).context("Failed to parse memories JSON")?;
 
     // Build namespace ID mapping (old -> new)
     let ns_output = Command::new("sqlite3")
@@ -875,12 +901,11 @@ async fn migrate_memories(
         let name = ns["name"].as_str().unwrap_or("");
 
         // Get new ID
-        let new_id: Option<(i64,)> = sqlx::query_as(
-            "SELECT id FROM agent_namespaces WHERE name = ?",
-        )
-        .bind(name)
-        .fetch_optional(pool)
-        .await?;
+        let new_id: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM agent_namespaces WHERE name = ?")
+                .bind(name)
+                .fetch_optional(pool)
+                .await?;
 
         if let Some((id,)) = new_id {
             old_to_new_ns.insert(old_id, id);
@@ -1227,14 +1252,12 @@ async fn rollback_migration(backup: Option<&str>, to: Option<&str>) -> Result<()
     // Create a backup of current state before rollback
     if target_path.exists() {
         let pre_rollback = target_path.with_extension("pre-rollback.db");
-        std::fs::copy(&target_path, &pre_rollback)
-            .context("Failed to backup current state")?;
+        std::fs::copy(&target_path, &pre_rollback).context("Failed to backup current state")?;
         println!("Current state backed up to: {}", pre_rollback.display());
     }
 
     // Restore from backup
-    std::fs::copy(&backup_path, &target_path)
-        .context("Failed to restore from backup")?;
+    std::fs::copy(&backup_path, &target_path).context("Failed to restore from backup")?;
 
     println!("\nRollback complete.");
     println!("Database restored from backup.");
@@ -1262,6 +1285,7 @@ mod tests {
             .output()
             .unwrap();
 
+        assert!(output.status.success());
         assert!(is_nexus_database(&db_path).unwrap());
     }
 

@@ -12,7 +12,7 @@ pub struct MemoryRow {
     pub content: String,
     pub category: String,
     pub memory_lane_type: Option<String>,
-    pub labels: String, // JSON array
+    pub labels: String,   // JSON array
     pub metadata: String, // JSON object
     pub similarity_score: Option<f32>,
     pub relevance_score: Option<f32>,

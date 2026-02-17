@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use crate::base::{AgentHook, BaseHook, SessionEndCallback};
 use crate::error::{HookError, Result};
 use crate::monitor::ProcessMonitor;
-use crate::session::{FileInfo, FileAction, SessionContext};
+use crate::session::{FileAction, FileInfo, SessionContext};
 use crate::types::{AgentType, SessionActivity, SkillMetadata};
 
 /// Pi-Skills cross-compatible hook
@@ -186,12 +186,14 @@ impl PiSkillsHook {
 
     /// Install the nexus-memory-extraction skill
     fn install_skill(&mut self, skills_dir: &PathBuf) -> Result<()> {
-        std::fs::create_dir_all(skills_dir)
-            .map_err(|e| HookError::InstallationFailed(format!("Failed to create skills dir: {}", e)))?;
+        std::fs::create_dir_all(skills_dir).map_err(|e| {
+            HookError::InstallationFailed(format!("Failed to create skills dir: {}", e))
+        })?;
 
         let skill_dir = skills_dir.join("nexus-memory-extraction");
-        std::fs::create_dir_all(&skill_dir)
-            .map_err(|e| HookError::InstallationFailed(format!("Failed to create skill dir: {}", e)))?;
+        std::fs::create_dir_all(&skill_dir).map_err(|e| {
+            HookError::InstallationFailed(format!("Failed to create skill dir: {}", e))
+        })?;
 
         let skill_md = skill_dir.join("SKILL.md");
 
@@ -321,7 +323,9 @@ impl AgentHook for PiSkillsHook {
             .with_reliability(1.0);
 
         // Add detected skills info
-        let skill_names: Vec<String> = self.detected_skills.iter()
+        let skill_names: Vec<String> = self
+            .detected_skills
+            .iter()
             .map(|s| s.name.clone())
             .collect();
 

@@ -1,7 +1,9 @@
 //! Core traits for Nexus Memory System
 
+use crate::{
+    AgentNamespace, Memory, NamespaceStats, SearchQuery, SearchResult, StoreMemoryRequest,
+};
 use async_trait::async_trait;
-use crate::{Memory, StoreMemoryRequest, SearchQuery, SearchResult, AgentNamespace, NamespaceStats};
 
 /// Trait for memory storage backends
 #[async_trait]

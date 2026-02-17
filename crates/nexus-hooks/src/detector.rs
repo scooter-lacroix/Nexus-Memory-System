@@ -15,6 +15,7 @@ use crate::monitor::MonitorEvent;
 ///
 /// This is the TERTIARY layer with ~90% reliability. It triggers
 /// when an agent session has been inactive for too long.
+#[derive(Clone)]
 pub struct InactivityDetector {
     /// Inactivity threshold
     threshold: Duration,
@@ -73,8 +74,7 @@ impl InactivityDetector {
         let activity = self.last_activity.read().await;
 
         if let Some(last) = activity.get(agent_type) {
-            let elapsed =
-                (Utc::now() - *last).to_std().unwrap_or(Duration::ZERO);
+            let elapsed = (Utc::now() - *last).to_std().unwrap_or(Duration::ZERO);
             elapsed > self.threshold
         } else {
             false
@@ -85,9 +85,9 @@ impl InactivityDetector {
     pub async fn get_inactive_duration(&self, agent_type: &str) -> Option<Duration> {
         let activity = self.last_activity.read().await;
 
-        activity.get(agent_type).map(|last| {
-            (Utc::now() - *last).to_std().unwrap_or(Duration::ZERO)
-        })
+        activity
+            .get(agent_type)
+            .map(|last| (Utc::now() - *last).to_std().unwrap_or(Duration::ZERO))
     }
 
     /// Check if agent has been inactive and trigger event
@@ -113,40 +113,24 @@ impl InactivityDetector {
         *active = true;
         drop(active);
 
-        let last_activity = self.last_activity.clone();
-        let event_sender = self.event_sender.clone();
-        let threshold = self.threshold;
-        let check_interval = self.check_interval;
-        let active_flag = self.active.clone();
+        let detector = self.clone();
 
         tokio::spawn(async move {
-            let mut ticker = interval(check_interval);
+            let mut ticker = interval(detector.check_interval);
 
             loop {
                 ticker.tick().await;
 
                 // Check if still active
                 {
-                    let a = active_flag.read().await;
+                    let a = detector.active.read().await;
                     if !*a {
                         break;
                     }
                 }
 
-                let activity = last_activity.read().await;
-
                 for agent_type in &agent_types {
-                    if let Some(last) = activity.get(agent_type) {
-                        let elapsed =
-                            (Utc::now() - *last).to_std().unwrap_or(Duration::ZERO);
-
-                        if elapsed > threshold {
-                            let _ = event_sender.send(MonitorEvent::InactivityDetected {
-                                agent_type: agent_type.clone(),
-                                inactive_for_secs: elapsed.as_secs(),
-                            });
-                        }
-                    }
+                    let _ = detector.check_and_notify(agent_type).await;
                 }
             }
         });
@@ -214,10 +198,12 @@ mod tests {
         let mut receiver = detector.subscribe();
 
         // Send test event
-        let _ = detector.event_sender.send(MonitorEvent::InactivityDetected {
-            agent_type: "test".to_string(),
-            inactive_for_secs: 300,
-        });
+        let _ = detector
+            .event_sender
+            .send(MonitorEvent::InactivityDetected {
+                agent_type: "test".to_string(),
+                inactive_for_secs: 300,
+            });
 
         let event = receiver.try_recv();
         assert!(event.is_ok());

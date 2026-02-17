@@ -9,11 +9,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
-use crate::{
-    error::WebError,
-    models::WebSocketMessage,
-    state::AppState,
-};
+use crate::{models::WebSocketMessage, state::AppState};
 
 /// WebSocket connection handler
 pub async fn websocket_handler(
@@ -24,10 +20,7 @@ pub async fn websocket_handler(
 }
 
 /// Handle a WebSocket connection
-async fn handle_socket(
-    socket: axum::extract::ws::WebSocket,
-    state: Arc<RwLock<AppState>>,
-) {
+async fn handle_socket(socket: axum::extract::ws::WebSocket, state: Arc<RwLock<AppState>>) {
     let (mut sender, mut receiver) = socket.split();
 
     // Subscribe to broadcast channel
@@ -78,10 +71,9 @@ async fn handle_socket(
                         match ws_msg.message_type {
                             crate::models::WebSocketMessageType::Ping => {
                                 let pong = WebSocketMessage::pong();
-                                if let Ok(json) = serde_json::to_string(&pong) {
-                                    // Send pong response
-                                    // Note: We can't easily send here due to split ownership
-                                    // The client will receive broadcast messages
+                                let app_state = state.read().await;
+                                if let Err(e) = app_state.broadcast_ws(pong) {
+                                    warn!("Failed to broadcast WebSocket pong: {}", e);
                                 }
                             }
                             _ => {

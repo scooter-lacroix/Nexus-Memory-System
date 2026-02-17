@@ -2,11 +2,7 @@
 //!
 //! These tests verify the MCP server functionality end-to-end.
 
-use nexus_mcp::{
-    McpConfig,
-    JsonRpcRequest, JsonRpcResponse, JsonRpcError,
-    RequestId,
-};
+use nexus_mcp::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpConfig, RequestId};
 use serde_json::json;
 
 /// Helper to create a basic initialize request
@@ -39,10 +35,7 @@ fn test_protocol_types_serialization() {
 
 #[test]
 fn test_response_serialization() {
-    let response = JsonRpcResponse::new(
-        RequestId::from(1),
-        json!({"status": "ok"}),
-    );
+    let response = JsonRpcResponse::new(RequestId::from(1), json!({"status": "ok"}));
 
     let json = serde_json::to_string(&response).unwrap();
     assert!(json.contains("\"result\""));
@@ -91,8 +84,7 @@ fn test_request_id_variants() {
 
 #[test]
 fn test_notification_detection() {
-    let request_with_id = JsonRpcRequest::new("test")
-        .with_id(RequestId::from(1));
+    let request_with_id = JsonRpcRequest::new("test").with_id(RequestId::from(1));
     assert!(!request_with_id.is_notification());
 
     let notification = JsonRpcRequest::new("test");

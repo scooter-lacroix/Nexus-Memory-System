@@ -72,8 +72,9 @@ impl ProcessMonitor {
 
     /// Get process information
     pub fn get_process_info(&self, pid: u32) -> Option<ProcessInfo> {
-        self.system.process(Pid::from(pid as usize)).map(|p| {
-            ProcessInfo {
+        self.system
+            .process(Pid::from(pid as usize))
+            .map(|p| ProcessInfo {
                 pid,
                 name: p.name().to_string_lossy().to_string(),
                 status: format!("{:?}", p.status()),
@@ -88,8 +89,7 @@ impl ProcessMonitor {
                 create_time: chrono::DateTime::from_timestamp(p.start_time() as i64, 0),
                 cpu_percent: Some(p.cpu_usage()),
                 memory_bytes: Some(p.memory()),
-            }
-        })
+            })
     }
 
     /// Find processes matching agent type
@@ -172,10 +172,7 @@ pub enum MonitorEvent {
     },
 
     /// Process terminated
-    ProcessTerminated {
-        agent_type: String,
-        pid: u32,
-    },
+    ProcessTerminated { agent_type: String, pid: u32 },
 
     /// Inactivity detected
     InactivityDetected {
@@ -284,7 +281,10 @@ impl SessionMonitor {
                     // Get previous state
                     let was_active = {
                         let states = previous_states.read().await;
-                        states.get(&agent_type.to_string()).copied().unwrap_or(false)
+                        states
+                            .get(&agent_type.to_string())
+                            .copied()
+                            .unwrap_or(false)
                     };
 
                     // Update activity time
@@ -322,9 +322,7 @@ impl SessionMonitor {
                     if !is_active {
                         let activity = last_activity.read().await;
                         if let Some(last) = activity.get(&agent_type.to_string()) {
-                            let elapsed = (Utc::now() - *last)
-                                .to_std()
-                                .unwrap_or(Duration::ZERO);
+                            let elapsed = (Utc::now() - *last).to_std().unwrap_or(Duration::ZERO);
 
                             if elapsed > inactivity_threshold {
                                 let _ = event_sender.send(MonitorEvent::InactivityDetected {
@@ -362,8 +360,7 @@ impl SessionMonitor {
         let activity = self.last_activity.read().await;
 
         if let Some(last) = activity.get(agent_type) {
-            let elapsed =
-                (Utc::now() - *last).to_std().unwrap_or(Duration::ZERO);
+            let elapsed = (Utc::now() - *last).to_std().unwrap_or(Duration::ZERO);
             elapsed > self.inactivity_threshold
         } else {
             false
@@ -374,9 +371,9 @@ impl SessionMonitor {
     pub async fn get_inactive_duration(&self, agent_type: &str) -> Option<Duration> {
         let activity = self.last_activity.read().await;
 
-        activity.get(agent_type).map(|last| {
-            (Utc::now() - *last).to_std().unwrap_or(Duration::ZERO)
-        })
+        activity
+            .get(agent_type)
+            .map(|last| (Utc::now() - *last).to_std().unwrap_or(Duration::ZERO))
     }
 
     /// Detect session activity for an agent

@@ -43,33 +43,32 @@
 //! }
 //! ```
 
-pub mod base;
-pub mod factory;
-pub mod session;
-pub mod buffer;
-pub mod monitor;
-pub mod detector;
-pub mod extractor;
 pub mod agents;
-pub mod types;
+pub mod base;
+pub mod buffer;
+pub mod detector;
 pub mod error;
+pub mod extractor;
+pub mod factory;
+pub mod monitor;
+pub mod session;
 pub mod signal;
+pub mod types;
 
 // Re-export main types
 pub use base::{AgentHook, HookResult};
-pub use factory::HookFactory;
-pub use session::SessionContext;
 pub use buffer::PersistentBuffer;
-pub use monitor::{SessionMonitor, ProcessMonitor};
 pub use detector::InactivityDetector;
-pub use extractor::MultiLayerExtractor;
-pub use types::*;
 pub use error::{HookError, Result};
+pub use extractor::MultiLayerExtractor;
+pub use factory::HookFactory;
+pub use monitor::{ProcessMonitor, SessionMonitor};
+pub use session::SessionContext;
+pub use types::*;
 
 // Re-export agent hooks
 pub use agents::{
-    ClaudeCodeHook, GeminiHook, QwenHook, CLIHook,
-    PiMonoHook, OhMyPiHook, PiSkillsHook,
+    CLIHook, ClaudeCodeHook, GeminiHook, OhMyPiHook, PiMonoHook, PiSkillsHook, QwenHook,
 };
 
 /// Hook version

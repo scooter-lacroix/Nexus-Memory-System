@@ -35,17 +35,17 @@
 //! }
 //! ```
 
+pub mod cache;
 pub mod config;
 pub mod error;
-pub mod ort_service;
 pub mod mock_service;
-pub mod cache;
+pub mod ort_service;
 
+pub use cache::EmbeddingCache;
 pub use config::EmbeddingConfig;
 pub use error::{EmbeddingError, Result};
-pub use ort_service::OrtEmbeddingService;
 pub use mock_service::MockEmbeddingService;
-pub use cache::EmbeddingCache;
+pub use ort_service::OrtEmbeddingService;
 
 /// Embedding dimension for all-MiniLM-L6-v2 model
 pub const EMBEDDING_DIMENSION: usize = 384;

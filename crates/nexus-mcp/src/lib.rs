@@ -28,10 +28,10 @@
 //! }
 //! ```
 
+pub mod protocol;
+pub mod resources;
 pub mod server;
 pub mod tools;
-pub mod resources;
-pub mod protocol;
 
 // Re-export server
 pub use server::McpServer;
@@ -40,22 +40,47 @@ pub use server::McpServer;
 pub use tools::get_tools;
 
 // Re-export resource functions
-pub use resources::{get_resources, get_resource_templates};
+pub use resources::{get_resource_templates, get_resources};
 
 // Re-export protocol types
 pub use protocol::{
-    // Modern MCP types
-    RequestId, Implementation, ServerCapabilities, ClientCapabilities,
-    InitializeParams, InitializeResult,
-    Tool, ListToolsResult, CallToolParams, CallToolResult,
-    Resource, ResourceTemplate, ResourceContents, ListResourcesResult, ReadResourceParams, ReadResourceResult,
-    Prompt, PromptArgument, ListPromptsResult, GetPromptParams, GetPromptResult, PromptMessage,
-    JsonRpcRequest, JsonRpcResponse, JsonRpcErrorResponse, JsonRpcError, JsonRpcMessage,
+    CallToolParams,
+    CallToolResult,
+    ClientCapabilities,
     ContentBlock,
 
+    GetPromptParams,
+    GetPromptResult,
+    Implementation,
+    InitializeParams,
+    InitializeResult,
+    JsonRpcError,
+    JsonRpcErrorResponse,
+    JsonRpcMessage,
+    JsonRpcRequest,
+    JsonRpcResponse,
+    ListPromptsResult,
+    ListResourcesResult,
+    ListToolsResult,
+    McpError,
     // Legacy compatibility types
-    McpRequest, McpResponse, McpError, McpTool, McpResource,
+    McpRequest,
+    McpResource,
 
+    McpResponse,
+    McpTool,
+    Prompt,
+    PromptArgument,
+    PromptMessage,
+    ReadResourceParams,
+    ReadResourceResult,
+    // Modern MCP types
+    RequestId,
+    Resource,
+    ResourceContents,
+    ResourceTemplate,
+    ServerCapabilities,
+    Tool,
     // Constants
     JSONRPC_VERSION,
 };
@@ -147,9 +172,7 @@ impl McpConfig {
 
     /// Create config for HTTP transport
     pub fn http(port: u16) -> Self {
-        Self::default()
-            .with_transport("http")
-            .with_port(port)
+        Self::default().with_transport("http").with_port(port)
     }
 }
 

@@ -67,8 +67,9 @@ impl ClaudeCodeHook {
     /// Install the SKILL.md file
     fn install_skill(&mut self) -> Result<()> {
         // Create skill directory
-        std::fs::create_dir_all(&self.skill_path)
-            .map_err(|e| HookError::InstallationFailed(format!("Failed to create skill dir: {}", e)))?;
+        std::fs::create_dir_all(&self.skill_path).map_err(|e| {
+            HookError::InstallationFailed(format!("Failed to create skill dir: {}", e))
+        })?;
 
         let skill_md = self.skill_path.join("SKILL.md");
 
@@ -126,8 +127,9 @@ After storing, you'll see:
 ```
 "#;
 
-        std::fs::write(&skill_md, skill_content)
-            .map_err(|e| HookError::InstallationFailed(format!("Failed to write skill file: {}", e)))?;
+        std::fs::write(&skill_md, skill_content).map_err(|e| {
+            HookError::InstallationFailed(format!("Failed to write skill file: {}", e))
+        })?;
 
         self.skill_installed = true;
         tracing::info!("Claude Code Skill installed at: {:?}", self.skill_path);
@@ -151,9 +153,7 @@ After storing, you'll see:
 
     /// Read checkpoint data
     fn read_checkpoint_data(&self) -> Option<Vec<serde_json::Value>> {
-        let checkpoint_dir = dirs::home_dir()?
-            .join(Self::CONFIG_DIR)
-            .join("checkpoints");
+        let checkpoint_dir = dirs::home_dir()?.join(Self::CONFIG_DIR).join("checkpoints");
 
         if !checkpoint_dir.exists() {
             return None;
@@ -163,7 +163,12 @@ After storing, you'll see:
 
         if let Ok(entries) = std::fs::read_dir(&checkpoint_dir) {
             for entry in entries.flatten() {
-                if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
+                if entry
+                    .path()
+                    .extension()
+                    .map(|e| e == "json")
+                    .unwrap_or(false)
+                {
                     if let Ok(content) = std::fs::read_to_string(entry.path()) {
                         if let Ok(data) = serde_json::from_str(&content) {
                             checkpoints.push(data);
@@ -231,7 +236,10 @@ impl AgentHook for ClaudeCodeHook {
         if let Some(session) = self.read_session_file() {
             if let Some(messages) = session.get("messages").and_then(|m| m.as_array()) {
                 for msg in messages {
-                    let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("unknown");
+                    let role = msg
+                        .get("role")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("unknown");
                     let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
                     context.add_message(role, content);
                 }
@@ -249,7 +257,9 @@ impl AgentHook for ClaudeCodeHook {
                     for decision in decisions {
                         if let Some(summary) = decision.get("summary").and_then(|s| s.as_str()) {
                             let mut dec = crate::session::Decision::new(summary);
-                            if let Some(rationale) = decision.get("rationale").and_then(|r| r.as_str()) {
+                            if let Some(rationale) =
+                                decision.get("rationale").and_then(|r| r.as_str())
+                            {
                                 dec.rationale = Some(rationale.to_string());
                             }
                             context.add_decision(dec);

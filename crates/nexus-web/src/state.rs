@@ -1,12 +1,12 @@
 //! Application state for the web dashboard
 
-use crate::error::{Result, WebError};
+use crate::error::Result;
 use nexus_orchestrator::{Event, EventType, Orchestrator};
 use nexus_storage::{MemoryRepository, NamespaceRepository, StorageManager};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
-use tracing::{error, info};
+use tracing::error;
 
 /// Shared application state
 pub struct AppState {
@@ -87,7 +87,10 @@ impl AppState {
                     "memory_id": memory_id,
                     "agent_type": agent_type,
                 });
-                Some(WebSocketMessage::new(WebSocketMessageType::MemoryStored, data))
+                Some(WebSocketMessage::new(
+                    WebSocketMessageType::MemoryStored,
+                    data,
+                ))
             }
             EventType::MemoryUpdated => {
                 let memory_id = event.get::<i64>("memory_id").unwrap_or(0);
@@ -102,14 +105,20 @@ impl AppState {
                 let data = serde_json::json!({
                     "session_id": session_id,
                 });
-                Some(WebSocketMessage::new(WebSocketMessageType::SessionStarted, data))
+                Some(WebSocketMessage::new(
+                    WebSocketMessageType::SessionStarted,
+                    data,
+                ))
             }
             EventType::SessionEnded => {
                 let session_id = event.get::<String>("session_id").unwrap_or_default();
                 let data = serde_json::json!({
                     "session_id": session_id,
                 });
-                Some(WebSocketMessage::new(WebSocketMessageType::SessionEnded, data))
+                Some(WebSocketMessage::new(
+                    WebSocketMessageType::SessionEnded,
+                    data,
+                ))
             }
             _ => None,
         }

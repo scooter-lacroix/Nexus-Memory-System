@@ -125,10 +125,7 @@ pub enum ExtractionEvent {
     },
 
     /// Buffer recovered
-    BufferRecovered {
-        agent_type: String,
-        entries: usize,
-    },
+    BufferRecovered { agent_type: String, entries: usize },
 }
 
 impl MultiLayerExtractor {
@@ -219,7 +216,11 @@ impl MultiLayerExtractor {
         tokio::spawn(async move {
             while let Ok(event) = monitor_rx.recv().await {
                 match event {
-                    MonitorEvent::SessionEnded { agent_type, reason: _, .. } => {
+                    MonitorEvent::SessionEnded {
+                        agent_type,
+                        reason: _,
+                        ..
+                    } => {
                         let _ = event_sender.send(ExtractionEvent::Started {
                             agent_type: agent_type.clone(),
                             source: ExtractionSource::ProcessMonitor,
@@ -253,7 +254,9 @@ impl MultiLayerExtractor {
             while let Ok(signal) = signal_rx.recv().await {
                 let _source = match signal {
                     SignalEvent::Interrupt => ExtractionSource::SignalHandler("SIGINT".to_string()),
-                    SignalEvent::Terminate => ExtractionSource::SignalHandler("SIGTERM".to_string()),
+                    SignalEvent::Terminate => {
+                        ExtractionSource::SignalHandler("SIGTERM".to_string())
+                    }
                     _ => continue,
                 };
 
@@ -457,7 +460,7 @@ mod tests {
     #[tokio::test]
     async fn test_extractor_subscribe() {
         let extractor = MultiLayerExtractor::new().unwrap();
-        let mut receiver = extractor.subscribe();
+        let receiver = extractor.subscribe();
 
         // Should be able to subscribe without error
         drop(receiver);

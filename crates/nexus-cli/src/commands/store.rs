@@ -15,8 +15,7 @@ pub async fn execute(
     tracing::debug!("Category: {}", category);
 
     // Parse category
-    let category = MemoryCategory::from_str(&category)
-        .unwrap_or(MemoryCategory::General);
+    let category = MemoryCategory::from_str(&category).unwrap_or(MemoryCategory::General);
 
     // Parse labels
     let labels_vec: Vec<String> = labels

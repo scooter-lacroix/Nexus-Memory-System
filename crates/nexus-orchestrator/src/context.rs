@@ -14,7 +14,12 @@ pub struct EnhancedContext {
 
 impl EnhancedContext {
     pub fn new(query: impl Into<String>) -> Self {
-        Self { query: query.into(), memories: Vec::new(), rankings: HashMap::new(), enhanced_at: Utc::now() }
+        Self {
+            query: query.into(),
+            memories: Vec::new(),
+            rankings: HashMap::new(),
+            enhanced_at: Utc::now(),
+        }
     }
 }
 
@@ -28,12 +33,16 @@ pub struct MemoryContext {
 pub struct ContextEnhancer;
 
 impl ContextEnhancer {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
     pub fn enhance(&self, query: impl Into<String>) -> EnhancedContext {
         EnhancedContext::new(query)
     }
 }
 
 impl Default for ContextEnhancer {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
