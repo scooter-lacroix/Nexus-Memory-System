@@ -1,0 +1,37 @@
+[package]
+name = "nexus-orchestrator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Orchestrator core for Nexus Memory System - session management, event bus, and cross-agent sync"
+
+[dependencies]
+# Workspace dependencies
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+
+# Internal crates
+nexus-core = { workspace = true }
+nexus-storage = { workspace = true }
+nexus-vectors = { workspace = true }
+nexus-embeddings = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-test = "0.4"
+criterion = { workspace = true }
+
+[[bench]]
+name = "orchestrator_bench"
+harness = false

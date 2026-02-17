@@ -1,0 +1,53 @@
+[package]
+name = "nexus-hooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Agent hooks system for Nexus Memory System - automated memory extraction"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true, features = ["full", "signal"] }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+chrono = { workspace = true }
+uuid = { workspace = true }
+dirs = { workspace = true }
+serde_yaml = { workspace = true }
+
+# Process monitoring
+sysinfo = "0.33"
+
+# Internal dependencies
+nexus-core = { path = "../nexus-core" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+signal-hook = "0.3"
+signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Console",
+]}
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }

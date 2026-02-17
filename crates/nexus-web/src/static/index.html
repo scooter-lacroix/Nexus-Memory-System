@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexus Memory System</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                    </svg>
+                    <h1>Nexus Memory System</h1>
+                </div>
+                <div class="header-stats">
+                    <div class="stat-badge">
+                        <span class="stat-label">Memories</span>
+                        <span class="stat-value" id="total-memories">-</span>
+                    </div>
+                    <div class="stat-badge">
+                        <span class="stat-label">Agents</span>
+                        <span class="stat-value" id="total-agents">-</span>
+                    </div>
+                    <div class="connection-status" id="connection-status">
+                        <span class="status-dot"></span>
+                        <span class="status-text">Connecting...</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Sidebar -->
+            <aside class="sidebar">
+                <nav class="nav">
+                    <button class="nav-item active" data-view="memories">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                            <line x1="16" y1="13" x2="8" y2="13"/>
+                            <line x1="16" y1="17" x2="8" y2="17"/>
+                            <polyline points="10 9 9 9 8 9"/>
+                        </svg>
+                        Memories
+                    </button>
+                    <button class="nav-item" data-view="search">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8"/>
+                            <path d="m21 21-4.35-4.35"/>
+                        </svg>
+                        Search
+                    </button>
+                    <button class="nav-item" data-view="stats">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="20" x2="18" y2="10"/>
+                            <line x1="12" y1="20" x2="12" y2="4"/>
+                            <line x1="6" y1="20" x2="6" y2="14"/>
+                        </svg>
+                        Statistics
+                    </button>
+                    <button class="nav-item" data-view="agents">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                            <circle cx="9" cy="7" r="4"/>
+                            <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                        </svg>
+                        Agents
+                    </button>
+                </nav>
+
+                <div class="sidebar-footer">
+                    <div class="version">v1.0.0</div>
+                </div>
+            </aside>
+
+            <!-- Content Area -->
+            <div class="content">
+                <!-- Memories View -->
+                <div class="view active" id="memories-view">
+                    <div class="view-header">
+                        <h2>Memories</h2>
+                        <button class="btn btn-primary" id="add-memory-btn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="12" y1="5" x2="12" y2="19"/>
+                                <line x1="5" y1="12" x2="19" y2="12"/>
+                            </svg>
+                            Add Memory
+                        </button>
+                    </div>
+
+                    <div class="filters">
+                        <select id="agent-filter" class="filter-select">
+                            <option value="">All Agents</option>
+                        </select>
+                        <select id="category-filter" class="filter-select">
+                            <option value="">All Categories</option>
+                            <option value="general">General</option>
+                            <option value="facts">Facts</option>
+                            <option value="preferences">Preferences</option>
+                            <option value="context">Context</option>
+                            <option value="specifications">Specifications</option>
+                            <option value="session">Session</option>
+                        </select>
+                        <input type="text" id="search-filter" class="filter-input" placeholder="Filter memories...">
+                    </div>
+
+                    <div class="memories-list" id="memories-list">
+                        <!-- Memories will be loaded here -->
+                    </div>
+
+                    <div class="pagination" id="pagination">
+                        <!-- Pagination controls -->
+                    </div>
+                </div>
+
+                <!-- Search View -->
+                <div class="view" id="search-view">
+                    <div class="view-header">
+                        <h2>Semantic Search</h2>
+                    </div>
+
+                    <div class="search-container">
+                        <div class="search-box">
+                            <input type="text" id="search-input" class="search-input" placeholder="Enter search query...">
+                            <button class="btn btn-primary" id="search-btn">Search</button>
+                        </div>
+                        <div class="search-options">
+                            <select id="search-agent-filter" class="filter-select">
+                                <option value="">All Agents</option>
+                            </select>
+                            <select id="search-category-filter" class="filter-select">
+                                <option value="">All Categories</option>
+                                <option value="general">General</option>
+                                <option value="facts">Facts</option>
+                                <option value="preferences">Preferences</option>
+                                <option value="context">Context</option>
+                                <option value="specifications">Specifications</option>
+                                <option value="session">Session</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="search-results" id="search-results">
+                        <!-- Search results will be loaded here -->
+                    </div>
+                </div>
+
+                <!-- Stats View -->
+                <div class="view" id="stats-view">
+                    <div class="view-header">
+                        <h2>Statistics</h2>
+                        <button class="btn btn-secondary" id="refresh-stats-btn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="23 4 23 10 17 10"/>
+                                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                            </svg>
+                            Refresh
+                        </button>
+                    </div>
+
+                    <div class="stats-grid" id="stats-grid">
+                        <!-- Stats cards will be loaded here -->
+                    </div>
+
+                    <div class="agent-stats" id="agent-stats">
+                        <h3>Agent Statistics</h3>
+                        <div class="agent-stats-list" id="agent-stats-list">
+                            <!-- Agent stats will be loaded here -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Agents View -->
+                <div class="view" id="agents-view">
+                    <div class="view-header">
+                        <h2>Agents</h2>
+                    </div>
+
+                    <div class="agents-list" id="agents-list">
+                        <!-- Agents will be loaded here -->
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Add Memory Modal -->
+    <div class="modal" id="add-memory-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add New Memory</h3>
+                <button class="modal-close" id="modal-close">&times;</button>
+            </div>
+            <form id="add-memory-form">
+                <div class="form-group">
+                    <label for="memory-content">Content</label>
+                    <textarea id="memory-content" rows="4" required></textarea>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="memory-agent">Agent Type</label>
+                        <select id="memory-agent" required>
+                            <option value="general">General</option>
+                            <option value="claude-code">Claude Code</option>
+                            <option value="gemini">Gemini</option>
+                            <option value="qwen">Qwen</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="memory-category">Category</label>
+                        <select id="memory-category">
+                            <option value="general">General</option>
+                            <option value="facts">Facts</option>
+                            <option value="preferences">Preferences</option>
+                            <option value="context">Context</option>
+                            <option value="specifications">Specifications</option>
+                            <option value="session">Session</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="memory-labels">Labels (comma-separated)</label>
+                    <input type="text" id="memory-labels" placeholder="e.g., important, todo, review">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" id="cancel-add-memory">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Memory</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Memory Detail Modal -->
+    <div class="modal" id="memory-detail-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Memory Details</h3>
+                <button class="modal-close" id="detail-modal-close">&times;</button>
+            </div>
+            <div class="memory-detail" id="memory-detail">
+                <!-- Memory details will be loaded here -->
+            </div>
+            <div class="form-actions">
+                <button type="button" class="btn btn-danger" id="delete-memory-btn">Delete</button>
+                <button type="button" class="btn btn-secondary" id="close-detail-btn">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

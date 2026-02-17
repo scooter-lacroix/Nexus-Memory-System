@@ -1,0 +1,47 @@
+[package]
+name = "nexus-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Web dashboard for Nexus Memory System with Axum"
+
+[dependencies]
+nexus-core = { workspace = true }
+nexus-storage = { workspace = true }
+nexus-orchestrator = { workspace = true }
+nexus-vectors = { workspace = true }
+
+# Web framework
+axum = { workspace = true, features = ["ws"] }
+tower = { workspace = true, features = ["full"] }
+tower-http = { workspace = true, features = ["cors", "fs", "trace"] }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }
+reqwest = { version = "0.12", features = ["json"] }

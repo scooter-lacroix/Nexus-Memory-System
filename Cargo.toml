@@ -1,0 +1,84 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nexus-core",
+    "crates/nexus-storage",
+    "crates/nexus-vectors",
+    "crates/nexus-embeddings",
+    "crates/nexus-orchestrator",
+    "crates/nexus-lephase",
+    "crates/nexus-mcp",
+    "crates/nexus-web",
+    "crates/nexus-cli",
+    "crates/nexus-hooks",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["Nexus Team"]
+license = "MIT"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "uuid", "chrono", "json"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6.0"
+serde_yaml = "0.9"
+
+# Vector operations
+ndarray = "0.16"
+
+# Testing
+tempfile = "3.12"
+criterion = "0.5"
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Web framework
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+tokio-tungstenite = "0.26"
+
+# MCP (placeholder - needs rmcp when available)
+# rmcp = "0.1"
+
+# Internal crates (for workspace members to depend on each other)
+nexus-core = { path = "crates/nexus-core" }
+nexus-storage = { path = "crates/nexus-storage" }
+nexus-vectors = { path = "crates/nexus-vectors" }
+nexus-embeddings = { path = "crates/nexus-embeddings" }
+nexus-orchestrator = { path = "crates/nexus-orchestrator" }
+nexus-lephase = { path = "crates/nexus-lephase" }
+nexus-mcp = { path = "crates/nexus-mcp" }
+nexus-web = { path = "crates/nexus-web" }
+nexus-hooks = { path = "crates/nexus-hooks" }
+
+# ONNX Runtime and tokenizers
+ort = { version = "2.0.0-rc.11", features = ["load-dynamic"] }
+tokenizers = "0.21"
+parking_lot = "0.12"
+once_cell = "1.20"

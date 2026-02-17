@@ -1,0 +1,36 @@
+[package]
+name = "nexus-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Command-line interface for Nexus Memory System"
+
+[[bin]]
+name = "nexus"
+path = "src/main.rs"
+
+[dependencies]
+nexus-core = { workspace = true }
+nexus-storage = { workspace = true }
+nexus-vectors = { workspace = true }
+nexus-mcp = { workspace = true }
+nexus-lephase = { path = "../nexus-lephase" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+async-trait = { workspace = true }
+sqlx = { workspace = true }
+indicatif = "0.17"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }

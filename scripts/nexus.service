@@ -1,0 +1,36 @@
+[Unit]
+Description=Nexus Memory System
+Documentation=https://github.com/scooter-lacroix/nexus-memory-system
+After=network.target
+
+[Service]
+Type=simple
+User=nexus
+Group=nexus
+WorkingDirectory=/opt/nexus
+Environment="PATH=/opt/nexus/venv/bin"
+ExecStart=/opt/nexus/venv/bin/nexus serve --transport http
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/nexus/data /opt/nexus/logs
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Environment
+Environment=NEXUS_HOST=0.0.0.0
+Environment=NEXUS_PORT=8767
+Environment=NEXUS_WEB_PORT=8768
+Environment=NEXUS_DATABASE_PATH=/opt/nexus/data/nexus.db
+Environment=NEXUS_VERBOSE=false
+
+[Install]
+WantedBy=multi-user.target
