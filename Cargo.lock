@@ -1688,7 +1688,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cli"
-version = "0.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1714,7 +1714,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-core"
-version = "0.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-embeddings"
-version = "0.1.0"
+version = "1.1.1"
 dependencies = [
  "async-trait",
  "criterion",
@@ -1749,7 +1749,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-hooks"
-version = "0.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1774,7 +1774,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-lephase"
-version = "0.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1791,7 +1791,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-mcp"
-version = "0.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1813,7 +1813,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-orchestrator"
-version = "0.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1837,7 +1837,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-storage"
-version = "0.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1855,7 +1855,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-vectors"
-version = "0.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1874,7 +1874,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-web"
-version = "0.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
