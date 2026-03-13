@@ -17,6 +17,15 @@ This changelog covers the public Rust workspace and its release history.
 
 ---
 
+## [1.1.2] - 2026-03-13
+
+### Changed
+
+- Renamed the publishable crate namespace so the user-facing package is `nexus-memory`
+- Renamed internal publishable crates to the `nexus-memory-*` namespace for crates.io compatibility
+
+---
+
 ## [1.1.1] - 2026-03-13
 
 ### Added

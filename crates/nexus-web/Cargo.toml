@@ -1,5 +1,5 @@
 [package]
-name = "nexus-web"
+name = "nexus-memory-web"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

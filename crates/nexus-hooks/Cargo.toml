@@ -1,5 +1,5 @@
 [package]
-name = "nexus-hooks"
+name = "nexus-memory-hooks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

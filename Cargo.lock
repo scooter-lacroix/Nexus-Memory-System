@@ -1687,7 +1687,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexus-cli"
+name = "nexus-memory"
 version = "1.1.1"
 dependencies = [
  "anyhow",
@@ -1695,12 +1695,12 @@ dependencies = [
  "chrono",
  "clap",
  "indicatif",
- "nexus-core",
- "nexus-hooks",
- "nexus-lephase",
- "nexus-mcp",
- "nexus-storage",
- "nexus-vectors",
+ "nexus-memory-core",
+ "nexus-memory-hooks",
+ "nexus-memory-lephase",
+ "nexus-memory-mcp",
+ "nexus-memory-storage",
+ "nexus-memory-vectors",
  "serde",
  "serde_json",
  "sqlx",
@@ -1713,7 +1713,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexus-core"
+name = "nexus-memory-core"
 version = "1.1.1"
 dependencies = [
  "anyhow",
@@ -1728,13 +1728,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexus-embeddings"
+name = "nexus-memory-embeddings"
 version = "1.1.1"
 dependencies = [
  "async-trait",
  "criterion",
  "ndarray 0.16.1",
- "nexus-core",
+ "nexus-memory-core",
  "once_cell",
  "ort",
  "parking_lot",
@@ -1748,7 +1748,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexus-hooks"
+name = "nexus-memory-hooks"
 version = "1.1.1"
 dependencies = [
  "anyhow",
@@ -1757,7 +1757,7 @@ dependencies = [
  "dirs",
  "futures",
  "libc",
- "nexus-core",
+ "nexus-memory-core",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1773,13 +1773,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexus-lephase"
+name = "nexus-memory-lephase"
 version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "nexus-core",
+ "nexus-memory-core",
  "serde",
  "serde_json",
  "tempfile",
@@ -1790,7 +1790,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexus-mcp"
+name = "nexus-memory-mcp"
 version = "1.1.1"
 dependencies = [
  "anyhow",
@@ -1798,9 +1798,9 @@ dependencies = [
  "chrono",
  "dirs",
  "futures",
- "nexus-core",
- "nexus-storage",
- "nexus-vectors",
+ "nexus-memory-core",
+ "nexus-memory-storage",
+ "nexus-memory-vectors",
  "serde",
  "serde_json",
  "sqlx",
@@ -1812,7 +1812,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexus-orchestrator"
+name = "nexus-memory-orchestrator"
 version = "1.1.1"
 dependencies = [
  "anyhow",
@@ -1820,10 +1820,10 @@ dependencies = [
  "chrono",
  "criterion",
  "futures",
- "nexus-core",
- "nexus-embeddings",
- "nexus-storage",
- "nexus-vectors",
+ "nexus-memory-core",
+ "nexus-memory-embeddings",
+ "nexus-memory-storage",
+ "nexus-memory-vectors",
  "parking_lot",
  "serde",
  "serde_json",
@@ -1836,13 +1836,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexus-storage"
+name = "nexus-memory-storage"
 version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "nexus-core",
+ "nexus-memory-core",
  "serde",
  "serde_json",
  "sqlx",
@@ -1854,15 +1854,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexus-vectors"
+name = "nexus-memory-vectors"
 version = "1.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
  "ndarray 0.16.1",
- "nexus-core",
- "nexus-storage",
+ "nexus-memory-core",
+ "nexus-memory-storage",
  "serde",
  "serde_json",
  "tempfile",
@@ -1873,7 +1873,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nexus-web"
+name = "nexus-memory-web"
 version = "1.1.1"
 dependencies = [
  "anyhow",
@@ -1881,10 +1881,10 @@ dependencies = [
  "axum",
  "chrono",
  "futures",
- "nexus-core",
- "nexus-orchestrator",
- "nexus-storage",
- "nexus-vectors",
+ "nexus-memory-core",
+ "nexus-memory-orchestrator",
+ "nexus-memory-storage",
+ "nexus-memory-vectors",
  "parking_lot",
  "reqwest",
  "serde",

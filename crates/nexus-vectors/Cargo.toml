@@ -1,5 +1,5 @@
 [package]
-name = "nexus-vectors"
+name = "nexus-memory-vectors"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

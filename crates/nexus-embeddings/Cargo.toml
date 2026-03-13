@@ -1,5 +1,5 @@
 [package]
-name = "nexus-embeddings"
+name = "nexus-memory-embeddings"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
