@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.1.1"
 edition = "2021"
 rust-version = "1.75"
 authors = ["Nexus Team"]
@@ -69,15 +69,15 @@ tokio-tungstenite = "0.26"
 # rmcp = "0.1"
 
 # Internal crates (for workspace members to depend on each other)
-nexus-core = { version = "0.1.0", path = "crates/nexus-core" }
-nexus-storage = { version = "0.1.0", path = "crates/nexus-storage" }
-nexus-vectors = { version = "0.1.0", path = "crates/nexus-vectors" }
-nexus-embeddings = { version = "0.1.0", path = "crates/nexus-embeddings" }
-nexus-orchestrator = { version = "0.1.0", path = "crates/nexus-orchestrator" }
-nexus-lephase = { version = "0.1.0", path = "crates/nexus-lephase" }
-nexus-mcp = { version = "0.1.0", path = "crates/nexus-mcp" }
-nexus-web = { version = "0.1.0", path = "crates/nexus-web" }
-nexus-hooks = { version = "0.1.0", path = "crates/nexus-hooks" }
+nexus-core = { version = "1.1.1", path = "crates/nexus-core" }
+nexus-storage = { version = "1.1.1", path = "crates/nexus-storage" }
+nexus-vectors = { version = "1.1.1", path = "crates/nexus-vectors" }
+nexus-embeddings = { version = "1.1.1", path = "crates/nexus-embeddings" }
+nexus-orchestrator = { version = "1.1.1", path = "crates/nexus-orchestrator" }
+nexus-lephase = { version = "1.1.1", path = "crates/nexus-lephase" }
+nexus-mcp = { version = "1.1.1", path = "crates/nexus-mcp" }
+nexus-web = { version = "1.1.1", path = "crates/nexus-web" }
+nexus-hooks = { version = "1.1.1", path = "crates/nexus-hooks" }
 
 # ONNX Runtime and tokenizers
 ort = { version = "2.0.0-rc.11", features = ["load-dynamic"] }

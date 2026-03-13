@@ -13,6 +13,14 @@ This changelog covers the public Rust workspace and its release history.
 
 ### Added
 
+- None yet
+
+---
+
+## [1.1.1] - 2026-03-13
+
+### Added
+
 - Public community-health documentation for GitHub repository launch
 - Support, security, and code-of-conduct guidance
 - Development workflow documentation for Rust-first contributors
@@ -29,8 +37,6 @@ This changelog covers the public Rust workspace and its release history.
 - Rust CLI `stats` now reads actual database counts
 - Rust CLI `hooks` now uses the hook factory rather than placeholder responses
 - Rust CLI short-flag collisions that caused Clap runtime panics
-
----
 
 ## [1.1.0] - 2025-12-23
 
