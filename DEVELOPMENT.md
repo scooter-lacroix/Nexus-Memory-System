@@ -49,7 +49,7 @@ cargo test --workspace
 ### Release build
 
 ```bash
-cargo build --release -p nexus-cli
+cargo build --release -p nexus-memory
 ```
 
 ## Local Smoke Test

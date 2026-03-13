@@ -3,7 +3,7 @@
 ## 1. Build the CLI
 
 ```bash
-cargo build --release -p nexus-cli
+cargo build --release -p nexus-memory
 ```
 
 ## 2. Install Nexus

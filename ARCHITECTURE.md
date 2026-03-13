@@ -4,7 +4,7 @@ This document describes the current public architecture of Nexus Memory System a
 
 ## System Overview
 
-Nexus is organized as a set of focused Rust crates around one shared domain model and one shared storage layer.
+Nexus is currently organized as a set of focused Rust crates around one shared domain model and one shared storage layer. This is an implementation detail of the current workspace layout, not a requirement for the public product shape.
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
@@ -171,6 +171,6 @@ Automatic ingestion path for supported agent runtimes.
 ## Design Notes
 
 - The workspace is Rust-first for all public architecture guidance.
-- `nexus-core` and `nexus-storage` are the backbone of the system.
+- `nexus-core` and `nexus-storage` are the backbone of the current implementation.
 - Higher-level surfaces share the same backing store instead of maintaining separate memory silos.
-- The architecture favors small focused crates over one large monolith.
+- The externally visible model is one Nexus system, even if the internal crate boundaries change over time.

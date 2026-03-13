@@ -15,7 +15,7 @@ Nexus Memory System is installed from this Rust workspace.
 ```bash
 git clone https://github.com/scooter-lacroix/Nexus-Memory-System.git
 cd Nexus-Memory-System
-cargo build --release -p nexus-cli
+cargo build --release -p nexus-memory
 ```
 
 ### 2. Install the shared launcher
@@ -59,7 +59,7 @@ It also creates helper wrappers such as `nexus-with` and tool-specific `*-nexus`
 ## Running Without Installing
 
 ```bash
-cargo build --release -p nexus-cli
+cargo build --release -p nexus-memory
 ./target/release/nexus init
 ./target/release/nexus stats
 ```

@@ -1,6 +1,6 @@
 # CLI Reference
 
-The `nexus` binary is provided by the `nexus-cli` crate.
+The `nexus` binary is published in the `nexus-memory` package and implemented by the CLI crate in `crates/nexus-cli`.
 
 ## Top-Level Commands
 

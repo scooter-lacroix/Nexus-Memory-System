@@ -4,7 +4,7 @@ Docker deployment should package the Rust workspace build output and run the `ne
 
 ## Recommended Pattern
 
-1. Build `nexus-cli` in a Rust builder image.
+1. Build the `nexus-memory` package in a Rust builder image.
 2. Copy the compiled binary into a slim runtime image.
 3. Mount a persistent location for the Nexus database.
 
@@ -14,7 +14,7 @@ Docker deployment should package the Rust workspace build output and run the `ne
 FROM rust:1.75 as builder
 WORKDIR /app
 COPY . .
-RUN cargo build --release -p nexus-cli
+RUN cargo build --release -p nexus-memory
 
 FROM debian:bookworm-slim
 WORKDIR /app

@@ -4,7 +4,7 @@ For production-style deployments, treat Nexus as a Rust service with a persisten
 
 ## Checklist
 
-- build `nexus-cli` in release mode
+- build `nexus-memory` in release mode
 - set a stable `NEXUS_DATABASE_PATH`
 - run `nexus init` during provisioning
 - expose `nexus serve --transport http`

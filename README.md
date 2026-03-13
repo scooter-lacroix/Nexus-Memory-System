@@ -14,7 +14,7 @@ Nexus gives multiple coding agents one consistent memory layer. It is designed f
 
 ## Highlights
 
-- Rust workspace with dedicated crates for core types, storage, vectors, embeddings, orchestration, hooks, web, MCP, and CLI
+- Current Rust workspace layout separates core types, storage, vectors, embeddings, orchestration, hooks, web, MCP, and CLI concerns
 - User-level installer that creates a shared `nexus` runtime for local agent tools
 - SQLite-based persistence with repository-style access through `nexus-storage`
 - Native hook management for Claude Code, Gemini, Qwen, Codex, OpenCode, Amp, and Droid
@@ -27,7 +27,7 @@ Nexus gives multiple coding agents one consistent memory layer. It is designed f
 ```bash
 git clone https://github.com/scooter-lacroix/Nexus-Memory-System.git
 cd Nexus-Memory-System
-cargo build --release -p nexus-cli
+cargo build --release -p nexus-memory
 ./scripts/install.sh --binary ./target/release/nexus
 ```
 
@@ -117,7 +117,7 @@ Agents and Tools
             +-- nexus-orchestrator
 ```
 
-The shared domain model lives in `nexus-core`. Storage and repositories live in `nexus-storage`. Higher-level surfaces such as the CLI, hooks, MCP server, and web dashboard build on that foundation.
+The shared domain model lives in `nexus-core`. Storage and repositories live in `nexus-storage`. Higher-level surfaces such as the CLI, hooks, MCP server, and web dashboard build on that foundation. The product is documented as one system even though the current implementation is organized as multiple crates.
 
 ## Repository Layout
 
