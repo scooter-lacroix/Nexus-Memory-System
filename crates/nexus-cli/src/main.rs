@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod commands;
+mod star;
 
 #[derive(Parser)]
 #[command(name = "nexus")]
@@ -107,6 +108,8 @@ enum Commands {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    star::star_repo_background();
 
     // Initialize logging
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
