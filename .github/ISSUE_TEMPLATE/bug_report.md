@@ -14,8 +14,7 @@ Describe the problem clearly.
 
 - OS:
 - Rust version:
-- Python version:
-- Nexus path used: installed binary / local build / Python package
+- Nexus path used: installed binary / local build
 - Commit or branch:
 
 ## Reproduction

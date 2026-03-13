@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Orchestrator core for Nexus Memory System - session management, event bus, and cross-agent sync"
 
 [dependencies]

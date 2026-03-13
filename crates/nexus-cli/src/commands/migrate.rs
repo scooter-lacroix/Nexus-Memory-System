@@ -1,6 +1,6 @@
 //! Migration command implementation
 //!
-//! Provides commands for migrating from Python Nexus to Rust Nexus
+//! Provides commands for migrating existing Nexus data into the current workspace format
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
@@ -37,13 +37,13 @@ pub enum MigrateCommands {
         db: Option<String>,
     },
 
-    /// Run migration from Python to Rust
+    /// Run a migration into the current Nexus format
     Run {
-        /// Source Python database path
+        /// Source database path
         #[arg(short, long)]
         from: Option<String>,
 
-        /// Target Rust database path
+        /// Target database path
         #[arg(short, long)]
         to: Option<String>,
 
@@ -62,11 +62,11 @@ pub enum MigrateCommands {
 
     /// Validate migration integrity
     Validate {
-        /// Source Python database path
+        /// Source database path
         #[arg(short, long)]
         from: Option<String>,
 
-        /// Target Rust database path
+        /// Target database path
         #[arg(short, long)]
         to: Option<String>,
     },
@@ -559,7 +559,7 @@ async fn show_status(db_path: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Run migration from Python to Rust
+/// Run migration into the current Nexus format
 async fn run_migration(
     from: Option<&str>,
     to: Option<&str>,
@@ -574,17 +574,17 @@ async fn run_migration(
     let source_path = match from {
         Some(p) => PathBuf::from(p),
         None => {
-            // Try to auto-discover Python database
+            // Try to auto-discover a previously used database
             let home = std::env::var("HOME").context("Could not determine home directory")?;
-            let default_python_path = PathBuf::from(&home).join(".nexus/nexus.db");
-            if !default_python_path.exists() {
+            let default_legacy_path = PathBuf::from(&home).join(".nexus/nexus.db");
+            if !default_legacy_path.exists() {
                 anyhow::bail!(
                     "Source database not found. Use --from to specify the path.\n\
                      Expected location: {}",
-                    default_python_path.display()
+                    default_legacy_path.display()
                 );
             }
-            default_python_path
+            default_legacy_path
         }
     };
 

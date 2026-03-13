@@ -90,7 +90,14 @@ enum Commands {
         command: commands::hooks::HooksCommands,
     },
 
-    /// Migrate from Python Nexus to Rust Nexus
+    /// Inspect available Nexus tool definitions
+    #[command(visible_alias = "tool")]
+    Tools {
+        #[command(subcommand)]
+        command: commands::tools::ToolsCommands,
+    },
+
+    /// Run migration workflows for existing Nexus data
     Migrate {
         #[command(subcommand)]
         command: commands::migrate::MigrateCommands,
@@ -138,6 +145,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Hooks { command } => {
             commands::hooks::execute(command).await?;
+        }
+        Commands::Tools { command } => {
+            commands::tools::execute(command).await?;
         }
         Commands::Migrate { command } => {
             commands::migrate::execute(command).await?;

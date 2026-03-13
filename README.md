@@ -1,74 +1,123 @@
 # Nexus Memory System
 
-Nexus Memory System is a Rust-first memory platform for AI coding agents and related tooling. It provides shared SQLite-backed memory storage, CLI workflows, migration tooling, and hook-oriented integrations for multi-agent environments.
+Nexus Memory System is a Rust memory platform for AI coding agents. It provides a shared SQLite-backed memory store, a CLI for day-to-day operations, native hook installers for supported agent tools, an MCP server, and an Axum-based web surface.
 
-The current repository contains:
-- a primary Rust workspace under `crates/`
-- a legacy Python implementation under `nexus/`
-- installation, migration, and operational docs for both paths
+## Brief Description
+
+Nexus gives multiple coding agents one consistent memory layer. It is designed for:
+
+- shared memory storage across agent namespaces
+- structured categories such as `general`, `facts`, `preferences`, `context`, `specifications`, and `session`
+- agent hook installation and status management
+- search, stats, and migration-oriented operational workflows
+- HTTP, WebSocket, and MCP access patterns on top of the same storage layer
 
 ## Highlights
 
-- Rust CLI for `init`, `store`, `stats`, `search`, `hooks`, and migration flows
-- SQLite-based storage with structured namespaces and memory categories
-- Hook framework for agent integrations such as Claude Code, Gemini, Qwen, Codex, and OpenCode
-- Shared-install workflow for one local Nexus runtime across multiple CLIs
-- Legacy Python implementation retained for compatibility and migration support
-
-## Project Status
-
-- Rust workspace: primary implementation
-- Python package: legacy/compatibility path
-- Repository maturity: active development
-- License: MIT
+- Rust workspace with dedicated crates for core types, storage, vectors, embeddings, orchestration, hooks, web, MCP, and CLI
+- User-level installer that creates a shared `nexus` runtime for local agent tools
+- SQLite-based persistence with repository-style access through `nexus-storage`
+- Native hook management for Claude Code, Gemini, Qwen, Codex, OpenCode, Amp, and Droid
+- Web dashboard and API routes under the `nexus-web` crate
 
 ## Quick Start
 
-### 1. Clone and build
+### Build and install
 
 ```bash
 git clone https://github.com/scooter-lacroix/Nexus-Memory-System.git
 cd Nexus-Memory-System
 cargo build --release -p nexus-cli
-```
-
-### 2. Install the shared CLI
-
-```bash
 ./scripts/install.sh --binary ./target/release/nexus
 ```
 
-### 3. Initialize storage
+### Initialize storage
 
 ```bash
 nexus init
 ```
 
-### 4. Store and inspect a memory
+### Store a memory
 
 ```bash
-nexus store --content "Codex completed onboarding" --agent codex --category session
+nexus store \
+  --content "Codex completed release validation" \
+  --agent codex \
+  --category session \
+  --labels release,validation
+```
+
+### Search stored memories
+
+```bash
+nexus search --query "release validation" --agent codex --limit 5
+```
+
+### Inspect tool help and schemas
+
+```bash
+nexus tools help
+nexus tools help store_memory
+nexus tools schema store_memory
+```
+
+### Inspect system statistics
+
+```bash
 nexus stats
 ```
 
-## Common Commands
+## Usage Examples
+
+### Install hooks for all supported agents
 
 ```bash
-# Show current statistics
-nexus stats
-
-# Store a memory
-nexus store --content "User prefers concise output" --agent claude-code --category preferences
-
-# Install or inspect hooks
-nexus hooks status --verbose
 nexus hooks install --agent all
-
-# Migrate from an older Python-backed database
-nexus migrate discover
-nexus migrate run
-nexus migrate validate
+nexus hooks status
 ```
+
+### Start the HTTP server
+
+```bash
+nexus serve --transport http --port 8768
+```
+
+### Run the MCP-compatible stdio server
+
+```bash
+nexus serve --transport stdio
+```
+
+MCP clients can also call `tool_help` and `tool_schema` if they need tool usage details or input schemas at runtime.
+
+### Run a quick smoke test from a local build
+
+```bash
+./target/release/nexus init --reset
+./target/release/nexus store --content "smoke test" --agent codex --category session
+./target/release/nexus stats
+```
+
+## Architecture At A Glance
+
+```text
+Agents and Tools
+    |
+    +-- nexus-cli
+    +-- nexus-hooks
+    +-- nexus-mcp
+    +-- nexus-web
+            |
+            v
+        nexus-core
+            |
+            +-- nexus-storage
+            +-- nexus-vectors
+            +-- nexus-embeddings
+            +-- nexus-orchestrator
+```
+
+The shared domain model lives in `nexus-core`. Storage and repositories live in `nexus-storage`. Higher-level surfaces such as the CLI, hooks, MCP server, and web dashboard build on that foundation.
 
 ## Repository Layout
 
@@ -85,62 +134,30 @@ nexus migrate validate
 │   ├── nexus-storage/
 │   ├── nexus-vectors/
 │   └── nexus-web/
-├── nexus/                  # Legacy Python implementation
 ├── docs/
-├── tests/
 ├── scripts/
 ├── Cargo.toml
-└── pyproject.toml
+└── Cargo.lock
 ```
 
 ## Documentation
 
-- [INSTALLATION.md](INSTALLATION.md): installation and environment setup
-- [DEVELOPMENT.md](DEVELOPMENT.md): local development workflow
-- [CONTRIBUTING.md](CONTRIBUTING.md): contribution process and standards
-- [SECURITY.md](SECURITY.md): vulnerability reporting and security expectations
-- [SUPPORT.md](SUPPORT.md): where to get help and how to ask good questions
-- [ARCHITECTURE.md](ARCHITECTURE.md): system architecture overview
-- [HOOKS.md](HOOKS.md): hook and integration model
-- [MIGRATION.md](MIGRATION.md): migration guidance from older deployments
-- [CHANGELOG.md](CHANGELOG.md): release history
+- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [INSTALLATION.md](INSTALLATION.md)
+- [DEVELOPMENT.md](DEVELOPMENT.md)
+- [HOOKS.md](HOOKS.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [docs/index.md](docs/index.md)
 
-Additional docs live under [`docs/`](docs/), including API, deployment, and getting-started guides.
+## Validation
 
-## Supported Integrations
-
-The repository includes hook or monitoring support for:
-
-- Claude Code
-- Gemini
-- Qwen
-- Codex
-- OpenCode
-- Amp
-- Droid
-- Generic CLI workflows
-
-Integration readiness varies by tool and installation path. See [HOOKS.md](HOOKS.md) and [INSTALLATION.md](INSTALLATION.md) for operational details.
-
-## Development
-
-Recommended local validation for the Rust workspace:
+Recommended validation before opening a pull request:
 
 ```bash
-cargo fmt --all
+cargo fmt --all --check
 cargo clippy --workspace --all-targets
 cargo test --workspace
 ```
-
-If you touch the legacy Python tree, also run the relevant Python checks described in [DEVELOPMENT.md](DEVELOPMENT.md).
-
-## Contributing
-
-Contributions are welcome. Please read:
-
-- [CONTRIBUTING.md](CONTRIBUTING.md)
-- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
-- [SECURITY.md](SECURITY.md)
 
 ## License
 

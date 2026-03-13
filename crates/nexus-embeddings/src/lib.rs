@@ -2,7 +2,7 @@
 //!
 //! This crate provides embedding generation for the Nexus Memory System using
 //! the all-MiniLM-L6-v2 model via ONNX Runtime. It produces 384-dimensional
-//! vectors compatible with the Python sentence-transformers implementation.
+//! vectors compatible with the sentence-transformers reference implementation.
 //!
 //! # Features
 //!

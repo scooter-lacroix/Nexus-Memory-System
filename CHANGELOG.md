@@ -5,7 +5,7 @@ All notable changes to Nexus Memory System will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-This changelog covers both the current Rust-first implementation and major historical milestones from earlier Python-centered phases of the project.
+This changelog covers the public Rust workspace and its release history.
 
 ---
 
@@ -162,7 +162,7 @@ This release represents a significant architectural shift from MCP-based integra
 - Architecture documentation
 
 ### Development
-- Python 3.9+ support
+- Cross-platform local development support
 - Type hints throughout codebase
 - Comprehensive test suite
 - CI/CD ready configuration

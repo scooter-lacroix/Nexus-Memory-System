@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Command-line interface for Nexus Memory System"
 
 [[bin]]
@@ -17,7 +19,7 @@ nexus-hooks = { workspace = true }
 nexus-storage = { workspace = true }
 nexus-vectors = { workspace = true }
 nexus-mcp = { workspace = true }
-nexus-lephase = { path = "../nexus-lephase" }
+nexus-lephase = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

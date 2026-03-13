@@ -27,7 +27,14 @@ pub fn get_tools() -> Vec<Tool> {
         list_namespaces_tool(),
         get_stats_tool(),
         initialize_system_tool(),
+        tool_help_tool(),
+        tool_schema_tool(),
     ]
+}
+
+/// Find a tool definition by name
+pub fn find_tool(name: &str) -> Option<Tool> {
+    get_tools().into_iter().find(|tool| tool.name == name)
 }
 
 /// Store memory tool definition
@@ -209,6 +216,42 @@ fn initialize_system_tool() -> Tool {
     }))
 }
 
+/// Tool help/introspection definition
+fn tool_help_tool() -> Tool {
+    Tool::new(
+        "tool_help",
+        "List available tools or explain a specific tool",
+    )
+    .with_schema(serde_json::json!({
+        "type": "object",
+        "properties": {
+            "tool_name": {
+                "type": "string",
+                "description": "Optional tool name to inspect"
+            }
+        },
+        "required": []
+    }))
+}
+
+/// Tool schema/introspection definition
+fn tool_schema_tool() -> Tool {
+    Tool::new(
+        "tool_schema",
+        "Return the JSON schema for one tool or all tools",
+    )
+    .with_schema(serde_json::json!({
+        "type": "object",
+        "properties": {
+            "tool_name": {
+                "type": "string",
+                "description": "Optional tool name to inspect"
+            }
+        },
+        "required": []
+    }))
+}
+
 /// Tool handler with access to repositories
 pub struct ToolHandler {
     pool: SqlitePool,
@@ -237,7 +280,83 @@ impl ToolHandler {
             "list_namespaces" => self.handle_list_namespaces(args).await,
             "get_stats" => self.handle_get_stats(args).await,
             "initialize_nexus_system" => self.handle_initialize_system(args).await,
+            "tool_help" => self.handle_tool_help(args).await,
+            "tool_schema" => self.handle_tool_schema(args).await,
             _ => CallToolResult::error(format!("Unknown tool: {}", name)),
+        }
+    }
+
+    async fn handle_tool_help(
+        &self,
+        args: &serde_json::Map<String, JsonValue>,
+    ) -> CallToolResult {
+        let requested = args
+            .get("tool_name")
+            .or_else(|| args.get("tool"))
+            .and_then(|v| v.as_str());
+
+        if let Some(name) = requested {
+            match find_tool(name) {
+                Some(tool) => CallToolResult::json(serde_json::json!({
+                    "success": true,
+                    "tool": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "input_schema": tool.input_schema
+                    }
+                })),
+                None => CallToolResult::error(format!("Unknown tool: {}", name)),
+            }
+        } else {
+            let tools: Vec<_> = get_tools()
+                .into_iter()
+                .map(|tool| {
+                    serde_json::json!({
+                        "name": tool.name,
+                        "description": tool.description
+                    })
+                })
+                .collect();
+
+            CallToolResult::json(serde_json::json!({
+                "success": true,
+                "tools": tools,
+                "usage": {
+                    "tool_help": {"tool_name": "optional tool name"},
+                    "tool_schema": {"tool_name": "optional tool name"}
+                }
+            }))
+        }
+    }
+
+    async fn handle_tool_schema(
+        &self,
+        args: &serde_json::Map<String, JsonValue>,
+    ) -> CallToolResult {
+        let requested = args
+            .get("tool_name")
+            .or_else(|| args.get("tool"))
+            .and_then(|v| v.as_str());
+
+        if let Some(name) = requested {
+            match find_tool(name) {
+                Some(tool) => CallToolResult::json(serde_json::json!({
+                    "success": true,
+                    "tool": tool.name,
+                    "schema": tool.input_schema
+                })),
+                None => CallToolResult::error(format!("Unknown tool: {}", name)),
+            }
+        } else {
+            let schemas: serde_json::Map<String, JsonValue> = get_tools()
+                .into_iter()
+                .map(|tool| (tool.name, tool.input_schema))
+                .collect();
+
+            CallToolResult::json(serde_json::json!({
+                "success": true,
+                "schemas": schemas
+            }))
         }
     }
 
@@ -624,6 +743,8 @@ mod tests {
         assert!(tool_names.contains(&"delete_memory"));
         assert!(tool_names.contains(&"list_namespaces"));
         assert!(tool_names.contains(&"get_stats"));
+        assert!(tool_names.contains(&"tool_help"));
+        assert!(tool_names.contains(&"tool_schema"));
     }
 
     #[test]

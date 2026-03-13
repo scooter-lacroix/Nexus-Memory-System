@@ -17,7 +17,7 @@ use crate::{DEFAULT_MODEL_NAME, EMBEDDING_DIMENSION};
 ///
 /// This service uses the ONNX Runtime to generate embeddings using the
 /// all-MiniLM-L6-v2 model. It produces 384-dimensional vectors compatible
-/// with the Python sentence-transformers implementation.
+/// with the sentence-transformers reference implementation.
 pub struct OrtEmbeddingService {
     /// ONNX Runtime session (wrapped in Mutex for thread safety)
     session: Mutex<Session>,

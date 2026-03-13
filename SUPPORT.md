@@ -2,61 +2,32 @@
 
 ## Getting Help
 
-If you need help with Nexus Memory System, start with the documentation:
+Start with:
 
 - [README.md](README.md)
 - [INSTALLATION.md](INSTALLATION.md)
-- [DEVELOPMENT.md](DEVELOPMENT.md)
+- [ARCHITECTURE.md](ARCHITECTURE.md)
 - [HOOKS.md](HOOKS.md)
-- [MIGRATION.md](MIGRATION.md)
-- [docs/](docs/)
+- [docs/index.md](docs/index.md)
 
-## Where to Ask Questions
+## Issue Reports
 
 Use GitHub issues for:
 
 - reproducible bugs
-- documentation problems
-- installation issues
+- installation problems
+- documentation corrections
 - feature requests
-- migration questions tied to the repo
 
-When opening an issue, include:
+Include:
 
 - operating system
-- Rust and Python versions if relevant
+- Rust toolchain version
 - exact command run
-- expected result
-- actual result
-- logs or error output
-- whether the problem is in the Rust path, Python path, or installation flow
+- expected behavior
+- actual behavior
+- relevant logs or command output
 
-## Before Opening an Issue
+## Security
 
-Please check:
-
-- existing issues
-- recent commits and changelog notes
-- installation prerequisites
-- whether the issue only affects local machine-specific configuration
-
-## Best Practices for Faster Help
-
-- provide a minimal reproduction
-- paste exact commands, not paraphrases
-- mention the commit or branch you are using
-- say whether you are using the installed `nexus` binary or running from a build artifact
-- note whether your issue involves shared CLI hooks or only the core storage layer
-
-## Security Issues
-
-Do not report vulnerabilities publicly in issues. Follow [SECURITY.md](SECURITY.md).
-
-## Scope Notes
-
-This repository currently contains both:
-
-- a Rust-first implementation under `crates/`
-- a legacy Python implementation under `nexus/`
-
-Questions are much easier to answer when you specify which one you are working with.
+For security-sensitive issues, do not file a public issue. Follow [SECURITY.md](SECURITY.md).

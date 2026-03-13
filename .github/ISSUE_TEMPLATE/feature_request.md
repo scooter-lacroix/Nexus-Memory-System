@@ -26,7 +26,6 @@ Which area does this affect?
 - Rust storage/core
 - Hooks/integrations
 - Web/MCP
-- Legacy Python compatibility
 - Documentation
 
 ## Additional Context

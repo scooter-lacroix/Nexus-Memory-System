@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Agent hooks system for Nexus Memory System - automated memory extraction"
 
 [dependencies]
@@ -34,7 +36,7 @@ serde_yaml = { workspace = true }
 sysinfo = "0.33"
 
 # Internal dependencies
-nexus-core = { path = "../nexus-core" }
+nexus-core = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

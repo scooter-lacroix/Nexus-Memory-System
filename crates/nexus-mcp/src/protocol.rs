@@ -179,7 +179,10 @@ impl Default for InitializeResult {
                 experimental: None,
             },
             server_info: Implementation::default(),
-            instructions: Some("Nexus Memory System MCP Server - Store and search memories across agent namespaces".to_string()),
+            instructions: Some(
+                "Nexus Memory System MCP Server - Store and search memories across agent namespaces. Use tool_help or tool_schema if you need tool usage details or input schemas."
+                    .to_string(),
+            ),
         }
     }
 }

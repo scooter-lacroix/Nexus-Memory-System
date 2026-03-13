@@ -185,6 +185,21 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Local-only internal assets that should never be published
+.code_indexer_data/
+.leindex/
+nexus/
+tests/
+maestro/
+CLAUDE.md
+CRITICAL_DESIGN_REVIEW.md
+DEBUGGING_SUMMARY.md
+MIGRATION.md
+ARCHITECTURE_FINAL.md
+pyproject.toml
+requirements.txt
+setup.py
+
 # Temporary files
 *.tmp
 *.temp

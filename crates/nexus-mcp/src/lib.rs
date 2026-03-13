@@ -37,7 +37,7 @@ pub mod tools;
 pub use server::McpServer;
 
 // Re-export tool functions
-pub use tools::get_tools;
+pub use tools::{find_tool, get_tools};
 
 // Re-export resource functions
 pub use resources::{get_resource_templates, get_resources};
