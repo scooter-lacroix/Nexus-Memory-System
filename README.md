@@ -1,354 +1,147 @@
 # Nexus Memory System
 
-> **Private Cross-Agent Memory Management Platform**
+Nexus Memory System is a Rust-first memory platform for AI coding agents and related tooling. It provides shared SQLite-backed memory storage, CLI workflows, migration tooling, and hook-oriented integrations for multi-agent environments.
 
-A comprehensive memory management system for AI agents featuring automated extraction, semantic search, and cross-agent knowledge sharing.
+The current repository contains:
+- a primary Rust workspace under `crates/`
+- a legacy Python implementation under `nexus/`
+- installation, migration, and operational docs for both paths
 
-**Version:** 1.1.0
-**Status:** Private/Internal Use
-**Host:** GitHub (for accessibility only - not open source)
+## Highlights
 
----
+- Rust CLI for `init`, `store`, `stats`, `search`, `hooks`, and migration flows
+- SQLite-based storage with structured namespaces and memory categories
+- Hook framework for agent integrations such as Claude Code, Gemini, Qwen, Codex, and OpenCode
+- Shared-install workflow for one local Nexus runtime across multiple CLIs
+- Legacy Python implementation retained for compatibility and migration support
 
-## About This System
+## Project Status
 
-Nexus Memory System is a **private, internal-use system** hosted on GitHub for accessibility. It is **not open-source** and external contributions are not accepted.
-
-### Key Features
-
-- **Native Hooks System** - Automated memory extraction without MCP protocol
-- **Hybrid Memory Types** - Nexus categories + Memory Lane cognitive types
-- **High-Performance Search** - sqlite-vec embeddings with semantic search
-- **Cross-Agent Sync** - Share memories between different AI agents
-- **Web Dashboard** - REST API with real-time WebSocket updates
-- **Automated Session Extraction** - Four-layer extraction system with 95-100% reliability
-
----
+- Rust workspace: primary implementation
+- Python package: legacy/compatibility path
+- Repository maturity: active development
+- License: MIT
 
 ## Quick Start
 
-### Installation (Rust - Recommended)
-
-The Rust implementation provides significant performance improvements and is the recommended way to use Nexus.
+### 1. Clone and build
 
 ```bash
-# Build from source
-git clone https://github.com/scooter-lacroix/nexus-memory-system
-cd nexus-memory-system
-cargo build --release
-
-# The binary will be at ./target/release/nexus
-# Optionally, install it:
-cargo install --path crates/nexus-cli
+git clone https://github.com/scooter-lacroix/Nexus-Memory-System.git
+cd Nexus-Memory-System
+cargo build --release -p nexus-cli
 ```
 
-### Initialize Database
+### 2. Install the shared CLI
+
+```bash
+./scripts/install.sh --binary ./target/release/nexus
+```
+
+### 3. Initialize storage
 
 ```bash
 nexus init
 ```
 
-### Migrating from Python
-
-If you have an existing Python Nexus database:
+### 4. Store and inspect a memory
 
 ```bash
-# Discover existing databases
+nexus store --content "Codex completed onboarding" --agent codex --category session
+nexus stats
+```
+
+## Common Commands
+
+```bash
+# Show current statistics
+nexus stats
+
+# Store a memory
+nexus store --content "User prefers concise output" --agent claude-code --category preferences
+
+# Install or inspect hooks
+nexus hooks status --verbose
+nexus hooks install --agent all
+
+# Migrate from an older Python-backed database
 nexus migrate discover
-
-# Run migration
 nexus migrate run
-
-# Validate migration
 nexus migrate validate
 ```
 
-See [MIGRATION.md](MIGRATION.md) for detailed migration instructions.
+## Repository Layout
 
-### Installation (Python - Legacy)
-
-The Python implementation is still available for backward compatibility.
-
-```bash
-# Install with uv
-uv pip install nexus-memory-system[embeddings]
-
-# Or with pip
-pip install nexus-memory-system[embeddings]
+```text
+.
+├── crates/
+│   ├── nexus-cli/
+│   ├── nexus-core/
+│   ├── nexus-embeddings/
+│   ├── nexus-hooks/
+│   ├── nexus-lephase/
+│   ├── nexus-mcp/
+│   ├── nexus-orchestrator/
+│   ├── nexus-storage/
+│   ├── nexus-vectors/
+│   └── nexus-web/
+├── nexus/                  # Legacy Python implementation
+├── docs/
+├── tests/
+├── scripts/
+├── Cargo.toml
+└── pyproject.toml
 ```
-
-### Install Agent Hooks
-
-```bash
-# Install hooks for all supported agents
-nexus hooks install --all
-
-# Or install for specific agent
-nexus hooks install claude-code
-```
-
-### Start Web Dashboard
-
-```bash
-nexus serve --transport web
-```
-
-Visit http://localhost:8000 for the dashboard and http://localhost:8000/api/docs for API documentation.
-
----
-
-## Architecture Overview
-
-Nexus consists of **5 core components**:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    NEXUS MEMORY SYSTEM                      │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
-│  │   Storage    │  │  Processing  │  │  Agent Hooks │       │
-│  │   Manager    │  │    Engine    │  │   Manager    │       │
-│  └──────────────┘  └──────────────┘  └──────────────┘       │
-│          │                 │                  │             │
-│          └─────────────────┼──────────────────┘             │
-│                            ▼                                │
-│                   ┌──────────────┐                          │
-│                   │ Orchestrator │                          │
-│                   └──────────────┘                          │
-│                            │                                │
-│                            ▼                                │
-│                   ┌──────────────┐                          │
-│                   │   Web        │                          │
-│                   │  Dashboard   │                          │
-│                   └──────────────┘                          │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Core Components
-
-| Component | Description |
-|-----------|-------------|
-| **Storage Manager** | Database operations, CRUD, transactions |
-| **Processing Engine** | Embeddings, NLP, categorization, vector search |
-| **Agent Hooks Manager** | Native hooks, session detection, automated extraction |
-| **Orchestrator** | Session lifecycle, event routing, cross-agent sync |
-| **Web Dashboard** | HTTP API, WebSocket, UI, visualization |
-
----
-
-## Directory Structure
-
-```
-nexus-memory-system/
-├── crates/                    # Rust implementation (primary)
-│   ├── nexus-core/           # Core types, traits, config
-│   ├── nexus-storage/        # Database operations (SQLx)
-│   ├── nexus-vectors/        # Vector search (sqlite-vec)
-│   ├── nexus-embeddings/     # Embedding service (ORT)
-│   ├── nexus-orchestrator/   # Session lifecycle, sync
-│   ├── nexus-hooks/          # Native hooks system
-│   ├── nexus-mcp/            # MCP server
-│   ├── nexus-web/            # Web dashboard (Axum)
-│   └── nexus-cli/            # Command-line interface
-├── nexus/                    # Python implementation (legacy)
-│   ├── database/             # Database models, managers
-│   ├── embeddings/           # Embedding service
-│   ├── hooks/                # Native hooks system
-│   ├── orchestrator/         # Session lifecycle & sync
-│   ├── services/             # Business logic
-│   ├── web/                  # FastAPI web dashboard
-│   └── cli.py                # Command-line interface
-├── docs/                     # Documentation
-├── tests/                    # Test suite
-├── Cargo.toml                # Rust workspace config
-├── pyproject.toml            # Python project config
-└── README.md
-```
-
----
-
-## Supported Agents
-
-| Agent | Hook Type | Status |
-|-------|-----------|--------|
-| **Claude Code** | Skills (Oct 2025) | Fully Supported |
-| **Gemini** | Function Calling + CLI Extensions | Fully Supported |
-| **Qwen** | Hooks SubAgent | Fully Supported |
-| **Amp** | CLI atexit/signals | Fully Supported |
-| **Droid** | CLI atexit/signals | Fully Supported |
-| **OpenCode** | CLI atexit/signals | Fully Supported |
-| **Codex** | CLI atexit/signals | Fully Supported |
-
----
-
-## Usage Examples
-
-### CLI Commands
-
-```bash
-# Store a memory
-nexus store "User prefers dark mode" --agent claude-code --category preferences
-
-# Search memories
-nexus search "UI preferences" --agent claude-code --limit 5
-
-# View statistics
-nexus stats --agent claude-code
-
-# Check hooks status
-nexus hooks status --verbose
-```
-
-### Python API
-
-```python
-from nexus.server import get_memory_manager
-
-# Initialize manager
-manager = get_memory_manager()
-await manager.initialize()
-
-# Store memory
-result = await manager.store_memory(
-    content="User prefers dark mode in the UI",
-    agent_type="claude-code",
-    category="preferences",
-    labels=["ui", "theme"],
-    metadata={"source": "conversation"}
-)
-
-# Search memories
-results = await manager.search_memories(
-    query="UI theme preferences",
-    agent_type="claude-code",
-    limit=5
-)
-```
-
----
 
 ## Documentation
 
-- **[MIGRATION.md](MIGRATION.md)** - Python to Rust migration guide
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Complete architecture documentation
-- **[INSTALLATION.md](INSTALLATION.md)** - Detailed installation guide
-- **[HOOKS.md](HOOKS.md)** - Native hooks documentation
-- **[docs/guide/getting-started.md](docs/guide/getting-started.md)** - Step-by-step tutorial
-- **[docs/guide/memory-types.md](docs/guide/memory-types.md)** - Hybrid memory type guide
-- **[docs/api/rest-api.md](docs/api/rest-api.md)** - REST API reference
-- **[docs/api/cli-reference.md](docs/api/cli-reference.md)** - CLI command reference
+- [INSTALLATION.md](INSTALLATION.md): installation and environment setup
+- [DEVELOPMENT.md](DEVELOPMENT.md): local development workflow
+- [CONTRIBUTING.md](CONTRIBUTING.md): contribution process and standards
+- [SECURITY.md](SECURITY.md): vulnerability reporting and security expectations
+- [SUPPORT.md](SUPPORT.md): where to get help and how to ask good questions
+- [ARCHITECTURE.md](ARCHITECTURE.md): system architecture overview
+- [HOOKS.md](HOOKS.md): hook and integration model
+- [MIGRATION.md](MIGRATION.md): migration guidance from older deployments
+- [CHANGELOG.md](CHANGELOG.md): release history
 
----
+Additional docs live under [`docs/`](docs/), including API, deployment, and getting-started guides.
 
-## Memory Types
+## Supported Integrations
 
-Nexus uses a **hybrid memory type system** combining:
+The repository includes hook or monitoring support for:
 
-### Nexus Categories (Core)
+- Claude Code
+- Gemini
+- Qwen
+- Codex
+- OpenCode
+- Amp
+- Droid
+- Generic CLI workflows
 
-- `general` - General purpose memories
-- `facts` - Factual information
-- `preferences` - User preferences and settings
-- `context` - Situational context
-- `specifications` - Task specifications
-- `session` - Session-based memories
-
-### Memory Lane Cognitive Types (Additive)
-
-- `semantic` - General knowledge
-- `episodic` - Event-based experiences
-- `procedural` - How-to processes
-- `working` - Temporary active memory
-- `explicit` - Conscious declarative facts
-- `implicit` - Unconscious patterns
-- `flashbulb` - High-importance events
-- `metamemory` - Knowledge about memory
-- `collective` - Cross-agent shared knowledge
-
-### Memory Lane Priority Types
-
-- `correction` - User corrected agent behavior (high priority)
-- `decision` - Explicit choice with reasoning (high priority)
-- `commitment` - User preference/commitment (high priority)
-- `insight` - Non-obvious discovery (medium priority)
-- `learning` - New knowledge gained (medium priority)
-- `confidence` - Strong confidence (medium priority)
-- `pattern_seed` - Repeated behavior (lower priority)
-- `cross_agent` - Info relevant to other agents (lower priority)
-- `workflow_note` - Process observation (lower priority)
-- `gap` - Missing capability (lower priority)
-
----
-
-## Automated Extraction System
-
-Nexus uses a **four-layer automated extraction system**:
-
-```
-LAYER 1: Native Agent Hooks (PRIMARY)
-  └─ Claude Code Skills, Gemini Functions, Qwen Hooks
-  └─ Success Rate: 100% (when hooks work)
-
-LAYER 2: Session Monitor (SECONDARY)
-  └─ Process monitoring, state detection
-  └─ Success Rate: 95%
-
-LAYER 3: Inactivity Detector (TERTIARY)
-  └─ Timeout detection (5 min default)
-  └─ Success Rate: 90%
-
-LAYER 4: Persistent Buffer (SAFETY NET)
-  └─ Crash recovery from buffer
-  └─ Success Rate: 99%
-```
-
-**Overall Reliability:** 95-100% memory capture, even when user forgets.
-
----
-
-## Performance (Rust vs Python)
-
-The Rust implementation provides significant performance improvements:
-
-| Operation | Python | Rust | Improvement |
-|-----------|--------|------|-------------|
-| Embedding | ~10ms | <5ms | 2x faster |
-| Vector Search (1k docs) | ~50ms | <10ms | 5x faster |
-| Memory Store | ~5ms | <1ms | 5x faster |
-| Concurrent Connections | ~100 | 10,000+ | 100x more |
-
-Run benchmarks to verify:
-
-```bash
-cargo bench --workspace
-```
-
----
+Integration readiness varies by tool and installation path. See [HOOKS.md](HOOKS.md) and [INSTALLATION.md](INSTALLATION.md) for operational details.
 
 ## Development
 
-**This is a private project.** External contributions are not accepted.
+Recommended local validation for the Rust workspace:
 
-For internal contributors:
-- See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
-- Use the issue tracker for bugs and feature requests
-- Follow the existing code style and patterns
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets
+cargo test --workspace
+```
 
----
+If you touch the legacy Python tree, also run the relevant Python checks described in [DEVELOPMENT.md](DEVELOPMENT.md).
+
+## Contributing
+
+Contributions are welcome. Please read:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- [SECURITY.md](SECURITY.md)
 
 ## License
 
-MIT License - Internal Use Only
-
----
-
-## Links
-
-- **Repository:** https://github.com/scooter-lacroix/nexus-memory-system
-- **Documentation:** https://github.com/scooter-lacroix/nexus-memory-system/tree/main/docs
-- **Issues:** https://github.com/scooter-lacroix/nexus-memory-system/issues
-
----
-
-**Note:** This system is for internal use only. GitHub hosting is for accessibility convenience.
+This project is licensed under the [MIT License](LICENSE).

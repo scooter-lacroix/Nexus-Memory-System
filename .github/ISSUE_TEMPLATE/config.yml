@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support and usage questions
+    url: https://github.com/scooter-lacroix/Nexus-Memory-System/blob/master/SUPPORT.md
+    about: Read support guidance before opening a general help request.
+  - name: Security reports
+    url: https://github.com/scooter-lacroix/Nexus-Memory-System/security
+    about: Please do not file public issues for security vulnerabilities.

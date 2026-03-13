@@ -1,152 +1,137 @@
-# Contributing Guidelines
+# Contributing to Nexus Memory System
 
-> **Internal Contribution Guidelines for Nexus Memory System**
+Thanks for contributing. This document describes the expected workflow for changes to the Rust-first Nexus Memory System repository.
 
-**Important:** This is a **private, internal-use project**. External contributions are **not accepted**.
+## Before You Start
 
----
+- Read the [README.md](README.md) for project context
+- Read the [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- Check open issues and existing pull requests before starting overlapping work
+- Open or comment on an issue first for large features, behavioral changes, or architectural refactors
 
-## Overview
+## Development Model
 
-Nexus Memory System is hosted on GitHub for accessibility only. This is **not an open-source project**.
+This repository currently contains two implementation paths:
 
-### Project Status
+- `crates/`: primary Rust implementation
+- `nexus/`: legacy Python implementation kept for compatibility and migration support
 
-- **Type:** Private / Internal Use
-- **Hosting:** GitHub (accessibility convenience)
-- **License:** MIT - Internal Use Only
-- **External Contributions:** Not Accepted
+New feature work should generally target the Rust workspace unless the task is specifically about backward compatibility, migration, or legacy support.
 
----
+## Local Setup
 
-## For Internal Contributors
-
-This section applies only to authorized internal contributors.
-
-### Development Workflow
-
-1. **Create a branch** from `main`
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-
-2. **Make changes** following coding standards
-
-3. **Test thoroughly**
-   ```bash
-   pytest
-   make lint
-   make type-check
-   ```
-
-4. **Create internal pull request** for review
-
-### Code Standards
-
-- **Python:** PEP 8 compliant
-- **Type hints:** Required for all public functions
-- **Docstrings:** Google style docstrings
-- **Testing:** Minimum 80% coverage required
-- **Linting:** Black and Ruff
-
-### Testing
+### Rust
 
 ```bash
-# Run all tests
+cargo build --workspace
+cargo test --workspace
+```
+
+### Python legacy path
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .[dev,test]
 pytest
-
-# Run with coverage
-pytest --cov=nexus --cov-report=html
-
-# Run specific tests
-pytest tests/unit/test_embeddings.py
 ```
 
----
+See [DEVELOPMENT.md](DEVELOPMENT.md) for a fuller workflow.
 
-## External Access
+## Branching
 
-### What is Allowed
+Use focused branches. Suggested patterns:
 
-- **Read-only access** to documentation
-- **Read-only access** to code (for reference)
-- **Issue creation** for bug reports (will be reviewed internally)
+- `fix/<short-description>`
+- `feat/<short-description>`
+- `docs/<short-description>`
+- `chore/<short-description>`
 
-### What is NOT Allowed
+Examples:
 
-- **Pull requests** from external contributors
-- **Code contributions** from external sources
-- **Forking** for external use
-- **Distribution** outside the organization
-
-### Why This Approach?
-
-1. **Quality Control:** Maintain code quality standards
-2. **Security:** Prevent security vulnerabilities
-3. **Consistency:** Ensure consistent architecture
-4. **Support:** Internal support only
-
----
-
-## Getting Help
-
-### For Internal Users
-
-- **Documentation:** See [docs/](docs/)
-- **Issues:** Use internal issue tracker
-- **Questions:** Contact the development team directly
-
-### For External Users
-
-**Please note:** We do not provide support for external users. This is an internal system.
-
-- **Documentation:** Publicly available for reference only
-- **Issues:** Issues may be created but are not prioritized
-- **Questions:** No direct support available
-
----
-
-## License
-
-```
-MIT License
-
-Copyright (c) 2025 scooter-lacroix
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-INTERNAL USE ONLY - External distribution not permitted.
+```bash
+git checkout -b fix/rust-cli-stats
+git checkout -b docs/community-health-files
 ```
 
----
+## Commit Guidelines
 
-## Summary
+Prefer small, reviewable commits with clear intent.
 
-| Aspect | Status |
-|--------|--------|
-| **Project Type** | Private/Internal |
-| **GitHub Access** | Read-only for external |
-| **External PRs** | Not Accepted |
-| **External Contributions** | Not Accepted |
-| **Support** | Internal Only |
-| **License** | MIT - Internal Use Only |
+Good commit messages:
 
----
+- `Fix Rust CLI stats to read live database counts`
+- `Add community health files for public GitHub launch`
+- `Document local development workflow`
 
-**Last Updated:** 2025-12-23
+## Pull Request Expectations
+
+Each pull request should:
+
+- explain the problem being solved
+- describe the approach taken
+- call out breaking changes or migration impact
+- include validation steps
+- update docs when behavior or setup changes
+
+Use the repository pull request template if available.
+
+## Coding Standards
+
+### Rust
+
+- Run `cargo fmt --all`
+- Run `cargo clippy --workspace --all-targets`
+- Add or update tests when behavior changes
+- Prefer small, explicit APIs over broad implicit behavior
+
+### Python
+
+- Use clear type hints where practical
+- Keep compatibility changes scoped and documented
+- Run the relevant tests for touched modules
+
+### Documentation
+
+- Keep docs accurate to the current repo state
+- Prefer direct setup commands over vague guidance
+- Update top-level docs when installation or supported workflows change
+
+## Testing
+
+Run the narrowest meaningful test set while developing, and a broader set before opening a PR.
+
+Typical Rust validation:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets
+cargo test --workspace
+```
+
+If your change affects installation or the shared CLI flow, include a smoke test such as:
+
+```bash
+cargo build --release -p nexus-cli
+./target/release/nexus init
+./target/release/nexus stats
+```
+
+## Documentation Changes
+
+Please update docs when you change:
+
+- CLI flags or command behavior
+- installation flow
+- migration steps
+- hook/integration setup
+- environment variables
+- repository structure or contribution workflow
+
+## Reporting Security Issues
+
+Do not open public issues for sensitive vulnerabilities. Follow [SECURITY.md](SECURITY.md).
+
+## Questions and Support
+
+See [SUPPORT.md](SUPPORT.md) for where to ask questions and how to provide reproducible reports.

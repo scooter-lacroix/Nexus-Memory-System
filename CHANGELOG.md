@@ -5,7 +5,30 @@ All notable changes to Nexus Memory System will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-**Note:** This is a private, internal-use system hosted on GitHub for accessibility.
+This changelog covers both the current Rust-first implementation and major historical milestones from earlier Python-centered phases of the project.
+
+---
+
+## [Unreleased]
+
+### Added
+
+- Public community-health documentation for GitHub repository launch
+- Support, security, and code-of-conduct guidance
+- Development workflow documentation for Rust-first contributors
+- Issue and pull request templates
+
+### Changed
+
+- README, installation, and contributing guidance updated for a public-facing repository
+
+### Fixed
+
+- Rust CLI `init` now initializes the real storage layer
+- Rust CLI `store` now persists live memories instead of returning stub output
+- Rust CLI `stats` now reads actual database counts
+- Rust CLI `hooks` now uses the hook factory rather than placeholder responses
+- Rust CLI short-flag collisions that caused Clap runtime panics
 
 ---
 
@@ -78,7 +101,7 @@ This release represents a significant architectural shift from MCP-based integra
   - Enhanced metadata for cognitive attributes
 - **Configuration** - New hooks and embeddings options
 - **Documentation** - Complete rewrite focusing on native hooks
-- **Private System** - Updated for internal-use-only status
+- **Project positioning** - Documentation reflected the internal deployment model in use at that time
 
 ### Fixed
 - **Session Category** - Added `session` to MemoryCategory enum
