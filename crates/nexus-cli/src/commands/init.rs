@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use nexus_core::Config;
+use nexus_storage::StorageManager;
 use std::path::Path;
 
 /// Execute the init command
@@ -30,10 +31,11 @@ pub async fn execute(reset: bool) -> Result<()> {
 
     // Initialize database
     tracing::info!("Initializing database at {:?}", config.database.path);
-
-    // TODO: Actually initialize the database with storage manager
-    // For now, just create an empty file to mark as initialized
-    std::fs::File::create(&config.database.path)?;
+    if !config.database.path.exists() {
+        std::fs::File::create(&config.database.path)?;
+    }
+    let mut storage = StorageManager::from_url(&config.database_url()).await?;
+    storage.initialize().await?;
 
     tracing::info!("Database initialized successfully");
     Ok(())

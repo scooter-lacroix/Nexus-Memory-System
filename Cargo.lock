@@ -1696,6 +1696,7 @@ dependencies = [
  "clap",
  "indicatif",
  "nexus-core",
+ "nexus-hooks",
  "nexus-lephase",
  "nexus-mcp",
  "nexus-storage",

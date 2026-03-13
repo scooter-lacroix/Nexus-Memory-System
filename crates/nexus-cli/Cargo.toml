@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 nexus-core = { workspace = true }
+nexus-hooks = { workspace = true }
 nexus-storage = { workspace = true }
 nexus-vectors = { workspace = true }
 nexus-mcp = { workspace = true }

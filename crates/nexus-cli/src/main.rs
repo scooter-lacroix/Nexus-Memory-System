@@ -12,11 +12,11 @@ mod commands;
 #[command(author, version, about = "Nexus Memory System CLI", long_about = None)]
 struct Cli {
     /// Path to configuration file
-    #[arg(short, long, global = true)]
+    #[arg(long, global = true)]
     config: Option<String>,
 
     /// Log level (trace, debug, info, warn, error)
-    #[arg(short, long, global = true, default_value = "info")]
+    #[arg(long, global = true, default_value = "info")]
     log_level: String,
 
     #[command(subcommand)]
@@ -46,7 +46,7 @@ enum Commands {
     /// Store a memory
     Store {
         /// Memory content
-        #[arg(short, long)]
+        #[arg(short = 'm', long)]
         content: String,
 
         /// Agent/namespace name
@@ -54,7 +54,7 @@ enum Commands {
         agent: String,
 
         /// Memory category
-        #[arg(short, long, default_value = "general")]
+        #[arg(short = 'g', long, default_value = "general")]
         category: String,
 
         /// Memory labels (comma-separated)

@@ -2,6 +2,8 @@
 
 use anyhow::Result;
 use clap::Subcommand;
+use nexus_hooks::HookFactory;
+use std::sync::Arc;
 
 /// Hooks commands
 #[derive(Debug, Clone, Subcommand)]
@@ -33,38 +35,63 @@ pub async fn execute(command: HooksCommands) -> Result<()> {
     match command {
         HooksCommands::Install { agent } => {
             tracing::info!("Installing hooks for agent: {}", agent);
+            let factory = HookFactory::new();
+            let callback = Arc::new(|_ctx| {});
+            let targets = if agent == "all" {
+                factory.supported_agents()
+            } else {
+                vec![agent]
+            };
 
-            // TODO: Actually install hooks
-            println!("Installing hooks for: {}", agent);
-            println!("Hook installation not yet implemented");
+            for target in targets {
+                let mut hook = factory.create_hook(&target)?;
+                hook.install_session_end_hook(callback.clone()).await?;
+                println!(
+                    "{}: {}",
+                    hook.agent_type(),
+                    if hook.is_hook_installed() {
+                        "installed"
+                    } else {
+                        "configured (monitor fallback)"
+                    }
+                );
+            }
 
             tracing::info!("Hooks installed");
         }
         HooksCommands::Status { verbose } => {
             tracing::info!("Checking hook status");
-
-            // TODO: Actually check status
+            let factory = HookFactory::new();
             println!("Hook Status:");
             println!();
-            println!("  claude-code: not installed");
-            println!("  pi-mono: not installed");
-            println!("  oh-my-pi: not installed");
-            println!("  gemini: not installed");
+
+            for agent_name in factory.supported_agents() {
+                let hook = factory.create_hook(&agent_name)?;
+                let status = if hook.is_hook_installed() {
+                    "installed"
+                } else {
+                    "available"
+                };
+                println!("  {}: {}", hook.agent_type(), status);
+
+                if verbose {
+                    println!("    reliability: {:.2}", hook.reliability_score());
+                }
+            }
 
             if verbose {
                 println!();
-                println!("Hook directories:");
-                println!("  ~/.claude/commands/");
-                println!("  ~/.pi/agent/skills/");
-                println!("  ~/.omp/agent/skills/");
+                println!("Agent support:");
+                println!("  native hooks: claude-code, gemini, qwen, pi-mono, oh-my-pi, pi-skills");
+                println!("  cli monitoring: opencode, codex, amp, droid, generic");
             }
         }
         HooksCommands::Uninstall { agent } => {
             tracing::info!("Uninstalling hooks for agent: {}", agent);
-
-            // TODO: Actually uninstall hooks
-            println!("Uninstalling hooks for: {}", agent);
-            println!("Hook uninstallation not yet implemented");
+            let factory = HookFactory::new();
+            let mut hook = factory.create_hook(&agent)?;
+            hook.uninstall_hooks().await?;
+            println!("Uninstalled hooks for: {}", hook.agent_type());
 
             tracing::info!("Hooks uninstalled");
         }
