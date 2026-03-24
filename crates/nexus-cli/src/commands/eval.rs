@@ -125,7 +125,7 @@ pub async fn execute(
 
     // Create a temporary database for evaluation isolation
     let db_path = PathBuf::from(format!("/tmp/nexus-eval-{}.db", uuid::Uuid::new_v4()));
-    let db_url = format!("sqlite:{}", db_path.display());
+    let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
 
     let mut storage = StorageManager::from_url(&db_url).await?;
     storage.initialize().await?;

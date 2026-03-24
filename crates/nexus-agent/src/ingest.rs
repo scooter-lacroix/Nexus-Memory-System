@@ -6,18 +6,20 @@ use nexus_llm::{ChatMessage, GenerateParams, LlmClient, LlmClientJson};
 use nexus_storage::repository::{MemoryRepository, StoreMemoryParams};
 use tracing::{debug, error, info};
 
+// Default max tokens for LLM enrichment responses
+const INGEST_MAX_TOKENS: u32 = 8192;
+
 use crate::error::AgentError;
 use crate::prompts::{ingest_user_prompt, INGEST_SYSTEM_PROMPT};
 use crate::types::IngestExtraction;
 
 pub struct IngestService {
     llm: std::sync::Arc<dyn LlmClient>,
-    config: AgentConfig,
 }
 
 impl IngestService {
-    pub fn new(llm: std::sync::Arc<dyn LlmClient>, config: AgentConfig) -> Self {
-        Self { llm, config }
+    pub fn new(llm: std::sync::Arc<dyn LlmClient>, _config: AgentConfig) -> Self {
+        Self { llm }
     }
 
     pub async fn ingest(
@@ -82,7 +84,7 @@ impl IngestService {
                 ChatMessage::system(INGEST_SYSTEM_PROMPT),
                 ChatMessage::user(ingest_user_prompt(content, source)),
             ],
-            max_tokens: self.config.query_context_limit as u32,
+            max_tokens: INGEST_MAX_TOKENS,
             temperature: 0.3,
             json_mode: true,
         };

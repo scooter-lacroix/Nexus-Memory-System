@@ -26,7 +26,12 @@ pub struct MemoryConnection {
     pub from_id: i64,
     pub to_id: i64,
     pub relationship: String,
+    #[serde(default = "default_strength")]
     pub strength: f32,
+}
+
+fn default_strength() -> f32 {
+    0.5
 }
 
 /// Answer to a user query with citations

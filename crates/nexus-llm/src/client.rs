@@ -25,9 +25,16 @@ pub trait LlmClientJson: LlmClient {
 
         let content = response.content.trim();
         let json_str = if content.starts_with("```") {
-            let start = content.find('\n').unwrap_or(3) + 1;
-            let end = content.rfind("```").unwrap_or(content.len());
-            &content[start..end]
+            let start = content.find('\n').map(|i| i + 1).unwrap_or(3);
+            let end = content[start..]
+                .rfind("```")
+                .map(|i| start + i)
+                .unwrap_or(content.len());
+            if start >= end {
+                content
+            } else {
+                &content[start..end]
+            }
         } else {
             content
         };

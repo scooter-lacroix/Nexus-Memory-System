@@ -213,23 +213,14 @@ impl MemoryRepository {
         let pattern = format!("%{}%", query);
         let rows = sqlx::query_as::<_, MemoryRow>(
             r#"
-            SELECT * FROM memories 
-            WHERE namespace_id = ? 
-            AND (content LIKE ? OR title LIKE ?)
-            ORDER BY 
-                CASE 
-                    WHEN title LIKE ? THEN 1
-                    WHEN content LIKE ? THEN 2
-                    ELSE 3
-                END,
-                updated_at DESC
+            SELECT * FROM memories
+            WHERE namespace_id = ?
+            AND content LIKE ?
+            ORDER BY updated_at DESC
             LIMIT ?
             "#,
         )
         .bind(namespace_id)
-        .bind(&pattern)
-        .bind(&pattern)
-        .bind(&pattern)
         .bind(&pattern)
         .bind(limit)
         .fetch_all(&self.pool)

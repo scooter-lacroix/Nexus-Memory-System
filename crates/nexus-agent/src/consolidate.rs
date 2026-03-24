@@ -99,7 +99,7 @@ impl ConsolidateService {
                 ChatMessage::system(CONSOLIDATE_SYSTEM_PROMPT),
                 ChatMessage::user(consolidate_user_prompt(summaries)),
             ],
-            max_tokens: 2048,
+            max_tokens: 4096,
             temperature: 0.4,
             json_mode: true,
         };

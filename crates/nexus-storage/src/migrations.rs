@@ -116,6 +116,7 @@ async fn create_memory_relations_table(pool: &SqlitePool) -> crate::Result<()> {
             strength REAL DEFAULT 1.0,
             metadata TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source_memory_id, target_memory_id, relation_type),
             FOREIGN KEY (source_memory_id) REFERENCES memories(id),
             FOREIGN KEY (target_memory_id) REFERENCES memories(id)
         )

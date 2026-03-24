@@ -88,7 +88,7 @@ impl QueryService {
                 ChatMessage::system(QUERY_SYSTEM_PROMPT),
                 ChatMessage::user(query_user_prompt(question, context)),
             ],
-            max_tokens: 2048,
+            max_tokens: 4096,
             temperature: 0.3,
             json_mode: true,
         };
