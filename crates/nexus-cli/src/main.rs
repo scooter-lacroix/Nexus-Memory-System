@@ -200,6 +200,9 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    // Load stored per-provider credentials before any command runs
+    commands::config::load_stored_credentials();
+
     // Execute command
     match cli.command {
         Commands::Init { reset } => {

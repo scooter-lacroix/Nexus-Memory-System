@@ -164,6 +164,25 @@ The shared domain model lives in `nexus-core`. Storage and repositories live in 
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [docs/index.md](docs/index.md)
 
+## LLM Provider Evaluation
+
+The `nexus eval` command tests an LLM provider against the memory system's core operations: structured extraction, consolidation, and query synthesis. Each aspect is scored out of 200 (total 600).
+
+| Provider / Model | Extraction | Consolidation | Query | Total | Rating |
+|---|---|---|---|---|---|
+| OpenRouter / `arcee-ai/trinity-large-preview:free` | 185 | 185 | 185 | **555 / 600** | GOOD |
+| Z.ai / `glm-4.5` | 180 | 170 | 170 | **520 / 600** | GOOD |
+| Groq / `llama-3.3-70b-versatile` | 160 | 155 | 150 | **465 / 600** | ACCEPTABLE |
+| Gemini / `gemini-2.0-flash` | 10 | 10 | 10 | **30 / 600** | POOR |
+
+### Recommendations
+
+**1st choice: Z.ai / `glm-4.5`** — Best overall quality for Nexus's structured JSON tasks. Consistently produces well-formed extractions and meaningful consolidation connections. Recommended for production use with the always-on agent.
+
+**2nd choice: OpenRouter / `arcee-ai/trinity-large-preview:free`** — Highest raw score and free to use. Strong extraction and consolidation. A practical option when cost is a concern, though response latency is higher than dedicated providers.
+
+Gemini's poor result reflects free-tier quota exhaustion (HTTP 429), not model capability. Re-evaluation with an active quota is recommended before ruling it out.
+
 ## Validation
 
 Recommended validation before opening a pull request:

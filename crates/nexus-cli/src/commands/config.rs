@@ -14,6 +14,8 @@ struct Provider {
     id: &'static str,
     label: &'static str,
     default_model: &'static str,
+    /// The standard env var name this provider's API key is expected in
+    key_env: &'static str,
 }
 
 const PROVIDERS: &[Provider] = &[
@@ -21,41 +23,49 @@ const PROVIDERS: &[Provider] = &[
         id: "openai",
         label: "OpenAI",
         default_model: "gpt-4o-mini",
+        key_env: "OPENAI_API_KEY",
     },
     Provider {
         id: "anthropic",
         label: "Anthropic (Claude)",
         default_model: "claude-sonnet-4-20250514",
+        key_env: "ANTHROPIC_API_KEY",
     },
     Provider {
         id: "gemini",
         label: "Google Gemini",
         default_model: "gemini-2.0-flash",
+        key_env: "GEMINI_API_KEY",
     },
     Provider {
         id: "openrouter",
         label: "OpenRouter",
         default_model: "openai/gpt-4o-mini",
+        key_env: "OPENROUTER_API_KEY",
     },
     Provider {
         id: "groq",
         label: "Groq",
         default_model: "llama-3.3-70b-versatile",
+        key_env: "GROQ_API_KEY",
     },
     Provider {
         id: "zai",
         label: "Z.ai",
         default_model: "glm-4-flash",
+        key_env: "ZAI_API_KEY",
     },
     Provider {
         id: "minimax",
         label: "Minimax",
         default_model: "minimax-abab6.5s",
+        key_env: "MINIMAX_API_KEY",
     },
     Provider {
         id: "mistral",
         label: "Mistral",
         default_model: "mistral-small-latest",
+        key_env: "MISTRAL_API_KEY",
     },
 ];
 
@@ -105,14 +115,26 @@ pub async fn execute_wizard() -> anyhow::Result<()> {
     let provider = &PROVIDERS[selection];
 
     // ── API key ───────────────────────────────────────────────────
-    let current_key = std::env::var(&config.llm.api_key_env).unwrap_or_default();
+    let stored_key_var = format!("NEXUS_LLM_KEY_{}", provider.id);
+    let stored_entries = read_env_file(&env_file);
+    let stored_key = stored_entries.get(&stored_key_var).cloned();
+
+    let prompt = if stored_key.is_some() {
+        format!(
+            "API key for {} (stored, press Enter to keep)",
+            provider.label
+        )
+    } else {
+        format!("API key for {}", provider.label)
+    };
+
     let api_key: String = Input::new()
-        .with_prompt(format!("API key for {}", provider.label))
+        .with_prompt(prompt)
         .allow_empty(true)
         .interact_text()?;
 
     let api_key = if api_key.is_empty() {
-        current_key
+        stored_key.unwrap_or_default()
     } else {
         api_key
     };
@@ -211,12 +233,29 @@ pub async fn execute_wizard() -> anyhow::Result<()> {
     entries.insert("NEXUS_LLM_PROVIDER".into(), provider.id.into());
     entries.insert("NEXUS_LLM_MODEL".into(), model.clone());
     entries.insert("NEXUS_LLM_API_KEY_ENV".into(), "NEXUS_LLM_API_KEY".into());
-    entries.insert("NEXUS_LLM_API_KEY".into(), api_key);
+    entries.insert("NEXUS_LLM_API_KEY".into(), api_key.clone());
+
+    // Store per-provider key so switching providers doesn't lose it
+    let provider_key_var = format!("NEXUS_LLM_KEY_{}", provider.id);
+    if !api_key.is_empty() {
+        entries.insert(provider_key_var, api_key);
+    }
+
+    // Store per-provider base URL
+    let provider_base_url_var = format!("NEXUS_LLM_BASE_URL_{}", provider.id);
+    if !base_url.is_empty() {
+        entries.insert(provider_base_url_var, base_url.clone());
+    } else {
+        entries.remove(&provider_base_url_var);
+    }
+
+    // Active base URL (backward compat)
     if !base_url.is_empty() {
         entries.insert("NEXUS_LLM_BASE_URL".into(), base_url);
     } else {
         entries.remove("NEXUS_LLM_BASE_URL");
     }
+
     entries.insert(
         "NEXUS_AGENT_ENABLED".into(),
         if enable_agent { "true" } else { "false" }.into(),
@@ -280,6 +319,21 @@ pub async fn execute_show() -> anyhow::Result<()> {
     println!("  api_key:     {}", if key_set { "set" } else { "NOT SET" });
     if let Some(ref url) = config.llm.base_url {
         println!("  base_url:    {}", url);
+    }
+
+    // Show all stored provider credentials
+    let stored = stored_provider_keys();
+    if !stored.is_empty() {
+        println!();
+        println!("  Stored credentials:");
+        for (id, masked) in &stored {
+            let marker = if *id == config.llm.provider {
+                " (active)"
+            } else {
+                ""
+            };
+            println!("    {}: {}{}", id, masked, marker);
+        }
     }
     println!();
 
@@ -434,6 +488,93 @@ async fn test_connection_with_key(
     }
 }
 
+// ── Stored credential loading ─────────────────────────────────────────
+
+/// Load all stored configuration from nexus.env into the process environment.
+///
+/// This makes the env file behave like a sourced shell profile: all NEXUS_*
+/// settings (provider, model, agent flags, etc.) are available to
+/// `Config::from_env()` without requiring the user to source the file.
+///
+/// Additionally, per-provider API keys stored as `NEXUS_LLM_KEY_{provider}`
+/// are mapped to their standard env var names (e.g., `GEMINI_API_KEY`).
+///
+/// Idempotent — does not overwrite env vars that are already set in the
+/// shell, allowing explicit overrides.
+pub fn load_stored_credentials() {
+    let env_file = env_file_path();
+    let entries = read_env_file(&env_file);
+
+    // Load all NEXUS_* settings from the env file (except per-provider keys,
+    // which need special handling below).
+    for (key, value) in &entries {
+        if key.starts_with("NEXUS_")
+            && !key.starts_with("NEXUS_LLM_KEY_")
+            && !key.starts_with("NEXUS_LLM_BASE_URL_")
+            && std::env::var(key).is_err()
+        {
+            std::env::set_var(key, value);
+        }
+    }
+
+    // Map per-provider keys to their standard env var names
+    for provider in PROVIDERS {
+        let stored_key_var = format!("NEXUS_LLM_KEY_{}", provider.id);
+        if let Some(key) = entries.get(&stored_key_var) {
+            if !key.is_empty() && std::env::var(provider.key_env).is_err() {
+                std::env::set_var(provider.key_env, key);
+            }
+        }
+
+        // Set per-provider base URL as NEXUS_LLM_BASE_URL when active
+        let stored_url_var = format!("NEXUS_LLM_BASE_URL_{}", provider.id);
+        if let Some(url) = entries.get(&stored_url_var) {
+            if !url.is_empty() {
+                if let Ok(active) = std::env::var("NEXUS_LLM_PROVIDER") {
+                    if active == provider.id && std::env::var("NEXUS_LLM_BASE_URL").is_err() {
+                        std::env::set_var("NEXUS_LLM_BASE_URL", url);
+                    }
+                }
+            }
+        }
+    }
+
+    // Ensure NEXUS_LLM_API_KEY is set from the active provider's stored key
+    if std::env::var("NEXUS_LLM_API_KEY").is_err() {
+        if let Ok(active_provider) = std::env::var("NEXUS_LLM_PROVIDER") {
+            let stored_key_var = format!("NEXUS_LLM_KEY_{}", active_provider);
+            if let Some(key) = entries.get(&stored_key_var) {
+                if !key.is_empty() {
+                    std::env::set_var("NEXUS_LLM_API_KEY", key);
+                }
+            }
+        }
+    }
+}
+
+/// Get a list of all providers that have stored API keys.
+fn stored_provider_keys() -> Vec<(&'static str, String)> {
+    let env_file = env_file_path();
+    let entries = read_env_file(&env_file);
+    let mut result = Vec::new();
+    for provider in PROVIDERS {
+        let key_var = format!("NEXUS_LLM_KEY_{}", provider.id);
+        if let Some(key) = entries.get(&key_var) {
+            if !key.is_empty() {
+                result.push((
+                    provider.id,
+                    format!(
+                        "{}...{}",
+                        &key[..6.min(key.len())],
+                        &key[key.len().saturating_sub(4)..]
+                    ),
+                ));
+            }
+        }
+    }
+    result
+}
+
 // ── Env file I/O ─────────────────────────────────────────────────────
 
 fn read_env_file(path: &PathBuf) -> HashMap<String, String> {
@@ -542,7 +683,7 @@ fn env_file_path() -> PathBuf {
 }
 
 fn validate_key(key: &str) -> anyhow::Result<()> {
-    let valid_keys = [
+    let valid_prefixes = [
         "NEXUS_DATABASE_PATH",
         "NEXUS_SYNC_POLICY",
         "NEXUS_AUTO_INGEST",
@@ -552,6 +693,7 @@ fn validate_key(key: &str) -> anyhow::Result<()> {
         "NEXUS_LLM_API_KEY",
         "NEXUS_LLM_API_KEY_ENV",
         "NEXUS_LLM_BASE_URL",
+        "NEXUS_LLM_KEY_",
         "NEXUS_AGENT_ENABLED",
         "NEXUS_AGENT_NAMESPACE",
         "NEXUS_AGENT_INBOX_DIR",
@@ -560,13 +702,20 @@ fn validate_key(key: &str) -> anyhow::Result<()> {
         "NEXUS_LOG_LEVEL",
     ];
 
-    if !valid_keys.contains(&key) {
+    if !valid_prefixes
+        .iter()
+        .any(|p| key.starts_with(p) || key == *p)
+    {
         anyhow::bail!(
             "Unknown configuration key: {}\n\nRecognized keys:\n{}",
             key,
-            valid_keys
+            valid_prefixes
                 .iter()
-                .map(|k| format!("  {}", k))
+                .map(|k| format!(
+                    "  {}{}",
+                    k,
+                    if k.ends_with('_') { "<provider>" } else { "" }
+                ))
                 .collect::<Vec<_>>()
                 .join("\n")
         );

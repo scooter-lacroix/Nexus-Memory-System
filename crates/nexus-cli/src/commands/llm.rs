@@ -102,6 +102,21 @@ pub async fn execute_test(
     Ok(())
 }
 
+/// Map a provider ID to its standard API key env var name.
+fn provider_key_env(provider: &str) -> &'static str {
+    match provider {
+        "openai" => "OPENAI_API_KEY",
+        "anthropic" => "ANTHROPIC_API_KEY",
+        "gemini" => "GEMINI_API_KEY",
+        "openrouter" => "OPENROUTER_API_KEY",
+        "groq" => "GROQ_API_KEY",
+        "zai" | "z.ai" => "ZAI_API_KEY",
+        "minimax" => "MINIMAX_API_KEY",
+        "mistral" => "MISTRAL_API_KEY",
+        _ => "NEXUS_LLM_API_KEY",
+    }
+}
+
 /// Build an LlmConfig for testing, applying any CLI overrides.
 pub fn build_test_config(
     config: &Config,
@@ -109,8 +124,9 @@ pub fn build_test_config(
     model_override: Option<String>,
 ) -> LlmConfig {
     let mut llm = config.llm.clone();
-    if let Some(provider) = provider_override {
-        llm.provider = provider;
+    if let Some(provider) = &provider_override {
+        llm.provider = provider.clone();
+        llm.api_key_env = provider_key_env(provider).to_string();
     }
     if let Some(model) = model_override {
         llm.model = model;
