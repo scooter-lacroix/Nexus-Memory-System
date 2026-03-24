@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use dialoguer::{Confirm, Input, Select};
 use nexus_core::config::{Config, LlmConfig};
-use nexus_llm::{create_client, list_models, ChatMessage, GenerateParams};
+use nexus_llm::{create_client_with_fallback, list_models, ChatMessage, GenerateParams};
 
 // ── Provider definitions ─────────────────────────────────────────────
 
@@ -329,7 +329,10 @@ pub async fn execute_model_picker() -> anyhow::Result<()> {
     println!();
     println!("  Current: {} ({})", config.llm.provider, config.llm.model);
     println!();
-    println!("  Fetching available models from {}...", config.llm.provider);
+    println!(
+        "  Fetching available models from {}...",
+        config.llm.provider
+    );
 
     let llm_config = config.llm.clone();
     std::env::set_var(&config.llm.api_key_env, &api_key);
@@ -400,7 +403,7 @@ async fn test_connection_with_key(
         ..Default::default()
     };
 
-    let client = create_client(&llm_config)?;
+    let client = create_client_with_fallback(&llm_config)?;
 
     print!("  Testing connection to {} ({})... ", provider, model);
     let start = Instant::now();

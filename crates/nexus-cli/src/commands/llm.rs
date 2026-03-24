@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use nexus_core::config::{Config, LlmConfig};
-use nexus_llm::{create_client, ChatMessage, GenerateParams};
+use nexus_llm::{create_client_with_fallback, ChatMessage, GenerateParams};
 
 /// Test the LLM connection using current configuration.
 pub async fn execute_test(
@@ -49,7 +49,7 @@ pub async fn execute_test(
     println!();
 
     // Create client
-    let client = create_client(&llm_config)?;
+    let client = create_client_with_fallback(&llm_config)?;
 
     println!("  Connecting to {}...", llm_config.provider);
     let start = Instant::now();
@@ -103,7 +103,7 @@ pub async fn execute_test(
 }
 
 /// Build an LlmConfig for testing, applying any CLI overrides.
-fn build_test_config(
+pub fn build_test_config(
     config: &Config,
     provider_override: Option<String>,
     model_override: Option<String>,

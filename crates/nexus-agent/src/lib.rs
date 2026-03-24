@@ -10,6 +10,7 @@ pub mod error;
 pub mod inbox;
 pub mod ingest;
 pub mod prompts;
+pub mod pulse;
 pub mod query;
 pub mod supervisor;
 pub mod types;

@@ -5,6 +5,7 @@
 pub mod client;
 pub mod error;
 pub mod factory;
+pub mod fallback;
 pub mod models;
 pub mod provider;
 pub mod types;
@@ -16,7 +17,11 @@ mod openai;
 // Re-exports
 pub use client::{LlmClient, LlmClientJson};
 pub use error::{LlmError, Result};
-pub use factory::{create_client, create_client_auto};
+pub use factory::{
+    create_client, create_client_auto, create_client_auto_with_fallback,
+    create_client_with_fallback,
+};
+pub use fallback::FallbackClient;
 pub use models::list_models;
 pub use provider::Provider;
 pub use types::{ChatMessage, GenerateParams, GenerateResponse, TokenUsage};

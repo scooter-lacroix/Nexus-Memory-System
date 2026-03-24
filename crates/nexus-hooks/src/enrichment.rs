@@ -5,7 +5,9 @@
 
 use std::sync::Arc;
 
-use nexus_llm::{create_client_auto, ChatMessage, GenerateParams, LlmClient, LlmClientJson};
+use nexus_llm::{
+    create_client_auto_with_fallback, ChatMessage, GenerateParams, LlmClient, LlmClientJson,
+};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
@@ -75,7 +77,7 @@ pub struct EnrichmentService {
 impl EnrichmentService {
     /// Create a new enrichment service using the configured LLM client.
     pub fn new() -> anyhow::Result<Self> {
-        let client = create_client_auto()?;
+        let client = create_client_auto_with_fallback()?;
         let model_name = client.model_name();
 
         info!("EnrichmentService initialized with model: {}", model_name);

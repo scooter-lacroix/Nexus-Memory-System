@@ -142,6 +142,17 @@ enum Commands {
         #[command(subcommand)]
         command: LlmCommands,
     },
+
+    /// Evaluate a model against all aspects of the memory system
+    Eval {
+        /// Override provider (uses current config if omitted)
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// Override model (uses current config if omitted)
+        #[arg(long)]
+        model: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -266,6 +277,9 @@ async fn main() -> anyhow::Result<()> {
                 commands::llm::execute_test(provider, model).await?;
             }
         },
+        Commands::Eval { provider, model } => {
+            commands::eval::execute(provider, model).await?;
+        }
     }
 
     Ok(())

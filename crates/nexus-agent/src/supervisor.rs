@@ -18,6 +18,7 @@ use crate::consolidate::ConsolidateService;
 use crate::error::AgentError;
 use crate::inbox::InboxScanner;
 use crate::ingest::IngestService;
+use crate::pulse;
 use crate::query::QueryService;
 use crate::types::AgentStatus;
 
@@ -142,6 +143,11 @@ impl AgentSupervisor {
                         let mut s = status.write().await;
                         s.last_scan = Some(Utc::now());
                         s.files_processed += result.processed;
+                        pulse::write_pulse(
+                            "inbox_scan",
+                            s.memories_consolidated,
+                            s.files_processed,
+                        );
                     }
                     Err(e) => {
                         error!(error = %e, "Inbox scan failed");
@@ -184,6 +190,11 @@ impl AgentSupervisor {
                         let mut s = status.write().await;
                         s.last_consolidation = Some(Utc::now());
                         s.memories_consolidated += count as u64;
+                        pulse::write_pulse(
+                            "consolidation",
+                            s.memories_consolidated,
+                            s.files_processed,
+                        );
                     }
                     Ok(None) => {
                         debug!("No memories to consolidate");

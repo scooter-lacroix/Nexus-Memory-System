@@ -1,6 +1,7 @@
 //! CLI command implementations
 
 pub mod config;
+pub mod eval;
 pub mod hooks;
 pub mod ingest_hook_event;
 pub mod init;
