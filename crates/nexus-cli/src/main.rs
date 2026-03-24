@@ -149,13 +149,14 @@ enum ConfigCommands {
     /// Show current effective configuration
     Show,
 
-    /// Set a configuration value in nexus.env
+    /// Set a configuration value, or pick a model interactively
     Set {
         /// Configuration key (e.g., NEXUS_LLM_PROVIDER)
-        key: String,
+        /// If omitted, launches interactive model selector
+        key: Option<String>,
 
         /// Configuration value
-        value: String,
+        value: Option<String>,
     },
 }
 
@@ -248,9 +249,14 @@ async fn main() -> anyhow::Result<()> {
             Some(ConfigCommands::Show) => {
                 commands::config::execute_show().await?;
             }
-            Some(ConfigCommands::Set { key, value }) => {
-                commands::config::execute_set(key, value).await?;
-            }
+            Some(ConfigCommands::Set { key, value }) => match (key, value) {
+                (Some(k), Some(v)) => {
+                    commands::config::execute_set(k, v).await?;
+                }
+                _ => {
+                    commands::config::execute_model_picker().await?;
+                }
+            },
             None => {
                 commands::config::execute_wizard().await?;
             }

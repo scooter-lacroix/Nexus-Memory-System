@@ -315,6 +315,75 @@ pub async fn execute_set(key: String, value: String) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Interactive model picker — fetch models from current provider and let user select.
+pub async fn execute_model_picker() -> anyhow::Result<()> {
+    let config = Config::from_env()?;
+    let api_key = std::env::var(&config.llm.api_key_env).unwrap_or_default();
+
+    if api_key.is_empty() {
+        eprintln!("  No API key set for provider '{}'.", config.llm.provider);
+        eprintln!("  Run 'nexus config' to configure.");
+        return Ok(());
+    }
+
+    println!();
+    println!("  Current: {} ({})", config.llm.provider, config.llm.model);
+    println!();
+    println!("  Fetching available models from {}...", config.llm.provider);
+
+    let llm_config = config.llm.clone();
+    std::env::set_var(&config.llm.api_key_env, &api_key);
+
+    let models = match list_models(&llm_config).await {
+        Ok(m) if !m.is_empty() => m,
+        Ok(_) => {
+            eprintln!("  Provider returned 0 models.");
+            return Ok(());
+        }
+        Err(e) => {
+            eprintln!("  Failed to fetch models: {}", e);
+            eprintln!("  Check your API key and base URL.");
+            return Ok(());
+        }
+    };
+
+    println!("  Found {} models", models.len());
+
+    let default_idx = models
+        .iter()
+        .position(|m| m == &config.llm.model)
+        .unwrap_or(0);
+
+    let items: Vec<&str> = models.iter().map(|s| s.as_str()).collect();
+    let selected = Select::new()
+        .with_prompt("Select model")
+        .items(&items)
+        .default(default_idx)
+        .interact()?;
+
+    let new_model = &models[selected];
+
+    if new_model == &config.llm.model {
+        println!();
+        println!("  Model unchanged: {}", new_model);
+        return Ok(());
+    }
+
+    let env_file = env_file_path();
+    let mut entries = read_env_file(&env_file);
+    entries.insert("NEXUS_LLM_MODEL".into(), new_model.clone());
+    write_env_file(&env_file, &entries, false)?;
+
+    println!();
+    println!("  Switched model: {} -> {}", config.llm.model, new_model);
+    println!("  Saved to {}", env_file.display());
+    println!();
+    println!("  Restart your shell or run:");
+    println!("    source {}", env_file.display());
+
+    Ok(())
+}
+
 /// Test LLM connection, setting the key in the process env first.
 async fn test_connection_with_key(
     provider: &str,

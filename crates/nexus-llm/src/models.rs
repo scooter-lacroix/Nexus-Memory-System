@@ -19,6 +19,7 @@ struct OpenAiModel {
 /// List available model IDs from the configured provider.
 ///
 /// Validates the API key and base URL by making a live request.
+/// Merges API results with supplemental known models for the provider.
 /// Returns model IDs sorted alphabetically.
 pub async fn list_models(config: &LlmConfig) -> Result<Vec<String>> {
     let provider = Provider::parse(&config.provider)
@@ -36,11 +37,21 @@ pub async fn list_models(config: &LlmConfig) -> Result<Vec<String>> {
         .timeout(std::time::Duration::from_secs(config.timeout_secs.min(15)))
         .build()?;
 
-    if provider.is_anthropic_protocol() {
-        list_anthropic_models(&client, base_url, &api_key).await
+    let mut ids = if provider.is_anthropic_protocol() {
+        list_anthropic_models(&client, base_url, &api_key).await?
     } else {
-        list_openai_models(&client, base_url, &api_key).await
+        list_openai_models(&client, base_url, &api_key).await?
+    };
+
+    // Merge supplemental models not always returned by the API
+    for model in provider.supplemental_models() {
+        if !ids.iter().any(|id| id == model) {
+            ids.push(model.to_string());
+        }
     }
+
+    ids.sort();
+    Ok(ids)
 }
 
 async fn list_openai_models(
