@@ -130,6 +130,47 @@ enum Commands {
         #[arg(long, default_value = "auto")]
         format: String,
     },
+
+    /// Configure Nexus (interactive wizard, or use show/set subcommands)
+    Config {
+        #[command(subcommand)]
+        command: Option<ConfigCommands>,
+    },
+
+    /// Test LLM provider connectivity
+    Llm {
+        #[command(subcommand)]
+        command: LlmCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Show current effective configuration
+    Show,
+
+    /// Set a configuration value in nexus.env
+    Set {
+        /// Configuration key (e.g., NEXUS_LLM_PROVIDER)
+        key: String,
+
+        /// Configuration value
+        value: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum LlmCommands {
+    /// Test LLM provider connection
+    Test {
+        /// Override provider (e.g., openai, anthropic, gemini)
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// Override model (e.g., gpt-4o-mini, claude-sonnet-4-20250514)
+        #[arg(long)]
+        model: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -203,6 +244,22 @@ async fn main() -> anyhow::Result<()> {
         } => {
             commands::ingest_hook_event::execute(agent, event, format).await?;
         }
+        Commands::Config { command } => match command {
+            Some(ConfigCommands::Show) => {
+                commands::config::execute_show().await?;
+            }
+            Some(ConfigCommands::Set { key, value }) => {
+                commands::config::execute_set(key, value).await?;
+            }
+            None => {
+                commands::config::execute_wizard().await?;
+            }
+        },
+        Commands::Llm { command } => match command {
+            LlmCommands::Test { provider, model } => {
+                commands::llm::execute_test(provider, model).await?;
+            }
+        },
     }
 
     Ok(())

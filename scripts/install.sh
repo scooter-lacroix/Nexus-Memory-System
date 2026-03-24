@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
-# Nexus Memory System installer (Rust-first, user-level)
+# Nexus Memory System — complete build + install
+#
+# Builds all workspace crates from source and installs the CLI binary,
+# env files, shell profiles, Claude Code hooks, and tool wrappers.
+#
+# Usage:
+#   ./scripts/install.sh              # Full build + install (default)
+#   ./scripts/install.sh --skip-build # Install from existing binary
+#   ./scripts/install.sh --help
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -8,17 +16,21 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
-info() { echo -e "${BLUE}[INFO]${NC} $1"; }
-ok() { echo -e "${GREEN}[OK]${NC} $1"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-err() { echo -e "${RED}[ERROR]${NC} $1"; }
+info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
+ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
+err()   { echo -e "${RED}[ERROR]${NC} $1"; }
+step()  { echo -e "${CYAN}==>${NC} $1"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-BIN_DIR="${NEXUS_INSTALL_BIN_DIR:-${HOME}/.local/bin}"
+# ── Defaults ──────────────────────────────────────────────────────────
+CARGO_HOME="${CARGO_HOME:-${HOME}/.cargo}"
+BIN_DIR="${NEXUS_INSTALL_BIN_DIR:-${CARGO_HOME}/bin}"
 CONFIG_DIR="${NEXUS_INSTALL_CONFIG_DIR:-${XDG_CONFIG_HOME:-${HOME}/.config}/nexus-memory-system}"
 DATA_DIR="${NEXUS_INSTALL_DATA_DIR:-${XDG_DATA_HOME:-${HOME}/.local/share}/nexus-memory-system}"
 STATE_DIR="${NEXUS_INSTALL_STATE_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/nexus-memory-system}"
@@ -26,175 +38,139 @@ DB_PATH="${NEXUS_DATABASE_PATH:-${DATA_DIR}/nexus.db}"
 ENV_FILE="${CONFIG_DIR}/nexus.env"
 FISH_ENV_FILE="${CONFIG_DIR}/nexus.fish"
 
-BINARY_PATH=""
-PROFILE_FILE=""
+SKIP_BUILD=0
 SKIP_PROFILE=0
+PROFILE_FILE=""
 
+# ── Usage ─────────────────────────────────────────────────────────────
 usage() {
     cat <<EOF
+Nexus Memory System installer
+
+Builds all workspace crates from source and installs everything:
+  - nexus CLI binary  (installed to ${BIN_DIR}/nexus)
+  - environment files  (bash + fish)
+  - shell profiles     (auto-detected or --profile)
+  - Claude Code hooks  (env vars + PostToolUse hook shim)
+  - tool wrappers      (codex-nexus, claude-nexus, etc.)
+
 Usage: $0 [options]
 
 Options:
-  --binary PATH         Path to compiled nexus binary
-  --bin-dir DIR         Install directory for executables (default: ${BIN_DIR})
+  --skip-build          Skip cargo build; use existing binary
+  --bin-dir DIR         Executable directory (default: ${BIN_DIR})
   --config-dir DIR      Config directory (default: ${CONFIG_DIR})
   --data-dir DIR        Data directory (default: ${DATA_DIR})
   --state-dir DIR       State/log directory (default: ${STATE_DIR})
-  --db-path PATH        Shared Nexus database path (default: ${DB_PATH})
-  --profile FILE        Shell profile to update (.bashrc/.zshrc/config.fish)
-  --skip-profile        Do not modify shell profile
+  --db-path PATH        Database path (default: ${DB_PATH})
+  --profile FILE        Shell profile (.bashrc / .zshrc / config.fish)
+  --skip-profile        Do not modify any shell profile
   -h, --help            Show this help
+
+Environment variables:
+  NEXUS_INSTALL_BIN_DIR     Override --bin-dir
+  NEXUS_INSTALL_CONFIG_DIR  Override --config-dir
+  NEXUS_INSTALL_DATA_DIR    Override --data-dir
+  NEXUS_INSTALL_STATE_DIR   Override --state-dir
+  NEXUS_DATABASE_PATH       Override --db-path
+  CARGO_HOME                Cargo home (affects default --bin-dir)
 EOF
 }
 
+# ── Parse arguments ───────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --binary)
-            BINARY_PATH="$2"
-            shift 2
-            ;;
-        --bin-dir)
-            BIN_DIR="$2"
-            shift 2
-            ;;
+        --skip-build)   SKIP_BUILD=1; shift ;;
+        --skip-profile) SKIP_PROFILE=1; shift ;;
+        --bin-dir)      BIN_DIR="$2"; shift 2 ;;
         --config-dir)
             CONFIG_DIR="$2"
             ENV_FILE="${CONFIG_DIR}/nexus.env"
             FISH_ENV_FILE="${CONFIG_DIR}/nexus.fish"
             shift 2
             ;;
-        --data-dir)
-            DATA_DIR="$2"
-            DB_PATH="${DATA_DIR}/nexus.db"
-            shift 2
-            ;;
-        --state-dir)
-            STATE_DIR="$2"
-            shift 2
-            ;;
-        --db-path)
-            DB_PATH="$2"
-            shift 2
-            ;;
-        --profile)
-            PROFILE_FILE="$2"
-            shift 2
-            ;;
-        --skip-profile)
-            SKIP_PROFILE=1
-            shift
-            ;;
-        -h|--help)
-            usage
-            exit 0
-            ;;
-        *)
-            err "Unknown argument: $1"
-            usage
-            exit 1
-            ;;
+        --data-dir)   DATA_DIR="$2"; DB_PATH="${DATA_DIR}/nexus.db"; shift 2 ;;
+        --state-dir)  STATE_DIR="$2"; shift 2 ;;
+        --db-path)    DB_PATH="$2"; shift 2 ;;
+        --profile)    PROFILE_FILE="$2"; shift 2 ;;
+        -h|--help)    usage; exit 0 ;;
+        *) err "Unknown argument: $1"; usage; exit 1 ;;
     esac
 done
 
-resolve_binary() {
-    if [[ -n "${BINARY_PATH}" ]]; then
+# ── Prerequisites ─────────────────────────────────────────────────────
+check_prerequisites() {
+    if [[ ${SKIP_BUILD} -eq 0 ]] && ! command -v cargo >/dev/null 2>&1; then
+        err "cargo not found. Install Rust first: https://rustup.rs/"
+        exit 1
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        warn "python3 not found; Claude Code configuration will be skipped"
+    fi
+}
+
+# ── Build ─────────────────────────────────────────────────────────────
+build_nexus() {
+    if [[ ${SKIP_BUILD} -eq 1 ]]; then
+        info "Skipping build (--skip-build)"
         return
     fi
+
+    step "Building all workspace crates (release)"
+    cargo build --release -p nexus-memory --manifest-path "${REPO_ROOT}/Cargo.toml"
+    ok "Build complete"
+}
+
+# ── Resolve binary ────────────────────────────────────────────────────
+resolve_binary() {
+    local binary=""
 
     if [[ -x "${REPO_ROOT}/target/release/nexus" ]]; then
-        BINARY_PATH="${REPO_ROOT}/target/release/nexus"
-        return
+        binary="${REPO_ROOT}/target/release/nexus"
+    elif command -v nexus >/dev/null 2>&1; then
+        binary="$(command -v nexus)"
+    else
+        err "Could not find nexus binary. Run without --skip-build or build first:"
+        err "  cargo build --release -p nexus-memory"
+        exit 1
     fi
 
-    if command -v nexus-bin >/dev/null 2>&1; then
-        BINARY_PATH="$(command -v nexus-bin)"
-        return
-    fi
-
-    if command -v nexus >/dev/null 2>&1; then
-        BINARY_PATH="$(command -v nexus)"
-        return
-    fi
-
-    err "Could not find a nexus binary. Build first with: cargo build --release -p nexus-cli"
-    exit 1
+    echo "${binary}"
 }
 
-write_env_file() {
-    mkdir -p "${CONFIG_DIR}"
+# ── Install binary ────────────────────────────────────────────────────
+install_binaries() {
+    local binary
+    binary="$(resolve_binary)"
 
-    cat > "${ENV_FILE}" <<EOF
-# Generated by scripts/install.sh
-export NEXUS_DATABASE_PATH="${DB_PATH}"
-export NEXUS_SYNC_POLICY="auto"
-export NEXUS_AUTO_INGEST="true"
-export NEXUS_EMBEDDINGS_ENABLED="true"
-
-# Always-on agent (uncomment and configure to enable)
-# export NEXUS_LLM_PROVIDER="openai"
-# export NEXUS_LLM_MODEL="gpt-4o-mini"
-# export NEXUS_LLM_API_KEY_ENV="OPENAI_API_KEY"
-# export NEXUS_AGENT_ENABLED="false"
-# export NEXUS_AGENT_NAMESPACE="nexus-agent"
-# export NEXUS_AGENT_INBOX_DIR="${DATA_DIR}/inbox"
-# export NEXUS_AGENT_CONSOLIDATION_INTERVAL="30"
-EOF
-
-    cat > "${FISH_ENV_FILE}" <<EOF
-# Generated by scripts/install.sh
-set -gx NEXUS_DATABASE_PATH "${DB_PATH}"
-set -gx NEXUS_SYNC_POLICY "auto"
-set -gx NEXUS_AUTO_INGEST "true"
-set -gx NEXUS_EMBEDDINGS_ENABLED "true"
-
-# Always-on agent (uncomment and configure to enable)
-# set -gx NEXUS_LLM_PROVIDER "openai"
-# set -gx NEXUS_LLM_MODEL "gpt-4o-mini"
-# set -gx NEXUS_LLM_API_KEY_ENV "OPENAI_API_KEY"
-# set -gx NEXUS_AGENT_ENABLED "false"
-# set -gx NEXUS_AGENT_NAMESPACE "nexus-agent"
-# set -gx NEXUS_AGENT_INBOX_DIR "${DATA_DIR}/inbox"
-# set -gx NEXUS_AGENT_CONSOLIDATION_INTERVAL "30"
-if not contains -- "${BIN_DIR}" \$PATH
-    set -gx PATH "${BIN_DIR}" \$PATH
-end
-EOF
-
-    ok "Wrote shared environment files"
-}
-
-install_nexus_binaries() {
+    step "Installing nexus to ${BIN_DIR}"
     mkdir -p "${BIN_DIR}"
 
-    install -m 0755 "${BINARY_PATH}" "${BIN_DIR}/nexus-bin"
+    # Remove any stale copies from previous installs
+    rm -f "${BIN_DIR}/nexus-bin" "${HOME}/.local/bin/nexus" "${HOME}/.local/bin/nexus-bin"
 
-    cat > "${BIN_DIR}/nexus" <<EOF
+    # Install the real binary directly as "nexus"
+    install -m 0755 "${binary}" "${BIN_DIR}/nexus"
+
+    # nexus-with: sources env then runs an arbitrary command (for tool wrappers)
+    cat > "${BIN_DIR}/nexus-with" <<WITH_EOF
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ -f "${ENV_FILE}" ]]; then
-  . "${ENV_FILE}"
-fi
-exec "${BIN_DIR}/nexus-bin" "\$@"
-EOF
-    chmod +x "${BIN_DIR}/nexus"
-
-    cat > "${BIN_DIR}/nexus-with" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ -f "${ENV_FILE}" ]]; then
-  . "${ENV_FILE}"
+    . "${ENV_FILE}"
 fi
 if [[ \$# -eq 0 ]]; then
-  echo "Usage: nexus-with <command> [args...]" >&2
-  exit 1
+    echo "Usage: nexus-with <command> [args...]" >&2
+    exit 1
 fi
 exec "\$@"
-EOF
+WITH_EOF
     chmod +x "${BIN_DIR}/nexus-with"
 
-    ok "Installed nexus launchers to ${BIN_DIR}"
+    ok "Installed nexus to ${BIN_DIR}/nexus"
 }
 
+# ── Tool wrappers ─────────────────────────────────────────────────────
 install_tool_wrappers() {
     local tools=(
         codex
@@ -227,6 +203,54 @@ EOF
     fi
 }
 
+# ── Environment files ─────────────────────────────────────────────────
+write_env_file() {
+    step "Writing environment files"
+    mkdir -p "${CONFIG_DIR}"
+
+    cat > "${ENV_FILE}" <<EOF
+# Generated by scripts/install.sh
+export NEXUS_DATABASE_PATH="${DB_PATH}"
+export NEXUS_SYNC_POLICY="auto"
+export NEXUS_AUTO_INGEST="true"
+export NEXUS_EMBEDDINGS_ENABLED="true"
+
+# Always-on agent (uncomment and configure to enable)
+# export NEXUS_LLM_PROVIDER="openai"
+# export NEXUS_LLM_MODEL="gpt-4o-mini"
+# export NEXUS_LLM_API_KEY_ENV="OPENAI_API_KEY"
+# export NEXUS_AGENT_ENABLED="false"
+# export NEXUS_AGENT_NAMESPACE="nexus-agent"
+# export NEXUS_AGENT_INBOX_DIR="${DATA_DIR}/inbox"
+# export NEXUS_AGENT_CONSOLIDATION_INTERVAL="30"
+# export NEXUS_AGENT_SCAN_INTERVAL="5"
+EOF
+
+    cat > "${FISH_ENV_FILE}" <<EOF
+# Generated by scripts/install.sh
+set -gx NEXUS_DATABASE_PATH "${DB_PATH}"
+set -gx NEXUS_SYNC_POLICY "auto"
+set -gx NEXUS_AUTO_INGEST "true"
+set -gx NEXUS_EMBEDDINGS_ENABLED "true"
+
+# Always-on agent (uncomment and configure to enable)
+# set -gx NEXUS_LLM_PROVIDER "openai"
+# set -gx NEXUS_LLM_MODEL "gpt-4o-mini"
+# set -gx NEXUS_LLM_API_KEY_ENV "OPENAI_API_KEY"
+# set -gx NEXUS_AGENT_ENABLED "false"
+# set -gx NEXUS_AGENT_NAMESPACE "nexus-agent"
+# set -gx NEXUS_AGENT_INBOX_DIR "${DATA_DIR}/inbox"
+# set -gx NEXUS_AGENT_CONSOLIDATION_INTERVAL "30"
+# set -gx NEXUS_AGENT_SCAN_INTERVAL "5"
+if not contains -- "${BIN_DIR}" \$PATH
+    set -gx PATH "${BIN_DIR}" \$PATH
+end
+EOF
+
+    ok "Wrote ${ENV_FILE} and ${FISH_ENV_FILE}"
+}
+
+# ── Shell profiles ────────────────────────────────────────────────────
 upsert_profile_block_posix() {
     local profile="$1"
     local begin="# >>> nexus-memory-system >>>"
@@ -282,15 +306,17 @@ EOF
 }
 
 configure_profiles() {
+    step "Configuring shell profiles"
+
     if [[ ${SKIP_PROFILE} -eq 1 ]]; then
-        warn "Skipping shell profile updates"
+        warn "Skipping shell profile updates (--skip-profile)"
         return
     fi
 
     if [[ -n "${PROFILE_FILE}" ]]; then
         case "${PROFILE_FILE}" in
             *.fish) upsert_profile_block_fish "${PROFILE_FILE}" ;;
-            *) upsert_profile_block_posix "${PROFILE_FILE}" ;;
+            *)      upsert_profile_block_posix "${PROFILE_FILE}" ;;
         esac
         return
     fi
@@ -300,15 +326,9 @@ configure_profiles() {
     shell_name="$(basename "${SHELL:-/bin/bash}")"
 
     case "${shell_name}" in
-        fish)
-            upsert_profile_block_fish "${HOME}/.config/fish/config.fish"
-            ;;
-        zsh)
-            upsert_profile_block_posix "${HOME}/.zshrc"
-            ;;
-        *)
-            upsert_profile_block_posix "${HOME}/.bashrc"
-            ;;
+        fish) upsert_profile_block_fish "${HOME}/.config/fish/config.fish" ;;
+        zsh)  upsert_profile_block_posix "${HOME}/.zshrc" ;;
+        *)    upsert_profile_block_posix "${HOME}/.bashrc" ;;
     esac
 
     # Also update any other detected shells so PATH works everywhere
@@ -320,7 +340,9 @@ configure_profiles() {
         upsert_profile_block_fish "${HOME}/.config/fish/config.fish"
 }
 
+# ── Database ──────────────────────────────────────────────────────────
 initialize_database() {
+    step "Initializing database"
     mkdir -p "${DATA_DIR}" "${STATE_DIR}" "${DATA_DIR}/inbox" "${STATE_DIR}/pending-enrichment"
     if [[ -f "${ENV_FILE}" ]]; then
         . "${ENV_FILE}"
@@ -329,22 +351,27 @@ initialize_database() {
     ok "Initialized database at ${DB_PATH}"
 }
 
-# Ensure Claude Code's settings.json includes Nexus env vars so hooks
-# inherit them even when the parent shell doesn't source nexus.env.
+# ── Claude Code env vars ──────────────────────────────────────────────
 configure_claude_code() {
+    step "Configuring Claude Code env vars"
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        warn "python3 not found; skipping Claude Code configuration"
+        return
+    fi
+
     local settings_file="${HOME}/.claude/settings.json"
     if [[ ! -f "${settings_file}" ]]; then
         warn "Claude Code settings not found at ${settings_file}"
         return
     fi
 
-    # Check if NEXUS_DATABASE_PATH is already present in the env block
+    # Check if NEXUS_DATABASE_PATH is already present
     if python3 -c "
 import json, sys
 with open('${settings_file}') as f:
     s = json.load(f)
-env = s.get('env', {})
-if env.get('NEXUS_DATABASE_PATH'):
+if s.get('env', {}).get('NEXUS_DATABASE_PATH'):
     sys.exit(0)
 sys.exit(1)
 " 2>/dev/null; then
@@ -352,7 +379,6 @@ sys.exit(1)
         return
     fi
 
-    # Add Nexus env vars to the existing env block
     python3 -c "
 import json
 
@@ -378,21 +404,17 @@ with open(settings_path, 'w') as f:
     if [[ $? -eq 0 ]]; then
         ok "Added Nexus env vars to Claude Code settings.json"
     else
-        warn "Failed to update Claude Code settings.json (python3 required)"
+        warn "Failed to update Claude Code settings.json"
     fi
 }
 
-# Install the thin passthrough hook shim that forwards Claude Code hook
-# events to the Rust ingestion pipeline (nexus ingest-hook-event).
+# ── Hook shim ─────────────────────────────────────────────────────────
 install_hook_shim() {
+    step "Installing Claude Code hook shim"
     local hooks_dir="${CONFIG_DIR}/hooks"
     mkdir -p "${hooks_dir}"
 
     local shim_path="${hooks_dir}/event-ingest.js"
-
-    if [[ -f "${shim_path}" ]]; then
-        warn "Replacing existing hook shim at ${shim_path}"
-    fi
 
     cat > "${shim_path}" <<'SHIM_EOF'
 #!/usr/bin/env node
@@ -455,10 +477,15 @@ SHIM_EOF
     ok "Installed hook shim at ${shim_path}"
 }
 
-# Configure Claude Code hooks in settings.json to invoke the shim on
-# PostToolUse events.  The Rust pipeline handles candidate scoring,
-# duplicate suppression, and LLM enrichment — the shim is just transport.
+# ── Claude Code hooks ─────────────────────────────────────────────────
 configure_claude_hooks() {
+    step "Configuring Claude Code PostToolUse hook"
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        warn "python3 not found; skipping Claude Code hook configuration"
+        return
+    fi
+
     local settings_file="${HOME}/.claude/settings.json"
     local shim_path="${CONFIG_DIR}/hooks/event-ingest.js"
 
@@ -510,14 +537,19 @@ with open(settings_path, 'w') as f:
     if [[ $? -eq 0 ]]; then
         ok "Configured Claude Code PostToolUse hook"
     else
-        warn "Failed to configure Claude Code hooks (python3 required)"
+        warn "Failed to configure Claude Code hooks"
     fi
 }
 
+# ── Main ──────────────────────────────────────────────────────────────
 main() {
-    resolve_binary
+    echo -e "${CYAN}Nexus Memory System Installer${NC}"
+    echo
+
+    check_prerequisites
+    build_nexus
     write_env_file
-    install_nexus_binaries
+    install_binaries
     install_tool_wrappers
     install_hook_shim
     configure_profiles
@@ -526,12 +558,16 @@ main() {
     configure_claude_hooks
 
     echo
-    ok "Nexus Memory System installation complete"
+    ok "Installation complete"
+    echo
     echo "  Binary:   ${BIN_DIR}/nexus"
     echo "  Database: ${DB_PATH}"
     echo "  Config:   ${ENV_FILE}"
     echo "  Hooks:    ${CONFIG_DIR}/hooks/event-ingest.js"
     echo "  Inbox:    ${DATA_DIR}/inbox/"
+    echo
+    echo "Restart your shell or run:"
+    echo "  source ${ENV_FILE}"
 }
 
 main "$@"

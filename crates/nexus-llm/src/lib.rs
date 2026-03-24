@@ -5,6 +5,7 @@
 pub mod client;
 pub mod error;
 pub mod factory;
+pub mod models;
 pub mod provider;
 pub mod types;
 
@@ -16,5 +17,6 @@ mod openai;
 pub use client::{LlmClient, LlmClientJson};
 pub use error::{LlmError, Result};
 pub use factory::{create_client, create_client_auto};
+pub use models::list_models;
 pub use provider::Provider;
 pub use types::{ChatMessage, GenerateParams, GenerateResponse, TokenUsage};

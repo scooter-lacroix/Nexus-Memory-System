@@ -35,6 +35,7 @@ clap = { workspace = true }
 async-trait = { workspace = true }
 sqlx = { workspace = true }
 indicatif = "0.17"
+dialoguer = "0.11"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
