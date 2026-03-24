@@ -57,6 +57,30 @@ impl MemoryRepository {
         .map_err(db_error)?;
 
         let id = result.last_insert_rowid();
+
+        // If last_insert_rowid() is 0, the BEFORE INSERT trigger
+        // (trg_memories_same_namespace_merge) detected a duplicate and
+        // raised IGNORE. The existing row was touched (access_count
+        // incremented) — find it by content match.
+        if id == 0 {
+            let row: Option<MemoryRow> = sqlx::query_as(
+                "SELECT * FROM memories WHERE namespace_id = ? AND LOWER(TRIM(content)) = LOWER(TRIM(?)) AND is_active = 1 ORDER BY created_at DESC LIMIT 1"
+            )
+            .bind(namespace_id)
+            .bind(content)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_error)?;
+
+            return row
+                .map(|r| self.row_to_memory(r))
+                .ok_or_else(|| {
+                    nexus_core::NexusError::Storage(
+                        "Duplicate merged by trigger but matching row not found".to_string(),
+                    )
+                });
+        }
+
         self.get_by_id(id).await?.ok_or_else(|| {
             nexus_core::NexusError::Storage(format!("Failed to retrieve memory with id {}", id))
         })

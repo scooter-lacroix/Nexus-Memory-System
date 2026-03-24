@@ -299,6 +299,59 @@ initialize_database() {
     ok "Initialized database at ${DB_PATH}"
 }
 
+# Ensure Claude Code's settings.json includes Nexus env vars so hooks
+# inherit them even when the parent shell doesn't source nexus.env.
+configure_claude_code() {
+    local settings_file="${HOME}/.claude/settings.json"
+    if [[ ! -f "${settings_file}" ]]; then
+        warn "Claude Code settings not found at ${settings_file}"
+        return
+    fi
+
+    # Check if NEXUS_DATABASE_PATH is already present in the env block
+    if python3 -c "
+import json, sys
+with open('${settings_file}') as f:
+    s = json.load(f)
+env = s.get('env', {})
+if env.get('NEXUS_DATABASE_PATH'):
+    sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+        ok "Claude Code settings.json already has Nexus env vars"
+        return
+    fi
+
+    # Add Nexus env vars to the existing env block
+    python3 -c "
+import json
+
+settings_path = '${settings_file}'
+db_path = '${DB_PATH}'
+
+with open(settings_path) as f:
+    s = json.load(f)
+
+if 'env' not in s:
+    s['env'] = {}
+
+s['env']['NEXUS_DATABASE_PATH'] = db_path
+s['env']['NEXUS_SYNC_POLICY'] = 'auto'
+s['env']['NEXUS_AUTO_INGEST'] = 'true'
+s['env']['NEXUS_EMBEDDINGS_ENABLED'] = 'true'
+
+with open(settings_path, 'w') as f:
+    json.dump(s, f, indent=2)
+    f.write('\n')
+" 2>/dev/null
+
+    if [[ $? -eq 0 ]]; then
+        ok "Added Nexus env vars to Claude Code settings.json"
+    else
+        warn "Failed to update Claude Code settings.json (python3 required)"
+    fi
+}
+
 main() {
     resolve_binary
     write_env_file
@@ -306,6 +359,7 @@ main() {
     install_tool_wrappers
     configure_profiles
     initialize_database
+    configure_claude_code
 
     echo
     ok "Nexus Memory System installation complete"
