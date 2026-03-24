@@ -191,6 +191,8 @@ Thumbs.db
 nexus/
 tests/
 maestro/
+docs/plans/
+docs/AUTO_STAR.md
 CLAUDE.md
 CRITICAL_DESIGN_REVIEW.md
 DEBUGGING_SUMMARY.md

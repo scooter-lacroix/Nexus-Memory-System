@@ -147,6 +147,9 @@ impl Config {
         if let Ok(interval) = std::env::var("NEXUS_AGENT_CONSOLIDATION_INTERVAL") {
             config.agent.consolidation_interval_mins = interval.parse().unwrap_or(30);
         }
+        if let Ok(interval) = std::env::var("NEXUS_AGENT_SCAN_INTERVAL") {
+            config.agent.scan_interval_secs = interval.parse().unwrap_or(5);
+        }
 
         Ok(config)
     }
