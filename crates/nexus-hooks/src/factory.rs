@@ -17,7 +17,7 @@ use crate::types::AgentType;
 /// # Example
 ///
 /// ```rust
-/// use nexus_hooks::HookFactory;
+/// use nexus_memory_hooks::HookFactory;
 ///
 /// fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let factory = HookFactory::new();

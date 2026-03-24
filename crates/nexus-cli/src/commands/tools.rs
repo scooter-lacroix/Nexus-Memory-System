@@ -56,8 +56,8 @@ fn print_help(tool: Option<&str>) -> Result<()> {
 
 fn print_schema(tool: Option<&str>) -> Result<()> {
     if let Some(name) = tool {
-        let tool = nexus_mcp::find_tool(name)
-            .ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
+        let tool =
+            nexus_mcp::find_tool(name).ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
         println!("{}", serde_json::to_string_pretty(&tool.input_schema)?);
         return Ok(());
     }

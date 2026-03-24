@@ -1,6 +1,6 @@
 //! Repository implementations for database operations
 
-use crate::models::{AgentNamespaceRow, MemoryRow};
+use crate::models::{AgentNamespaceRow, MemoryRow, ProcessedFileRow};
 use crate::{db_error, Result};
 use chrono::Utc;
 use nexus_core::{AgentNamespace, Memory, MemoryCategory, MemoryLaneType};
@@ -8,6 +8,18 @@ use sqlx::SqlitePool;
 
 /// Type alias for backward compatibility
 type Category = MemoryCategory;
+
+/// Parameters for storing a new memory
+pub struct StoreMemoryParams<'a> {
+    pub namespace_id: i64,
+    pub content: &'a str,
+    pub category: &'a Category,
+    pub memory_lane_type: Option<&'a MemoryLaneType>,
+    pub labels: &'a [String],
+    pub metadata: &'a serde_json::Value,
+    pub embedding: Option<&'a [f32]>,
+    pub embedding_model: Option<&'a str>,
+}
 
 /// Repository for memory operations
 pub struct MemoryRepository {
@@ -20,20 +32,10 @@ impl MemoryRepository {
     }
 
     /// Store a new memory
-    pub async fn store(
-        &self,
-        namespace_id: i64,
-        content: &str,
-        category: &Category,
-        memory_lane_type: Option<&MemoryLaneType>,
-        labels: &[String],
-        metadata: &serde_json::Value,
-        embedding: Option<&[f32]>,
-        embedding_model: Option<&str>,
-    ) -> Result<Memory> {
-        let labels_json = serde_json::to_string(labels)?;
-        let metadata_json = serde_json::to_string(metadata)?;
-        let embedding_json = embedding.map(|e| serde_json::to_string(e)).transpose()?;
+    pub async fn store(&self, params: StoreMemoryParams<'_>) -> Result<Memory> {
+        let labels_json = serde_json::to_string(params.labels)?;
+        let metadata_json = serde_json::to_string(params.metadata)?;
+        let embedding_json = params.embedding.map(serde_json::to_string).transpose()?;
 
         let result = sqlx::query(
             r#"
@@ -43,14 +45,14 @@ impl MemoryRepository {
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0)
             "#,
         )
-        .bind(namespace_id)
-        .bind(content)
-        .bind(category.to_string())
-        .bind(memory_lane_type.map(|t| t.to_string()))
+        .bind(params.namespace_id)
+        .bind(params.content)
+        .bind(params.category.to_string())
+        .bind(params.memory_lane_type.map(|t| t.to_string()))
         .bind(&labels_json)
         .bind(&metadata_json)
         .bind(&embedding_json)
-        .bind(embedding_model)
+        .bind(params.embedding_model)
         .bind(Utc::now())
         .execute(&self.pool)
         .await
@@ -66,19 +68,17 @@ impl MemoryRepository {
             let row: Option<MemoryRow> = sqlx::query_as(
                 "SELECT * FROM memories WHERE namespace_id = ? AND LOWER(TRIM(content)) = LOWER(TRIM(?)) AND is_active = 1 ORDER BY created_at DESC LIMIT 1"
             )
-            .bind(namespace_id)
-            .bind(content)
+            .bind(params.namespace_id)
+            .bind(params.content)
             .fetch_optional(&self.pool)
             .await
             .map_err(db_error)?;
 
-            return row
-                .map(|r| self.row_to_memory(r))
-                .ok_or_else(|| {
-                    nexus_core::NexusError::Storage(
-                        "Duplicate merged by trigger but matching row not found".to_string(),
-                    )
-                });
+            return row.map(|r| self.row_to_memory(r)).ok_or_else(|| {
+                nexus_core::NexusError::Storage(
+                    "Duplicate merged by trigger but matching row not found".to_string(),
+                )
+            });
         }
 
         self.get_by_id(id).await?.ok_or_else(|| {
@@ -153,6 +153,90 @@ impl MemoryRepository {
         .map_err(db_error)?;
 
         Ok(())
+    }
+
+    /// Get unconsolidated memories
+    pub async fn get_unconsolidated(
+        &self,
+        namespace_id: i64,
+        limit: i32,
+    ) -> Result<Vec<MemoryRow>> {
+        let rows = sqlx::query_as::<_, MemoryRow>(
+            r#"
+            SELECT * FROM memories 
+            WHERE namespace_id = ? 
+            AND (metadata IS NULL OR json_extract(metadata, '$.agent.consolidated') IS NULL)
+            ORDER BY created_at ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(namespace_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(rows)
+    }
+
+    /// Mark a memory as consolidated
+    pub async fn mark_consolidated(&self, id: i64) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE memories
+            SET metadata = json_set(
+                COALESCE(metadata, '{}'),
+                '$.agent.consolidated',
+                true,
+                '$.agent.consolidated_at',
+                datetime('now')
+            ),
+            updated_at = datetime('now')
+            WHERE id = ?
+            "#,
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(())
+    }
+
+    /// Search memories by text content (LIKE search)
+    pub async fn search_by_text(
+        &self,
+        namespace_id: i64,
+        query: &str,
+        limit: i32,
+    ) -> Result<Vec<MemoryRow>> {
+        let pattern = format!("%{}%", query);
+        let rows = sqlx::query_as::<_, MemoryRow>(
+            r#"
+            SELECT * FROM memories 
+            WHERE namespace_id = ? 
+            AND (content LIKE ? OR title LIKE ?)
+            ORDER BY 
+                CASE 
+                    WHEN title LIKE ? THEN 1
+                    WHEN content LIKE ? THEN 2
+                    ELSE 3
+                END,
+                updated_at DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(namespace_id)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(rows)
     }
 
     fn row_to_memory(&self, row: MemoryRow) -> Memory {
@@ -266,12 +350,211 @@ impl NamespaceRepository {
     }
 }
 
+/// Repository for processed file operations (inbox deduplication)
+pub struct ProcessedFileRepository<'a> {
+    pub pool: &'a SqlitePool,
+}
+
+impl<'a> ProcessedFileRepository<'a> {
+    pub fn new(pool: &'a SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    /// Check if a file has been processed
+    pub async fn is_processed(&self, namespace_id: i64, path: &str) -> Result<bool> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM processed_files WHERE namespace_id = ? AND path = ?")
+                .bind(namespace_id)
+                .bind(path)
+                .fetch_optional(self.pool)
+                .await
+                .map_err(db_error)?;
+
+        Ok(row.is_some())
+    }
+
+    /// Mark a file as being processed
+    pub async fn mark_processing(
+        &self,
+        namespace_id: i64,
+        path: &str,
+        content_hash: Option<&str>,
+    ) -> Result<i64> {
+        let id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO processed_files (namespace_id, path, content_hash, status, updated_at)
+            VALUES (?, ?, ?, 'processing', datetime('now'))
+            ON CONFLICT(namespace_id, path) DO UPDATE SET
+                content_hash = excluded.content_hash,
+                status = 'processing',
+                updated_at = datetime('now')
+            RETURNING id
+            "#,
+        )
+        .bind(namespace_id)
+        .bind(path)
+        .bind(content_hash)
+        .fetch_one(self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(id)
+    }
+
+    /// Mark a file as successfully processed with memory reference
+    pub async fn mark_processed(&self, id: i64, memory_id: i64) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE processed_files
+            SET status = 'completed', memory_id = ?, processed_at = datetime('now'), updated_at = datetime('now')
+            WHERE id = ?
+            "#
+        )
+        .bind(memory_id)
+        .bind(id)
+        .execute(self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(())
+    }
+
+    /// Mark a file as failed
+    pub async fn mark_failed(&self, id: i64, error: &str) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE processed_files
+            SET status = 'failed', last_error = ?, updated_at = datetime('now')
+            WHERE id = ?
+            "#,
+        )
+        .bind(error)
+        .bind(id)
+        .execute(self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(())
+    }
+
+    /// Get files pending processing
+    pub async fn get_pending(
+        &self,
+        namespace_id: i64,
+        limit: i32,
+    ) -> Result<Vec<ProcessedFileRow>> {
+        let rows = sqlx::query_as::<_, ProcessedFileRow>(
+            r#"
+            SELECT * FROM processed_files 
+            WHERE namespace_id = ? AND status = 'pending'
+            ORDER BY created_at ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(namespace_id)
+        .bind(limit)
+        .fetch_all(self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(rows)
+    }
+
+    /// Clear all processed files for a namespace
+    pub async fn clear_namespace(&self, namespace_id: i64) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM processed_files WHERE namespace_id = ?")
+            .bind(namespace_id)
+            .execute(self.pool)
+            .await
+            .map_err(db_error)?;
+
+        Ok(result.rows_affected())
+    }
+}
+
+/// Repository for memory relationship operations
+pub struct MemoryRelationRepository<'a> {
+    pub pool: &'a SqlitePool,
+}
+
+impl<'a> MemoryRelationRepository<'a> {
+    pub fn new(pool: &'a SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    /// Store a relationship between two memories
+    pub async fn store(
+        &self,
+        source_id: i64,
+        target_id: i64,
+        relation_type: &str,
+        strength: f32,
+    ) -> Result<i64> {
+        let id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO memory_relations (source_memory_id, target_memory_id, relation_type, strength, created_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(source_memory_id, target_memory_id, relation_type) DO UPDATE SET
+                strength = excluded.strength,
+                created_at = datetime('now')
+            RETURNING id
+            "#
+        )
+        .bind(source_id)
+        .bind(target_id)
+        .bind(relation_type)
+        .bind(strength)
+        .fetch_one(self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(id)
+    }
+
+    /// Get all related memories for a given memory
+    pub async fn get_related(&self, memory_id: i64) -> Result<Vec<(i64, String, f32)>> {
+        let rows: Vec<(i64, String, f32)> = sqlx::query_as(
+            r#"
+            SELECT target_memory_id as memory_id, relation_type, strength 
+            FROM memory_relations 
+            WHERE source_memory_id = ?
+            UNION
+            SELECT source_memory_id as memory_id, relation_type, strength 
+            FROM memory_relations 
+            WHERE target_memory_id = ?
+            ORDER BY strength DESC
+            "#,
+        )
+        .bind(memory_id)
+        .bind(memory_id)
+        .fetch_all(self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(rows)
+    }
+
+    /// Delete all relations for a memory
+    pub async fn delete_for_memory(&self, memory_id: i64) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM memory_relations WHERE source_memory_id = ? OR target_memory_id = ?",
+        )
+        .bind(memory_id)
+        .bind(memory_id)
+        .execute(self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(result.rows_affected())
+    }
+}
+
 fn parse_category(s: &str) -> Category {
-    MemoryCategory::from_str(s).unwrap_or(MemoryCategory::General)
+    MemoryCategory::parse(s).unwrap_or(MemoryCategory::General)
 }
 
 fn parse_memory_lane_type(s: &str) -> Option<MemoryLaneType> {
-    MemoryLaneType::from_str(s)
+    MemoryLaneType::parse(s)
 }
 
 #[cfg(test)]
@@ -305,6 +588,6 @@ mod tests {
             ))
         ));
 
-        assert!(matches!(parse_memory_lane_type("unknown"), None));
+        assert!(parse_memory_lane_type("unknown").is_none());
     }
 }

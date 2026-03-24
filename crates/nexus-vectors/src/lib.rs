@@ -15,7 +15,7 @@
 //!
 //! ## Usage
 //! ```ignore
-//! use nexus_vectors::{VectorDatabase, VectorEntry, EMBEDDING_DIMENSION};
+//! use nexus_memory_vectors::{VectorDatabase, VectorEntry, EMBEDDING_DIMENSION};
 //!
 //! let mut db = VectorDatabase::new();
 //! let entry = VectorEntry::new(1, vec![0.1; EMBEDDING_DIMENSION], "general".to_string(), 1);

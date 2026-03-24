@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use nexus_embeddings::{OrtEmbeddingService, EmbeddingConfig};
+//! use nexus_memory_embeddings::{OrtEmbeddingService, EmbeddingConfig};
 //! use nexus_core::traits::EmbeddingService;
 //!
 //! #[tokio::main]

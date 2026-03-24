@@ -50,7 +50,7 @@ impl ExtractionStats {
 /// # Example
 ///
 /// ```ignore
-/// use nexus_hooks::{HookFactory, MultiLayerExtractor};
+/// use nexus_memory_hooks::{HookFactory, MultiLayerExtractor};
 /// use std::sync::Arc;
 ///
 /// #[tokio::main]
@@ -103,6 +103,7 @@ pub struct MultiLayerExtractor {
 
 /// Events emitted by the extractor
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ExtractionEvent {
     /// Extraction started
     Started {
@@ -194,7 +195,7 @@ impl MultiLayerExtractor {
         // Convert to AgentType for monitor
         let agent_types_enum: Vec<AgentType> = agent_types
             .iter()
-            .filter_map(|s| AgentType::from_str(s))
+            .filter_map(|s| AgentType::parse(s))
             .collect();
 
         // Start session monitor

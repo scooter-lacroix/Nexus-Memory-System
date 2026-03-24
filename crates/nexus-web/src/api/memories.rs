@@ -6,6 +6,7 @@ use axum::{
     Json,
 };
 use chrono::Utc;
+use nexus_storage::repository::StoreMemoryParams;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -105,16 +106,16 @@ pub async fn create_memory(
     // Store memory
     let memory = state
         .memory_repo
-        .store(
-            namespace.id,
-            &request.content,
-            &request.category,
-            request.memory_lane_type.as_ref(),
-            &request.labels,
-            &request.metadata,
-            None, // embedding
-            None, // embedding_model
-        )
+        .store(StoreMemoryParams {
+            namespace_id: namespace.id,
+            content: &request.content,
+            category: &request.category,
+            memory_lane_type: request.memory_lane_type.as_ref(),
+            labels: &request.labels,
+            metadata: &request.metadata,
+            embedding: None,
+            embedding_model: None,
+        })
         .await?;
 
     // Broadcast to WebSocket clients
@@ -183,14 +184,11 @@ pub async fn update_memory(
     }
 
     if let Some(category) = request.category {
-        updates.push(format!("category = '{}'", category.to_string()));
+        updates.push(format!("category = '{}'", category));
     }
 
     if let Some(memory_lane_type) = request.memory_lane_type {
-        updates.push(format!(
-            "memory_lane_type = '{}'",
-            memory_lane_type.to_string()
-        ));
+        updates.push(format!("memory_lane_type = '{}'", memory_lane_type));
     }
 
     if let Some(labels) = request.labels {
@@ -299,9 +297,7 @@ pub async fn search_memories(
         request.query.replace("%", "\\%").replace("_", "\\_")
     );
 
-    let query_str = format!(
-        "SELECT * FROM memories WHERE namespace_id = ? AND is_active = 1 AND content LIKE ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
-    );
+    let query_str = "SELECT * FROM memories WHERE namespace_id = ? AND is_active = 1 AND content LIKE ? ORDER BY created_at DESC LIMIT ? OFFSET ?".to_string();
 
     let rows: Vec<nexus_storage::models::MemoryRow> = sqlx::query_as(&query_str)
         .bind(namespace.id)
@@ -313,8 +309,7 @@ pub async fn search_memories(
         .map_err(|e| WebError::Storage(e.to_string()))?;
 
     // Convert rows to memories
-    let memories: Vec<nexus_core::Memory> =
-        rows.into_iter().map(|row| row_to_memory(row)).collect();
+    let memories: Vec<nexus_core::Memory> = rows.into_iter().map(row_to_memory).collect();
 
     let results: Vec<MemoryResponse> = memories.into_iter().map(MemoryResponse::from).collect();
 
@@ -352,11 +347,11 @@ fn row_to_memory(row: nexus_storage::models::MemoryRow) -> nexus_core::Memory {
         id: row.id,
         namespace_id: row.namespace_id,
         content: row.content,
-        category: MemoryCategory::from_str(&row.category).unwrap_or(MemoryCategory::General),
+        category: MemoryCategory::parse(&row.category).unwrap_or(MemoryCategory::General),
         memory_lane_type: row
             .memory_lane_type
             .as_deref()
-            .and_then(MemoryLaneType::from_str),
+            .and_then(MemoryLaneType::parse),
         labels,
         metadata,
         similarity_score: row.similarity_score,

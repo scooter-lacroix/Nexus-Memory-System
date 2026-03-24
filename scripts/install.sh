@@ -129,6 +129,15 @@ export NEXUS_DATABASE_PATH="${DB_PATH}"
 export NEXUS_SYNC_POLICY="auto"
 export NEXUS_AUTO_INGEST="true"
 export NEXUS_EMBEDDINGS_ENABLED="true"
+
+# Always-on agent (uncomment and configure to enable)
+# export NEXUS_LLM_PROVIDER="openai"
+# export NEXUS_LLM_MODEL="gpt-4o-mini"
+# export NEXUS_LLM_API_KEY_ENV="OPENAI_API_KEY"
+# export NEXUS_AGENT_ENABLED="false"
+# export NEXUS_AGENT_NAMESPACE="nexus-agent"
+# export NEXUS_AGENT_INBOX_DIR="${DATA_DIR}/inbox"
+# export NEXUS_AGENT_CONSOLIDATION_INTERVAL="30"
 EOF
 
     cat > "${FISH_ENV_FILE}" <<EOF
@@ -137,6 +146,15 @@ set -gx NEXUS_DATABASE_PATH "${DB_PATH}"
 set -gx NEXUS_SYNC_POLICY "auto"
 set -gx NEXUS_AUTO_INGEST "true"
 set -gx NEXUS_EMBEDDINGS_ENABLED "true"
+
+# Always-on agent (uncomment and configure to enable)
+# set -gx NEXUS_LLM_PROVIDER "openai"
+# set -gx NEXUS_LLM_MODEL "gpt-4o-mini"
+# set -gx NEXUS_LLM_API_KEY_ENV "OPENAI_API_KEY"
+# set -gx NEXUS_AGENT_ENABLED "false"
+# set -gx NEXUS_AGENT_NAMESPACE "nexus-agent"
+# set -gx NEXUS_AGENT_INBOX_DIR "${DATA_DIR}/inbox"
+# set -gx NEXUS_AGENT_CONSOLIDATION_INTERVAL "30"
 if not contains -- "${BIN_DIR}" \$PATH
     set -gx PATH "${BIN_DIR}" \$PATH
 end
@@ -277,21 +295,33 @@ configure_profiles() {
         return
     fi
 
-    if [[ -n "${BASH_VERSION:-}" ]]; then
+    # Detect the user's default shell and update its profile as primary
+    local shell_name
+    shell_name="$(basename "${SHELL:-/bin/bash}")"
+
+    case "${shell_name}" in
+        fish)
+            upsert_profile_block_fish "${HOME}/.config/fish/config.fish"
+            ;;
+        zsh)
+            upsert_profile_block_posix "${HOME}/.zshrc"
+            ;;
+        *)
+            upsert_profile_block_posix "${HOME}/.bashrc"
+            ;;
+    esac
+
+    # Also update any other detected shells so PATH works everywhere
+    [[ "${shell_name}" != "bash" && -f "${HOME}/.bashrc" ]] && \
         upsert_profile_block_posix "${HOME}/.bashrc"
-    fi
-
-    if [[ -f "${HOME}/.zshrc" ]]; then
+    [[ "${shell_name}" != "zsh" && -f "${HOME}/.zshrc" ]] && \
         upsert_profile_block_posix "${HOME}/.zshrc"
-    fi
-
-    if [[ -d "${HOME}/.config/fish" ]]; then
+    [[ "${shell_name}" != "fish" && -d "${HOME}/.config/fish" ]] && \
         upsert_profile_block_fish "${HOME}/.config/fish/config.fish"
-    fi
 }
 
 initialize_database() {
-    mkdir -p "${DATA_DIR}" "${STATE_DIR}"
+    mkdir -p "${DATA_DIR}" "${STATE_DIR}" "${DATA_DIR}/inbox" "${STATE_DIR}/pending-enrichment"
     if [[ -f "${ENV_FILE}" ]]; then
         . "${ENV_FILE}"
     fi
@@ -352,20 +382,156 @@ with open(settings_path, 'w') as f:
     fi
 }
 
+# Install the thin passthrough hook shim that forwards Claude Code hook
+# events to the Rust ingestion pipeline (nexus ingest-hook-event).
+install_hook_shim() {
+    local hooks_dir="${CONFIG_DIR}/hooks"
+    mkdir -p "${hooks_dir}"
+
+    local shim_path="${hooks_dir}/event-ingest.js"
+
+    if [[ -f "${shim_path}" ]]; then
+        warn "Replacing existing hook shim at ${shim_path}"
+    fi
+
+    cat > "${shim_path}" <<'SHIM_EOF'
+#!/usr/bin/env node
+// Thin passthrough shim — forwards raw stdin to nexus ingest-hook-event.
+// Installed by scripts/install.sh. Intelligence lives in Rust, not here.
+
+const { spawnSync } = require("child_process");
+const { mkdirSync, appendFileSync } = require("fs");
+const { dirname, join } = require("path");
+const os = require("os");
+
+const [, , agent = "generic", eventName = "event"] = process.argv;
+
+function readStdin() {
+  return new Promise((resolve) => {
+    if (process.stdin.isTTY) {
+      resolve("");
+      return;
+    }
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { data += chunk; });
+    process.stdin.on("end", () => resolve(data));
+    process.stdin.on("error", () => resolve(""));
+  });
+}
+
+function logFailure(message) {
+  try {
+    const logPath = join(
+      os.homedir(), ".local", "state", "nexus-memory-system", "hook-errors.log",
+    );
+    mkdirSync(dirname(logPath), { recursive: true });
+    appendFileSync(logPath, `[${new Date().toISOString()}] ${message}\n`);
+  } catch (_) { /* fail open */ }
+}
+
+(async () => {
+  const rawInput = await readStdin();
+  const result = spawnSync(
+    "NEXUS_BIN_PATH",
+    ["ingest-hook-event", "--agent", agent, "--event", eventName, "--format", agent],
+    { input: rawInput, encoding: "utf8", env: process.env },
+  );
+  if (result.status !== 0) {
+    logFailure(
+      `${agent}/${eventName} failed: ${result.stderr || result.stdout || `exit ${result.status}`}`,
+    );
+  }
+  process.exit(0);
+})().catch((error) => {
+  logFailure(`${agent}/${eventName} crashed: ${error.stack || error.message}`);
+  process.exit(0);
+});
+SHIM_EOF
+
+    # Replace placeholder with the actual binary path
+    sed -i "s|NEXUS_BIN_PATH|${BIN_DIR}/nexus|g" "${shim_path}"
+    chmod +x "${shim_path}"
+    ok "Installed hook shim at ${shim_path}"
+}
+
+# Configure Claude Code hooks in settings.json to invoke the shim on
+# PostToolUse events.  The Rust pipeline handles candidate scoring,
+# duplicate suppression, and LLM enrichment — the shim is just transport.
+configure_claude_hooks() {
+    local settings_file="${HOME}/.claude/settings.json"
+    local shim_path="${CONFIG_DIR}/hooks/event-ingest.js"
+
+    if [[ ! -f "${settings_file}" ]]; then
+        warn "Claude Code settings not found at ${settings_file}"
+        return
+    fi
+
+    # Check if nexus hook is already configured
+    if python3 -c "
+import json, sys
+with open('${settings_file}') as f:
+    s = json.load(f)
+hooks = s.get('hooks', {}).get('PostToolUse', [])
+for h in hooks:
+    if 'event-ingest.js' in h.get('command', ''):
+        sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+        ok "Claude Code hook already configured"
+        return
+    fi
+
+    python3 -c "
+import json
+
+settings_path = '${settings_file}'
+shim_path = '${shim_path}'
+
+with open(settings_path) as f:
+    s = json.load(f)
+
+if 'hooks' not in s:
+    s['hooks'] = {}
+if 'PostToolUse' not in s['hooks']:
+    s['hooks']['PostToolUse'] = []
+
+s['hooks']['PostToolUse'].append({
+    'matcher': '',
+    'command': f'node {shim_path} claude-code PostToolUse',
+    'timeout': 30000
+})
+
+with open(settings_path, 'w') as f:
+    json.dump(s, f, indent=2)
+    f.write('\n')
+" 2>/dev/null
+
+    if [[ $? -eq 0 ]]; then
+        ok "Configured Claude Code PostToolUse hook"
+    else
+        warn "Failed to configure Claude Code hooks (python3 required)"
+    fi
+}
+
 main() {
     resolve_binary
     write_env_file
     install_nexus_binaries
     install_tool_wrappers
+    install_hook_shim
     configure_profiles
     initialize_database
     configure_claude_code
+    configure_claude_hooks
 
     echo
     ok "Nexus Memory System installation complete"
-    echo "  Binary: ${BIN_DIR}/nexus"
+    echo "  Binary:   ${BIN_DIR}/nexus"
     echo "  Database: ${DB_PATH}"
-    echo "  Config: ${ENV_FILE}"
+    echo "  Config:   ${ENV_FILE}"
+    echo "  Hooks:    ${CONFIG_DIR}/hooks/event-ingest.js"
+    echo "  Inbox:    ${DATA_DIR}/inbox/"
 }
 
 main "$@"

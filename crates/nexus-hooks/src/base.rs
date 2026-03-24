@@ -96,7 +96,7 @@ impl HookResult {
 /// # Example
 ///
 /// ```rust,ignore
-/// use nexus_hooks::{AgentHook, SessionContext};
+/// use nexus_memory_hooks::{AgentHook, SessionContext};
 /// use async_trait::async_trait;
 ///
 /// struct MyAgentHook {

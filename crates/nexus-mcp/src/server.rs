@@ -13,18 +13,13 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Server state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ServerState {
+    #[default]
     Stopped,
     Starting,
     Running,
     Stopping,
-}
-
-impl Default for ServerState {
-    fn default() -> Self {
-        Self::Stopped
-    }
 }
 
 /// Transport type
@@ -182,7 +177,7 @@ impl McpServer {
         let pool = self
             .storage
             .as_ref()
-            .ok_or_else(|| nexus_core::NexusError::NotInitialized)?
+            .ok_or(nexus_core::NexusError::NotInitialized)?
             .pool()
             .clone();
 

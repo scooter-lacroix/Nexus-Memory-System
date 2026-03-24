@@ -6,8 +6,11 @@ pub mod migrations;
 pub mod models;
 pub mod repository;
 
+pub use migrations::create_processed_files_table;
 pub use models::*;
-pub use repository::{MemoryRepository, NamespaceRepository};
+pub use repository::{
+    MemoryRelationRepository, MemoryRepository, NamespaceRepository, ProcessedFileRepository,
+};
 
 use sqlx::SqlitePool;
 

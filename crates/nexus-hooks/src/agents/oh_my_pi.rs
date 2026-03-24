@@ -510,7 +510,7 @@ impl AgentHook for OhMyPiHook {
                 for ext in extensions {
                     if let Some(ext_str) = ext.as_str() {
                         context.add_custom(
-                            &format!("extension_{}", ext_str),
+                            format!("extension_{}", ext_str),
                             serde_json::Value::Bool(true),
                         );
                     }

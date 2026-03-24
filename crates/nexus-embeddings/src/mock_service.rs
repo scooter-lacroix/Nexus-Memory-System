@@ -323,10 +323,10 @@ mod tests {
 
     #[test]
     fn test_cosine_similarity() {
-        let a = vec![1.0, 0.0, 0.0];
-        let _b = vec![1.0, 0.0, 0.0];
-        let c = vec![0.0, 1.0, 0.0];
-        let d = vec![0.5, 0.5, 0.0];
+        let a = [1.0_f32, 0.0, 0.0];
+        let _b = [1.0_f32, 0.0, 0.0];
+        let c = [0.0_f32, 1.0, 0.0];
+        let d = [0.5_f32, 0.5, 0.0];
 
         // Same vector
         assert!((MockEmbeddingService::cosine_similarity(&a, &a) - 1.0).abs() < 1e-6);
@@ -335,7 +335,7 @@ mod tests {
         assert!((MockEmbeddingService::cosine_similarity(&a, &c) - 0.0).abs() < 1e-6);
 
         // 45 degrees
-        let expected = 0.70710678; // cos(45 degrees)
+        let expected: f32 = std::f64::consts::FRAC_1_SQRT_2 as f32; // cos(45 degrees)
         assert!((MockEmbeddingService::cosine_similarity(&a, &d) - expected).abs() < 0.01);
     }
 

@@ -1,6 +1,7 @@
 //! Application state for the web dashboard
 
 use crate::error::Result;
+use nexus_agent::AgentSupervisor;
 use nexus_orchestrator::{Event, EventType, Orchestrator};
 use nexus_storage::{MemoryRepository, NamespaceRepository, StorageManager};
 use sqlx::SqlitePool;
@@ -22,6 +23,8 @@ pub struct AppState {
     pub ws_sender: broadcast::Sender<crate::models::WebSocketMessage>,
     /// Server start time for uptime calculation
     pub start_time: std::time::Instant,
+    /// Optional agent supervisor (set when --agent flag is used)
+    pub agent_supervisor: Option<AgentSupervisor>,
 }
 
 impl AppState {
@@ -41,6 +44,7 @@ impl AppState {
             namespace_repo,
             ws_sender,
             start_time: std::time::Instant::now(),
+            agent_supervisor: None,
         };
 
         // Start event forwarding from orchestrator to WebSocket

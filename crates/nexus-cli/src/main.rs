@@ -42,6 +42,10 @@ enum Commands {
         /// Port for HTTP transport
         #[arg(short, long, default_value = "8768")]
         port: u16,
+
+        /// Enable the always-on memory agent
+        #[arg(long)]
+        agent: bool,
     },
 
     /// Store a memory
@@ -61,6 +65,14 @@ enum Commands {
         /// Memory labels (comma-separated)
         #[arg(short, long)]
         labels: Option<String>,
+
+        /// Metadata JSON object
+        #[arg(long)]
+        metadata_json: Option<String>,
+
+        /// Memory lane type (e.g., confidence, decision, workflow_note)
+        #[arg(long)]
+        memory_lane_type: Option<String>,
     },
 
     /// Search memories
@@ -103,6 +115,21 @@ enum Commands {
         #[command(subcommand)]
         command: commands::migrate::MigrateCommands,
     },
+
+    /// Ingest a hook event with LLM enrichment
+    IngestHookEvent {
+        /// Agent/namespace name (e.g., claude-code)
+        #[arg(long)]
+        agent: String,
+
+        /// Hook event name (e.g., post-tool-use)
+        #[arg(long)]
+        event: String,
+
+        /// Payload format (auto, claude-code)
+        #[arg(long, default_value = "auto")]
+        format: String,
+    },
 }
 
 #[tokio::main]
@@ -125,16 +152,30 @@ async fn main() -> anyhow::Result<()> {
         Commands::Init { reset } => {
             commands::init::execute(reset).await?;
         }
-        Commands::Serve { transport, port } => {
-            commands::serve::execute(transport, port).await?;
+        Commands::Serve {
+            transport,
+            port,
+            agent,
+        } => {
+            commands::serve::execute(transport, port, agent).await?;
         }
         Commands::Store {
             content,
             agent,
             category,
             labels,
+            metadata_json,
+            memory_lane_type,
         } => {
-            commands::store::execute(content, agent, category, labels).await?;
+            commands::store::execute(
+                content,
+                agent,
+                category,
+                labels,
+                metadata_json,
+                memory_lane_type,
+            )
+            .await?;
         }
         Commands::Search {
             query,
@@ -154,6 +195,13 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Migrate { command } => {
             commands::migrate::execute(command).await?;
+        }
+        Commands::IngestHookEvent {
+            agent,
+            event,
+            format,
+        } => {
+            commands::ingest_hook_event::execute(agent, event, format).await?;
         }
     }
 

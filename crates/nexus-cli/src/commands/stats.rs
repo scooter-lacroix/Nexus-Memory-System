@@ -42,7 +42,10 @@ pub async fn execute(agent: Option<String>) -> Result<()> {
             .await?;
 
             println!("Namespace: {}", agent_name);
-            println!("  Total memories: {}", totals.get::<i64, _>("total_memories"));
+            println!(
+                "  Total memories: {}",
+                totals.get::<i64, _>("total_memories")
+            );
             println!(
                 "  Active memories: {}",
                 totals.get::<i64, _>("active_memories")
@@ -100,7 +103,10 @@ pub async fn execute(agent: Option<String>) -> Result<()> {
             "  Total namespaces: {}",
             global.get::<i64, _>("total_namespaces")
         );
-        println!("  Total memories: {}", global.get::<i64, _>("total_memories"));
+        println!(
+            "  Total memories: {}",
+            global.get::<i64, _>("total_memories")
+        );
         println!(
             "  Active memories: {}",
             global.get::<i64, _>("active_memories")

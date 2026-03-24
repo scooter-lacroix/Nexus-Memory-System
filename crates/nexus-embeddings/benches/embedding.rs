@@ -2,7 +2,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use nexus_core::traits::EmbeddingService;
-use nexus_embeddings::MockEmbeddingService;
+use nexus_memory_embeddings::MockEmbeddingService;
 
 fn bench_single_embedding(c: &mut Criterion) {
     let service = MockEmbeddingService::new();

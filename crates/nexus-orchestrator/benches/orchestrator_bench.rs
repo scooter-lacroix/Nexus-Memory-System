@@ -6,23 +6,19 @@
 //! - Session creation: <100μs
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use nexus_orchestrator::{
-    Event, EventBus, EventType, Orchestrator, OrchestratorConfig, SessionConfig, SessionManager,
+use nexus_memory_orchestrator::{
+    Event, EventBus, EventType, Orchestrator, OrchestratorConfig, SessionManager,
 };
 use std::time::Duration;
 
 fn bench_session_creation(c: &mut Criterion) {
-    let manager = SessionManager::new(SessionConfig {
-        max_sessions: 100_000,
-        ..Default::default()
-    });
-    manager.initialize().unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let manager = SessionManager::new();
 
     c.bench_function("session_creation", |b| {
         b.iter(|| {
-            let session = manager.create_session("test-agent").unwrap();
-            // Clean up to avoid hitting limits
-            let _ = manager.end_session(&session.id);
+            let session = rt.block_on(manager.create_session("test-agent"));
+            let _ = rt.block_on(manager.end_session(&session.id));
         });
     });
 }
@@ -41,33 +37,27 @@ fn bench_event_propagation(c: &mut Criterion) {
 }
 
 fn bench_concurrent_sessions(c: &mut Criterion) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
     let mut group = c.benchmark_group("concurrent_sessions");
 
     for size in [100, 1000, 5000, 10000].iter() {
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
             b.iter(|| {
-                let manager = SessionManager::new(SessionConfig {
-                    max_sessions: size + 100,
-                    ..Default::default()
+                let manager = SessionManager::new();
+
+                let sessions = rt.block_on(async {
+                    let mut sessions = Vec::with_capacity(size);
+                    for i in 0..size {
+                        sessions.push(manager.create_session(&format!("agent-{}", i % 10)).await);
+                    }
+                    sessions
                 });
-                manager.initialize().unwrap();
 
-                // Create sessions
-                let mut sessions = Vec::with_capacity(size);
-                for i in 0..size {
-                    sessions.push(
-                        manager
-                            .create_session(&format!("agent-{}", i % 10))
-                            .unwrap(),
-                    );
-                }
+                let count = rt.block_on(manager.active_count());
+                assert!(count >= size);
 
-                // Verify count
-                assert!(manager.session_count() >= size);
-
-                // Clean up
                 for session in sessions {
-                    let _ = manager.end_session(&session.id);
+                    let _ = rt.block_on(manager.end_session(&session.id));
                 }
             });
         });
@@ -77,19 +67,13 @@ fn bench_concurrent_sessions(c: &mut Criterion) {
 }
 
 fn bench_orchestrator_full(c: &mut Criterion) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
     let orchestrator = Orchestrator::new(OrchestratorConfig::default());
-    orchestrator.initialize().unwrap();
 
     c.bench_function("orchestrator_full_lifecycle", |b| {
         b.iter(|| {
-            // Create session
-            let session = orchestrator.create_session("benchmark-agent").unwrap();
-
-            // Record activity
-            let _ = orchestrator.record_activity(&session.id);
-
-            // End session
-            let _ = orchestrator.end_session(&session.id);
+            let session = rt.block_on(orchestrator.create_session("benchmark-agent"));
+            let _ = rt.block_on(orchestrator.end_session(&session.id));
         });
     });
 }

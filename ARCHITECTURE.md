@@ -174,3 +174,31 @@ Automatic ingestion path for supported agent runtimes.
 - `nexus-core` and `nexus-storage` are the backbone of the current implementation.
 - Higher-level surfaces share the same backing store instead of maintaining separate memory silos.
 - The externally visible model is one Nexus system, even if the internal crate boundaries change over time.
+
+## Always-On Memory Agent
+
+Nexus includes an optional always-on memory agent that provides LLM-driven memory processing.
+
+### Agent Crates
+
+- **`nexus-llm`**: Multi-provider LLM abstraction supporting OpenAI, Anthropic, Gemini, OpenRouter, Groq, Z.ai, Minimax, and Mistral.
+- **`nexus-agent`**: Always-on memory agent with three core services:
+  - **IngestService**: Accepts raw text → LLM extracts summary, entities, topics, importance → stores enriched memory
+  - **ConsolidateService**: Runs on timer → finds connections between memories → stores insights as new memories with relations
+  - **QueryService**: Accepts questions → reads memories + insights → LLM synthesizes answer with citations
+
+### Agent Data Flow
+
+The agent stores all data using existing tables:
+- Enriched memories are stored in `memories` with extraction results in the `metadata` JSON field
+- Consolidation insights are stored as `memories` with `generated_by: "consolidate_agent"` in metadata
+- Connections are stored in `memory_relations`
+- Processed inbox files are tracked in `processed_files`
+
+### Agent Endpoints
+
+When the agent is enabled (`NEXUS_AGENT_ENABLED=true` or `nexus serve --agent`):
+- `POST /api/agent/ingest` — Ingest text with LLM enrichment
+- `POST /api/agent/query` — Query memory with LLM synthesis
+- `POST /api/agent/consolidate` — Trigger manual consolidation
+- `GET /api/agent/status` — Agent health and statistics

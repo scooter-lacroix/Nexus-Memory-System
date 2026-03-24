@@ -15,7 +15,7 @@
 //! ## Example
 //!
 //! ```rust,ignore
-//! use nexus_mcp::{McpServer, McpConfig};
+//! use nexus_memory_mcp::{McpServer, McpConfig};
 //!
 //! #[tokio::main]
 //! async fn main() {
@@ -177,20 +177,15 @@ impl McpConfig {
 }
 
 /// Transport type enum
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum Transport {
     /// Standard input/output transport
+    #[default]
     Stdio,
     /// HTTP transport
     Http,
     /// WebSocket transport (future)
     WebSocket,
-}
-
-impl Default for Transport {
-    fn default() -> Self {
-        Self::Stdio
-    }
 }
 
 impl std::fmt::Display for Transport {

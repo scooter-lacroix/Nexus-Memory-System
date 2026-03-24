@@ -73,3 +73,26 @@ pub struct SystemMetricRow {
     pub labels: String, // JSON
     pub recorded_at: DateTime<Utc>,
 }
+
+/// Represents a processed file record for inbox deduplication
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ProcessedFileRow {
+    pub id: i64,
+    pub namespace_id: i64,
+    pub path: String,
+    pub content_hash: Option<String>,
+    pub status: String,
+    pub memory_id: Option<i64>,
+    pub last_error: Option<String>,
+    pub processed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Status values for processed files
+pub mod processed_file_status {
+    pub const PENDING: &str = "pending";
+    pub const PROCESSING: &str = "processing";
+    pub const COMPLETED: &str = "completed";
+    pub const FAILED: &str = "failed";
+}

@@ -2,7 +2,7 @@
 //!
 //! These tests verify the MCP server functionality end-to-end.
 
-use nexus_mcp::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpConfig, RequestId};
+use nexus_memory_mcp::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpConfig, RequestId};
 use serde_json::json;
 
 /// Helper to create a basic initialize request
@@ -94,7 +94,7 @@ fn test_notification_detection() {
 #[test]
 fn test_tools_list_schema() {
     // Verify the tools list returns proper schema format
-    let tools = nexus_mcp::get_tools();
+    let tools = nexus_memory_mcp::get_tools();
 
     // All tools should have valid JSON schemas
     for tool in &tools {
@@ -109,7 +109,7 @@ fn test_tools_list_schema() {
 
 #[test]
 fn test_resources_list() {
-    let resources = nexus_mcp::get_resources();
+    let resources = nexus_memory_mcp::get_resources();
 
     assert!(!resources.is_empty());
 
@@ -138,7 +138,7 @@ mod protocol_conformance {
 
     #[test]
     fn test_jsonrpc_version() {
-        assert_eq!(nexus_mcp::JSONRPC_VERSION, "2.0");
+        assert_eq!(nexus_memory_mcp::JSONRPC_VERSION, "2.0");
     }
 
     #[test]

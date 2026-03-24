@@ -21,7 +21,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use nexus_hooks::{HookFactory, AgentHook, MultiLayerExtractor};
+//! use nexus_memory_hooks::{HookFactory, AgentHook, MultiLayerExtractor};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -46,11 +46,16 @@
 pub mod agents;
 pub mod base;
 pub mod buffer;
+pub mod candidate;
+pub mod claude_payload;
 pub mod detector;
+pub mod enrichment;
 pub mod error;
 pub mod extractor;
 pub mod factory;
 pub mod monitor;
+pub mod persistence;
+pub mod retry_buffer;
 pub mod session;
 pub mod signal;
 pub mod types;
@@ -58,11 +63,16 @@ pub mod types;
 // Re-export main types
 pub use base::{AgentHook, HookResult};
 pub use buffer::PersistentBuffer;
+pub use candidate::{derive_candidates, MemoryCandidate};
+pub use claude_payload::NormalizedHookEvent;
 pub use detector::InactivityDetector;
+pub use enrichment::{EnrichedMemory, EnrichmentBatchResult, EnrichmentService};
 pub use error::{HookError, Result};
 pub use extractor::MultiLayerExtractor;
 pub use factory::HookFactory;
 pub use monitor::{ProcessMonitor, SessionMonitor};
+pub use persistence::{persist_enriched_memories, PersistResult};
+pub use retry_buffer::{RetryArtifact, RetryBuffer};
 pub use session::SessionContext;
 pub use types::*;
 

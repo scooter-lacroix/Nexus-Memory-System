@@ -17,20 +17,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Compression format modes (aligned with LePhase FormatMode)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum CompressionMode {
     /// Ultra-compact format for tight token budgets
     Ultra,
     /// Balanced detail and compactness
+    #[default]
     Balanced,
     /// Most detailed format
     Verbose,
-}
-
-impl Default for CompressionMode {
-    fn default() -> Self {
-        Self::Balanced
-    }
 }
 
 impl CompressionMode {
@@ -53,7 +48,7 @@ impl CompressionMode {
     }
 
     /// Parse mode from string
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "ultra" => Some(Self::Ultra),
             "balanced" => Some(Self::Balanced),
@@ -755,10 +750,11 @@ mod tests {
     use super::*;
 
     fn create_test_memory(id: i64, content: &str) -> Memory {
-        let mut memory = Memory::default();
-        memory.id = id;
-        memory.content = content.to_string();
-        memory
+        Memory {
+            id,
+            content: content.to_string(),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -1029,20 +1025,20 @@ mod tests {
     }
 
     #[test]
-    fn test_compression_mode_from_str() {
+    fn test_compression_mode_parse() {
         assert_eq!(
-            CompressionMode::from_str("ultra"),
+            CompressionMode::parse("ultra"),
             Some(CompressionMode::Ultra)
         );
         assert_eq!(
-            CompressionMode::from_str("balanced"),
+            CompressionMode::parse("balanced"),
             Some(CompressionMode::Balanced)
         );
         assert_eq!(
-            CompressionMode::from_str("verbose"),
+            CompressionMode::parse("verbose"),
             Some(CompressionMode::Verbose)
         );
-        assert_eq!(CompressionMode::from_str("invalid"), None);
+        assert_eq!(CompressionMode::parse("invalid"), None);
     }
 
     #[test]

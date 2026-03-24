@@ -80,8 +80,8 @@ impl BufferData {
 /// # Example
 ///
 /// ```rust,no_run
-/// use nexus_hooks::buffer::PersistentBuffer;
-/// use nexus_hooks::session::SessionContext;
+/// use nexus_memory_hooks::buffer::PersistentBuffer;
+/// use nexus_memory_hooks::session::SessionContext;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
