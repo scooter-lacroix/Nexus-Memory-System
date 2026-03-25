@@ -27,16 +27,94 @@ pub async fn execute(agent: String, event: String, format: String) -> Result<()>
 
     tracing::info!(agent = %agent, event = %event, format = %format, "Processing hook event");
 
+    /// Generic normalizer for non-Claude payloads.
+    ///
+    /// Extracts common fields (tool_name, assistant/user messages, session/turn IDs)
+    /// from any JSON structure, falling back to the raw payload for fields that
+    /// don't match expected keys.
+    fn normalize_generic_payload(
+        agent: &str,
+        event: &str,
+        raw: &serde_json::Value,
+    ) -> nexus_hooks::claude_payload::NormalizedHookEvent {
+        let obj = raw.as_object().cloned().unwrap_or_default();
+
+        // Try common field names across different agent formats
+        let tool_name = obj
+            .get("tool_name")
+            .or_else(|| obj.get("toolName"))
+            .or_else(|| obj.get("name"))
+            .cloned();
+
+        let tool_input = obj
+            .get("tool_input")
+            .or_else(|| obj.get("toolInput"))
+            .or_else(|| obj.get("input"))
+            .or_else(|| obj.get("arguments"))
+            .cloned();
+
+        let tool_response_text = obj
+            .get("tool_response_text")
+            .or_else(|| obj.get("toolResponseText"))
+            .or_else(|| obj.get("output"))
+            .or_else(|| obj.get("result"))
+            .and_then(|v| v.as_str().map(String::from));
+
+        let assistant_message_text = obj
+            .get("assistant_message_text")
+            .or_else(|| obj.get("assistantMessageText"))
+            .or_else(|| obj.get("assistant_message"))
+            .or_else(|| obj.get("response"))
+            .and_then(|v| v.as_str().map(String::from));
+
+        let user_message_text = obj
+            .get("user_message_text")
+            .or_else(|| obj.get("userMessageText"))
+            .or_else(|| obj.get("user_message"))
+            .or_else(|| obj.get("prompt"))
+            .and_then(|v| v.as_str().map(String::from));
+
+        let session_id = obj
+            .get("session_id")
+            .or_else(|| obj.get("sessionId"))
+            .and_then(|v| v.as_str().map(String::from));
+
+        let turn_id = obj
+            .get("turn_id")
+            .or_else(|| obj.get("turnId"))
+            .and_then(|v| v.as_str().map(String::from));
+
+        let cwd = obj
+            .get("cwd")
+            .or_else(|| obj.get("working_directory"))
+            .and_then(|v| v.as_str().map(String::from));
+
+        nexus_hooks::claude_payload::NormalizedHookEvent {
+            agent: agent.to_string(),
+            event_name: event.to_string(),
+            observed_at: chrono::Utc::now(),
+            session_id,
+            turn_id,
+            cwd,
+            tool_name: tool_name.and_then(|v| v.as_str().map(String::from)),
+            tool_input,
+            tool_response_text,
+            assistant_message_text,
+            user_message_text,
+            raw_payload: raw.clone(),
+        }
+    }
+
     // 2. Normalize the payload
     let normalized = if format.is_empty() || format == "claude" {
         normalize_claude_payload(&agent, &event, &raw)
     } else {
-        tracing::warn!(
+        tracing::info!(
             format = %format,
-            "No normalizer for format '{}', falling back to Claude normalization",
+            "Using generic normalizer for format '{}'",
             format
         );
-        normalize_claude_payload(&agent, &event, &raw)
+        normalize_generic_payload(&agent, &event, &raw)
     };
     tracing::debug!(tool_name = ?normalized.tool_name, "Normalized event");
 

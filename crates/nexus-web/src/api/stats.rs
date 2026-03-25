@@ -34,10 +34,7 @@ pub async fn get_stats(State(state): State<Arc<RwLock<AppState>>>) -> Result<Jso
             .memory_repo
             .count_all_by_namespace(namespace.id)
             .await?;
-        let ns_active = state
-            .memory_repo
-            .count_by_namespace(namespace.id)
-            .await?;
+        let ns_active = state.memory_repo.count_by_namespace(namespace.id).await?;
         let ns_archived = state
             .memory_repo
             .count_archived_by_namespace(namespace.id)
@@ -112,10 +109,7 @@ pub async fn get_agent_stats(
         .memory_repo
         .count_all_by_namespace(namespace.id)
         .await?;
-    let active = state
-        .memory_repo
-        .count_by_namespace(namespace.id)
-        .await?;
+    let active = state.memory_repo.count_by_namespace(namespace.id).await?;
     let archived = state
         .memory_repo
         .count_archived_by_namespace(namespace.id)

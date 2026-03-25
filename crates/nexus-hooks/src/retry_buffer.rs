@@ -51,8 +51,7 @@ impl RetryBuffer {
         } else {
             std::env::var("HOME")
                 .map(|h| {
-                    PathBuf::from(h)
-                        .join(".local/state/nexus-memory-system/pending-enrichment")
+                    PathBuf::from(h).join(".local/state/nexus-memory-system/pending-enrichment")
                 })
                 .unwrap_or_else(|_| PathBuf::from(".nexus-pending-enrichment"))
         }

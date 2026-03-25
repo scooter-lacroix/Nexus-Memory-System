@@ -132,13 +132,11 @@ impl MemoryRepository {
 
     /// Count all memories in namespace (including inactive/archived)
     pub async fn count_all_by_namespace(&self, namespace_id: i64) -> Result<i64> {
-        let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM memories WHERE namespace_id = ?",
-        )
-        .bind(namespace_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(db_error)?;
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM memories WHERE namespace_id = ?")
+            .bind(namespace_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db_error)?;
 
         Ok(count.0)
     }

@@ -12,6 +12,7 @@ use sqlx::SqlitePool;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, Duration};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use crate::consolidate::ConsolidateService;
@@ -22,12 +23,16 @@ use crate::pulse;
 use crate::query::QueryService;
 use crate::types::AgentStatus;
 
+/// How long to wait for tasks to shut down gracefully before force-aborting.
+const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub struct AgentSupervisor {
     config: AgentConfig,
     llm: Arc<dyn LlmClient>,
     pool: SqlitePool,
     namespace_id: i64,
     status: Arc<RwLock<AgentStatus>>,
+    cancel_token: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -56,6 +61,7 @@ impl AgentSupervisor {
             pool,
             namespace_id,
             status,
+            cancel_token: CancellationToken::new(),
             tasks: Vec::new(),
         }
     }
@@ -81,15 +87,40 @@ impl AgentSupervisor {
     }
 
     pub async fn stop(&mut self) {
-        info!("Stopping agent supervisor");
+        info!("Stopping agent supervisor (signaling graceful shutdown)");
 
-        for task in &self.tasks {
-            task.abort();
+        self.cancel_token.cancel();
+
+        // Wait for tasks to complete gracefully
+        let mut remaining: Vec<JoinHandle<()>> = Vec::new();
+        for task in self.tasks.drain(..) {
+            if task.is_finished() {
+                let _ = task.await;
+            } else {
+                remaining.push(task);
+            }
         }
 
-        // Wait for tasks to complete
-        for task in &mut self.tasks {
-            let _ = task.await;
+        if !remaining.is_empty() {
+            info!(
+                "Waiting up to {}s for {} task(s) to finish gracefully",
+                GRACEFUL_SHUTDOWN_TIMEOUT.as_secs(),
+                remaining.len()
+            );
+            match tokio::time::timeout(GRACEFUL_SHUTDOWN_TIMEOUT, async {
+                for task in remaining {
+                    let _ = task.await;
+                }
+            })
+            .await
+            {
+                Ok(()) => info!("All tasks shut down gracefully"),
+                Err(_) => {
+                    // Tasks didn't finish in time — they were already cancelled,
+                    // and their JoinHandles will return once the loop exits.
+                    info!("Graceful shutdown timed out");
+                }
+            }
         }
 
         self.tasks.clear();
@@ -130,14 +161,21 @@ impl AgentSupervisor {
         let namespace_id = self.namespace_id;
         let status = self.status.clone();
         let interval_secs = config.scan_interval_secs;
+        let cancel = self.cancel_token.clone();
 
         let handle = tokio::spawn(async move {
-            let ingest_service = IngestService::new(llm, config.clone());
+            let ingest_service = IngestService::new(llm.clone(), config.clone());
             let scanner = InboxScanner::new(config, ingest_service);
             let mut ticker = interval(Duration::from_secs(interval_secs));
 
             loop {
-                ticker.tick().await;
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    _ = cancel.cancelled() => {
+                        info!("Inbox scanner received shutdown signal");
+                        break;
+                    }
+                }
 
                 let processed_repo = ProcessedFileRepository::new(&pool);
                 let memory_repo = MemoryRepository::new(pool.clone());
@@ -178,13 +216,20 @@ impl AgentSupervisor {
         let namespace_id = self.namespace_id;
         let status = self.status.clone();
         let interval_mins = config.consolidation_interval_mins;
+        let cancel = self.cancel_token.clone();
 
         let handle = tokio::spawn(async move {
             let service = ConsolidateService::new(llm, config);
             let mut ticker = interval(Duration::from_secs(interval_mins * 60));
 
             loop {
-                ticker.tick().await;
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    _ = cancel.cancelled() => {
+                        info!("Consolidation task received shutdown signal");
+                        break;
+                    }
+                }
 
                 let memory_repo = MemoryRepository::new(pool.clone());
                 let relation_repo = MemoryRelationRepository::new(&pool);

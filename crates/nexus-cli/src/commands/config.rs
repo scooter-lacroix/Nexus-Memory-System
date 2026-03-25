@@ -6,7 +6,9 @@ use std::time::Instant;
 
 use dialoguer::{Confirm, Input, Select};
 use nexus_core::config::{Config, LlmConfig};
-use nexus_llm::{create_client_with_fallback, list_models, ChatMessage, GenerateParams, ALL_PROVIDERS, Provider};
+use nexus_llm::{
+    create_client_with_fallback, list_models, ChatMessage, GenerateParams, Provider, ALL_PROVIDERS,
+};
 
 // ── Public entry points ──────────────────────────────────────────────
 
@@ -97,7 +99,10 @@ pub async fn execute_wizard() -> anyhow::Result<()> {
         // Inject the key so list_models can find it
         std::env::set_var("NEXUS_LLM_API_KEY", &api_key);
         println!();
-        println!("  Fetching available models from {}...", provider.display_label());
+        println!(
+            "  Fetching available models from {}...",
+            provider.display_label()
+        );
 
         let mut llm_config = LlmConfig {
             provider: provider_id.clone(),
@@ -388,7 +393,10 @@ pub async fn execute_model_picker(provider_name: Option<String>) -> anyhow::Resu
             config.llm.provider, provider_id
         );
     }
-    println!("  Fetching available models from {}...", provider.display_label());
+    println!(
+        "  Fetching available models from {}...",
+        provider.display_label()
+    );
 
     let mut llm_config = LlmConfig {
         provider: provider_id.clone(),
@@ -450,7 +458,10 @@ pub async fn execute_model_picker(provider_name: Option<String>) -> anyhow::Resu
 
     entries.insert("NEXUS_LLM_PROVIDER".into(), provider_id.clone());
     entries.insert("NEXUS_LLM_MODEL".into(), new_model.clone());
-    entries.insert("NEXUS_LLM_API_KEY_ENV".into(), provider.default_api_key_env().into());
+    entries.insert(
+        "NEXUS_LLM_API_KEY_ENV".into(),
+        provider.default_api_key_env().into(),
+    );
     write_env_file(&env_file, &entries, false)?;
 
     println!();
@@ -709,7 +720,12 @@ fn env_file_path() -> PathBuf {
     }
     // Last resort: HOME/.config — never /tmp for config files containing secrets
     std::env::var("HOME")
-        .map(|h| PathBuf::from(h).join(".config").join("nexus-memory-system").join("nexus.env"))
+        .map(|h| {
+            PathBuf::from(h)
+                .join(".config")
+                .join("nexus-memory-system")
+                .join("nexus.env")
+        })
         .unwrap_or_else(|_| PathBuf::from(".nexus.env"))
 }
 

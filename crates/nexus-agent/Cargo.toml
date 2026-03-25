@@ -17,6 +17,7 @@ nexus-embeddings = { workspace = true }
 
 # Async
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 async-trait = { workspace = true }
 
 # Serialization
