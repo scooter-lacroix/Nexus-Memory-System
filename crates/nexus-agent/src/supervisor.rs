@@ -126,7 +126,8 @@ impl AgentSupervisor {
         let interval_secs = config.scan_interval_secs;
 
         let handle = tokio::spawn(async move {
-            let scanner = InboxScanner::new(config.clone(), IngestService::new(llm, config));
+            let scanner =
+                InboxScanner::new(config.clone(), IngestService::new(llm, config.clone()));
             let mut ticker = interval(Duration::from_secs(interval_secs));
 
             loop {

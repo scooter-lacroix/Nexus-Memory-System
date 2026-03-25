@@ -1,13 +1,14 @@
 //! Application state for the web dashboard
 
 use crate::error::Result;
+use crate::WebError;
 use nexus_agent::AgentSupervisor;
 use nexus_orchestrator::{Event, EventType, Orchestrator};
 use nexus_storage::{MemoryRepository, NamespaceRepository, StorageManager};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
-use tracing::error;
+use tracing::{error, info};
 
 /// Shared application state
 pub struct AppState {
@@ -37,6 +38,19 @@ impl AppState {
         // Create WebSocket broadcast channel
         let (ws_sender, _) = broadcast::channel(1000);
 
+        // Initialize agent supervisor if enabled
+        let agent_supervisor = match Self::create_agent_supervisor(&pool, &namespace_repo) {
+            Ok(Some(supervisor)) => {
+                info!("Agent supervisor initialized");
+                Some(supervisor)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                error!("Failed to initialize agent supervisor: {}", e);
+                None
+            }
+        };
+
         let state = Self {
             storage,
             orchestrator,
@@ -44,7 +58,7 @@ impl AppState {
             namespace_repo,
             ws_sender,
             start_time: std::time::Instant::now(),
-            agent_supervisor: None,
+            agent_supervisor,
         };
 
         // Start event forwarding from orchestrator to WebSocket
@@ -131,6 +145,33 @@ impl AppState {
     /// Get the database pool
     pub fn pool(&self) -> &SqlitePool {
         self.storage.pool()
+    }
+
+    /// Create an agent supervisor if agent mode is enabled in the config.
+    fn create_agent_supervisor(
+        pool: &SqlitePool,
+        namespace_repo: &NamespaceRepository,
+    ) -> Result<Option<AgentSupervisor>> {
+        let config = nexus_core::Config::from_env().map_err(|e| WebError::Config(e.to_string()))?;
+
+        if !config.agent.enabled {
+            return Ok(None);
+        }
+
+        let llm = nexus_llm::create_client_auto_with_fallback()
+            .map_err(|e| WebError::Config(format!("Failed to create LLM client: {}", e)))?;
+
+        // Ensure the agent namespace exists
+        let namespace = tokio::runtime::Handle::current()
+            .block_on(namespace_repo.get_or_create(&config.agent.namespace, "nexus-agent"))
+            .map_err(|e| WebError::Storage(e.to_string()))?;
+
+        let mut supervisor = AgentSupervisor::new(config.agent, llm, pool.clone(), namespace.id);
+        tokio::runtime::Handle::current()
+            .block_on(supervisor.start())
+            .map_err(|e| WebError::Config(format!("Failed to start agent supervisor: {}", e)))?;
+
+        Ok(Some(supervisor))
     }
 
     /// Get uptime in seconds

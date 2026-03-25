@@ -10,6 +10,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> crate::Result<()> {
     create_task_specifications_table(pool).await?;
     create_memory_relations_table(pool).await?;
     create_system_metrics_table(pool).await?;
+    create_processed_files_table(pool).await?;
     Ok(())
 }
 
@@ -161,7 +162,7 @@ pub async fn create_processed_files_table(pool: &SqlitePool) -> crate::Result<()
             processed_at DATETIME,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME,
-            FOREIGN KEY (namespace_id) REFERENCES namespaces(id),
+            FOREIGN KEY (namespace_id) REFERENCES agent_namespaces(id),
             FOREIGN KEY (memory_id) REFERENCES memories(id),
             UNIQUE(namespace_id, path)
         );

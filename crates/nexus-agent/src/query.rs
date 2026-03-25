@@ -8,6 +8,7 @@ use tracing::{debug, info, warn};
 use crate::error::AgentError;
 use crate::prompts::{query_user_prompt, QUERY_SYSTEM_PROMPT};
 use crate::types::QueryAnswer;
+use crate::util::extract_agent_summary;
 
 pub struct QueryService {
     llm: std::sync::Arc<dyn LlmClient>,
@@ -60,12 +61,7 @@ impl QueryService {
         let mut context_parts = Vec::new();
 
         for memory in memories {
-            let summary = serde_json::from_str::<serde_json::Value>(&memory.metadata)
-                .ok()
-                .and_then(|md| md.get("agent").cloned())
-                .and_then(|a: serde_json::Value| a.get("summary").cloned())
-                .and_then(|s: serde_json::Value| s.as_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| memory.content.chars().take(300).collect::<String>());
+            let summary = extract_agent_summary(&memory.metadata, &memory.content, 300);
 
             context_parts.push(format!(
                 "[Memory #{}] {}\nSummary: {}",

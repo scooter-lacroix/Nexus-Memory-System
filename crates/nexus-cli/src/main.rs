@@ -267,8 +267,12 @@ async fn main() -> anyhow::Result<()> {
                 (Some(k), Some(v)) => {
                     commands::config::execute_set(k, v).await?;
                 }
-                _ => {
-                    commands::config::execute_model_picker().await?;
+                (Some(provider_hint), None) => {
+                    // Treat as provider name — launch model picker for that provider
+                    commands::config::execute_model_picker(Some(provider_hint)).await?;
+                }
+                (None, _) => {
+                    commands::config::execute_model_picker(None).await?;
                 }
             },
             None => {

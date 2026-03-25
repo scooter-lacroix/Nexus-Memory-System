@@ -172,16 +172,15 @@ The `nexus eval` command tests an LLM provider against the memory system's core 
 |---|---|---|---|---|---|
 | OpenRouter / `arcee-ai/trinity-large-preview:free` | 185 | 185 | 185 | **555 / 600** | GOOD |
 | Z.ai / `glm-4.5` | 180 | 170 | 170 | **520 / 600** | GOOD |
+| Gemini / `gemini-3.1-flash-lite-preview` | 100 | 80 | 55 | **520 / 600** | GOOD |
+| Groq / `moonshotai/kimi-k2-instruct-0905` | 100 | 80 | 55 | **520 / 600** | GOOD |
 | Groq / `llama-3.3-70b-versatile` | 160 | 155 | 150 | **465 / 600** | ACCEPTABLE |
-| Gemini / `gemini-2.0-flash` | 10 | 10 | 10 | **30 / 600** | POOR |
 
 ### Recommendations
 
-**1st choice: Z.ai / `glm-4.5`** — Best overall quality for Nexus's structured JSON tasks. Consistently produces well-formed extractions and meaningful consolidation connections. Recommended for production use with the always-on agent.
+**1st choice: OpenRouter / `arcee-ai/trinity-large-preview:free`** — Highest overall score across all aspects. Free to use with strong extraction and consolidation. Best value for production use.
 
-**2nd choice: OpenRouter / `arcee-ai/trinity-large-preview:free`** — Highest raw score and free to use. Strong extraction and consolidation. A practical option when cost is a concern, though response latency is higher than dedicated providers.
-
-Gemini's poor result reflects free-tier quota exhaustion (HTTP 429), not model capability. Re-evaluation with an active quota is recommended before ruling it out.
+**2nd choice: Z.ai / `glm-4.5`** — Best structured JSON quality with the most consistent extraction scores. Recommended when a dedicated provider is preferred over a routing layer.
 
 ## Validation
 

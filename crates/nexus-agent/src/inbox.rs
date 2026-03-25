@@ -17,6 +17,9 @@ pub struct InboxScanner {
     ingest_service: IngestService,
 }
 
+/// Maximum file size to read from inbox (10 MB)
+const MAX_INBOX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+
 impl InboxScanner {
     pub fn new(config: AgentConfig, ingest_service: IngestService) -> Self {
         Self {
@@ -77,6 +80,38 @@ impl InboxScanner {
                     continue;
                 }
             };
+
+            // Check file size before reading
+            let metadata = match fs::metadata(path).await {
+                Ok(m) => m,
+                Err(e) => {
+                    error!(path = %path.display(), error = %e, "Failed to read file metadata");
+                    continue;
+                }
+            };
+            if metadata.len() > MAX_INBOX_FILE_SIZE {
+                warn!(
+                    path = %path.display(),
+                    size = metadata.len(),
+                    max = MAX_INBOX_FILE_SIZE,
+                    "Skipping file exceeding size limit"
+                );
+                if let Err(e) = processed_repo
+                    .mark_failed(
+                        file_id,
+                        &format!(
+                            "File too large ({} bytes, max {})",
+                            metadata.len(),
+                            MAX_INBOX_FILE_SIZE
+                        ),
+                    )
+                    .await
+                {
+                    warn!(file_id = file_id, error = %e, "Failed to mark file as failed");
+                }
+                failed += 1;
+                continue;
+            }
 
             // Read and process file
             match fs::read_to_string(path).await {

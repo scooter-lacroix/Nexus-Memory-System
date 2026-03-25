@@ -50,7 +50,9 @@ pub fn create_client(config: &LlmConfig) -> Result<Arc<dyn LlmClient>> {
 
 /// Create an LLM client with auto-configuration from environment
 pub fn create_client_auto() -> Result<Arc<dyn LlmClient>> {
-    let config = LlmConfig::default();
+    let config = nexus_core::Config::from_env()
+        .map(|c| c.llm)
+        .unwrap_or_default();
     create_client(&config)
 }
 
@@ -137,6 +139,8 @@ pub fn create_client_with_fallback(config: &LlmConfig) -> Result<Arc<dyn LlmClie
 /// Create an LLM client with auto-configuration from environment, including
 /// automatic fallback on quota/rate-limit errors.
 pub fn create_client_auto_with_fallback() -> Result<Arc<dyn LlmClient>> {
-    let config = LlmConfig::default();
+    let config = nexus_core::Config::from_env()
+        .map(|c| c.llm)
+        .unwrap_or_default();
     create_client_with_fallback(&config)
 }

@@ -351,10 +351,10 @@ impl<'a> ProcessedFileRepository<'a> {
         Self { pool }
     }
 
-    /// Check if a file has been processed
+    /// Check if a file has been successfully processed
     pub async fn is_processed(&self, namespace_id: i64, path: &str) -> Result<bool> {
         let row: Option<(i64,)> =
-            sqlx::query_as("SELECT id FROM processed_files WHERE namespace_id = ? AND path = ?")
+            sqlx::query_as("SELECT id FROM processed_files WHERE namespace_id = ? AND path = ? AND status = 'completed'")
                 .bind(namespace_id)
                 .bind(path)
                 .fetch_optional(self.pool)

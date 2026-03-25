@@ -14,6 +14,7 @@ pub mod pulse;
 pub mod query;
 pub mod supervisor;
 pub mod types;
+pub mod util;
 
 // Re-exports
 pub use consolidate::ConsolidateService;

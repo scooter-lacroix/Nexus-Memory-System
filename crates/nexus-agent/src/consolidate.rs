@@ -8,6 +8,7 @@ use tracing::{debug, error, info};
 use crate::error::AgentError;
 use crate::prompts::{consolidate_user_prompt, CONSOLIDATE_SYSTEM_PROMPT};
 use crate::types::ConsolidationResult;
+use crate::util::extract_agent_summary;
 
 pub struct ConsolidateService {
     llm: std::sync::Arc<dyn LlmClient>,
@@ -47,12 +48,7 @@ impl ConsolidateService {
         let summaries: Vec<(i64, String)> = memories
             .iter()
             .map(|m| {
-                let summary = serde_json::from_str::<serde_json::Value>(&m.metadata)
-                    .ok()
-                    .and_then(|md| md.get("agent").cloned())
-                    .and_then(|a: serde_json::Value| a.get("summary").cloned())
-                    .and_then(|s: serde_json::Value| s.as_str().map(|s| s.to_string()))
-                    .unwrap_or_else(|| m.content.chars().take(200).collect::<String>());
+                let summary = extract_agent_summary(&m.metadata, &m.content, 200);
                 (m.id, summary)
             })
             .collect();

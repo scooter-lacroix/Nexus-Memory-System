@@ -34,6 +34,9 @@ pub enum WebError {
 
     #[error("WebSocket error: {0}")]
     WebSocket(String),
+
+    #[error("Configuration error: {0}")]
+    Config(String),
 }
 
 impl IntoResponse for WebError {
@@ -46,6 +49,7 @@ impl IntoResponse for WebError {
             WebError::ServerStart(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             WebError::Serialization(_) => (StatusCode::BAD_REQUEST, "Invalid JSON".to_string()),
             WebError::WebSocket(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            WebError::Config(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };
 
         let body = Json(json!({

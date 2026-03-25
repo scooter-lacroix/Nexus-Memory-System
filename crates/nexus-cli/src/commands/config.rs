@@ -369,27 +369,94 @@ pub async fn execute_set(key: String, value: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Interactive model picker — fetch models from current provider and let user select.
-pub async fn execute_model_picker() -> anyhow::Result<()> {
+/// Interactive model picker — select a provider, then a model from that provider.
+///
+/// If `provider_name` is given, skip provider selection and use that provider
+/// directly (saving it as the new default). If omitted, show the provider list.
+pub async fn execute_model_picker(provider_name: Option<String>) -> anyhow::Result<()> {
     let config = Config::from_env()?;
-    let api_key = std::env::var(&config.llm.api_key_env).unwrap_or_default();
+
+    // ── Provider selection ────────────────────────────────────────
+    let provider = if let Some(ref name) = provider_name {
+        match resolve_provider(name) {
+            Some(p) => p,
+            None => {
+                eprintln!("  Unknown provider: '{}'", name);
+                eprintln!(
+                    "  Available: {}",
+                    PROVIDERS
+                        .iter()
+                        .map(|p| p.id)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                return Ok(());
+            }
+        }
+    } else {
+        // No provider specified — show provider list
+        let items: Vec<&str> = PROVIDERS.iter().map(|p| p.label).collect();
+        let current_idx = PROVIDERS
+            .iter()
+            .position(|p| p.id == config.llm.provider)
+            .unwrap_or(0);
+
+        let selection = Select::new()
+            .with_prompt("Select provider")
+            .items(&items)
+            .default(current_idx)
+            .interact()?;
+
+        &PROVIDERS[selection]
+    };
+
+    let switching = provider.id != config.llm.provider;
+
+    // ── API key resolution ────────────────────────────────────────
+    let stored_key_var = format!("NEXUS_LLM_KEY_{}", provider.id);
+    let stored_entries = read_env_file(&env_file_path());
+    let stored_key = stored_entries
+        .get(&stored_key_var)
+        .cloned()
+        .unwrap_or_default();
+
+    // Try: per-provider stored key > standard env var > NEXUS_LLM_API_KEY
+    let api_key = if !stored_key.is_empty() {
+        stored_key
+    } else if let Ok(key) = std::env::var(provider.key_env) {
+        key
+    } else {
+        std::env::var("NEXUS_LLM_API_KEY").unwrap_or_default()
+    };
 
     if api_key.is_empty() {
-        eprintln!("  No API key set for provider '{}'.", config.llm.provider);
-        eprintln!("  Run 'nexus config' to configure.");
+        eprintln!("  No API key found for {}.", provider.label);
+        eprintln!("  Run 'nexus config' to set one up.");
         return Ok(());
     }
 
-    println!();
-    println!("  Current: {} ({})", config.llm.provider, config.llm.model);
-    println!();
-    println!(
-        "  Fetching available models from {}...",
-        config.llm.provider
-    );
+    // Inject the key so the LLM client can find it
+    std::env::set_var(provider.key_env, &api_key);
+    std::env::set_var("NEXUS_LLM_API_KEY", &api_key);
 
-    let llm_config = config.llm.clone();
-    std::env::set_var(&config.llm.api_key_env, &api_key);
+    println!();
+    if switching {
+        println!(
+            "  Switching provider: {} -> {}",
+            config.llm.provider, provider.id
+        );
+    }
+    println!("  Fetching available models from {}...", provider.label);
+
+    let mut llm_config = LlmConfig {
+        provider: provider.id.into(),
+        api_key_env: provider.key_env.into(),
+        model: provider.default_model.into(),
+        ..Default::default()
+    };
+    if let Ok(url) = std::env::var("NEXUS_LLM_BASE_URL") {
+        llm_config.base_url = Some(url);
+    }
 
     let models = match list_models(&llm_config).await {
         Ok(m) if !m.is_empty() => m,
@@ -405,11 +472,15 @@ pub async fn execute_model_picker() -> anyhow::Result<()> {
     };
 
     println!("  Found {} models", models.len());
+    println!();
 
-    let default_idx = models
-        .iter()
-        .position(|m| m == &config.llm.model)
-        .unwrap_or(0);
+    // Pre-select: current model if switching to same provider, else default
+    let current_model = if !switching {
+        &config.llm.model
+    } else {
+        provider.default_model
+    };
+    let default_idx = models.iter().position(|m| m == current_model).unwrap_or(0);
 
     let items: Vec<&str> = models.iter().map(|s| s.as_str()).collect();
     let selected = Select::new()
@@ -420,25 +491,47 @@ pub async fn execute_model_picker() -> anyhow::Result<()> {
 
     let new_model = &models[selected];
 
-    if new_model == &config.llm.model {
+    // ── Save ──────────────────────────────────────────────────────
+    let env_file = env_file_path();
+    let mut entries = read_env_file(&env_file);
+
+    let provider_changed = entries
+        .get("NEXUS_LLM_PROVIDER")
+        .map_or(true, |v| v != provider.id);
+    let model_changed = entries.get("NEXUS_LLM_MODEL") != Some(new_model);
+
+    if !provider_changed && !model_changed {
         println!();
-        println!("  Model unchanged: {}", new_model);
+        println!("  Unchanged: {} ({})", provider.id, new_model);
         return Ok(());
     }
 
-    let env_file = env_file_path();
-    let mut entries = read_env_file(&env_file);
+    entries.insert("NEXUS_LLM_PROVIDER".into(), provider.id.into());
     entries.insert("NEXUS_LLM_MODEL".into(), new_model.clone());
+    entries.insert("NEXUS_LLM_API_KEY_ENV".into(), provider.key_env.into());
     write_env_file(&env_file, &entries, false)?;
 
     println!();
-    println!("  Switched model: {} -> {}", config.llm.model, new_model);
+    if switching {
+        println!("  Provider: {} -> {}", config.llm.provider, provider.id);
+    }
+    if provider_changed || model_changed {
+        println!("  Model:    {} -> {}", config.llm.model, new_model);
+    }
     println!("  Saved to {}", env_file.display());
     println!();
     println!("  Restart your shell or run:");
     println!("    source {}", env_file.display());
 
     Ok(())
+}
+
+/// Resolve a user-provided provider name (id or label fragment) to a Provider.
+fn resolve_provider(name: &str) -> Option<&'static Provider> {
+    let lower = name.to_lowercase();
+    PROVIDERS
+        .iter()
+        .find(|p| p.id == lower || p.label.to_lowercase().contains(&lower))
 }
 
 /// Test LLM connection, setting the key in the process env first.
@@ -672,14 +765,17 @@ fn env_file_path() -> PathBuf {
     if let Ok(path) = std::env::var("NEXUS_CONFIG_FILE") {
         return PathBuf::from(path);
     }
-    let config_dir = std::env::var("NEXUS_INSTALL_CONFIG_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let xdg = std::env::var("XDG_CONFIG_HOME")
-                .unwrap_or_else(|_| std::env::var("HOME").unwrap_or_else(|_| ".".to_string()));
-            PathBuf::from(xdg).join("nexus-memory-system")
-        });
-    config_dir.join("nexus.env")
+    if let Ok(dir) = std::env::var("NEXUS_INSTALL_CONFIG_DIR") {
+        return PathBuf::from(dir).join("nexus.env");
+    }
+    let xdg = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
+        std::env::var("HOME")
+            .map(|h| format!("{}/.config", h))
+            .unwrap_or_else(|_| "/tmp".to_string())
+    });
+    PathBuf::from(xdg)
+        .join("nexus-memory-system")
+        .join("nexus.env")
 }
 
 fn validate_key(key: &str) -> anyhow::Result<()> {

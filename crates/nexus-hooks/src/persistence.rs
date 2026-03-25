@@ -46,9 +46,19 @@ pub async fn persist_enriched_memories(
             continue;
         }
 
-        // Parse category
-        let category = MemoryCategory::parse(&enriched.category)
-            .ok_or_else(|| anyhow::anyhow!("Invalid category: {}", enriched.category))?;
+        // Parse category — skip invalid categories rather than aborting the batch
+        let category = match MemoryCategory::parse(&enriched.category) {
+            Some(c) => c,
+            None => {
+                warn!(
+                    "Skipping memory with invalid category '{}': {}",
+                    enriched.category,
+                    enriched.memory_text.chars().take(50).collect::<String>()
+                );
+                result.skipped += 1;
+                continue;
+            }
+        };
 
         // Parse memory lane type (optional)
         let memory_lane_type = enriched
