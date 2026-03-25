@@ -130,6 +130,32 @@ impl MemoryRepository {
         Ok(count.0)
     }
 
+    /// Count all memories in namespace (including inactive/archived)
+    pub async fn count_all_by_namespace(&self, namespace_id: i64) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM memories WHERE namespace_id = ?",
+        )
+        .bind(namespace_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(count.0)
+    }
+
+    /// Count archived memories in namespace
+    pub async fn count_archived_by_namespace(&self, namespace_id: i64) -> Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM memories WHERE namespace_id = ? AND is_archived = 1",
+        )
+        .bind(namespace_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(count.0)
+    }
+
     /// Delete a memory
     pub async fn delete(&self, id: i64) -> Result<bool> {
         let result = sqlx::query("DELETE FROM memories WHERE id = ?")
