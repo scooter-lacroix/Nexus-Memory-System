@@ -15,6 +15,18 @@ pub enum Provider {
     Mistral,
 }
 
+/// All supported providers in display order.
+pub const ALL_PROVIDERS: &[Provider] = &[
+    Provider::OpenAi,
+    Provider::Anthropic,
+    Provider::Gemini,
+    Provider::OpenRouter,
+    Provider::Groq,
+    Provider::Zai,
+    Provider::Minimax,
+    Provider::Mistral,
+];
+
 impl Provider {
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
@@ -75,6 +87,29 @@ impl Provider {
 
     pub fn is_openai_protocol(&self) -> bool {
         !self.is_anthropic_protocol()
+    }
+
+    /// Human-readable label for interactive prompts.
+    pub fn display_label(&self) -> &'static str {
+        match self {
+            Provider::OpenAi => "OpenAI",
+            Provider::Anthropic => "Anthropic (Claude)",
+            Provider::Gemini => "Google Gemini",
+            Provider::OpenRouter => "OpenRouter",
+            Provider::Groq => "Groq",
+            Provider::Zai => "Z.ai",
+            Provider::Minimax => "Minimax",
+            Provider::Mistral => "Mistral",
+        }
+    }
+
+    /// Resolve a user-supplied provider name (id or label fragment) to a Provider.
+    pub fn resolve(name: &str) -> Option<Self> {
+        let lower = name.to_lowercase();
+        ALL_PROVIDERS
+            .iter()
+            .find(|p| p.to_string() == lower || p.display_label().to_lowercase().contains(&lower))
+            .copied()
     }
 
     /// Supplemental model IDs known to exist for this provider but not always

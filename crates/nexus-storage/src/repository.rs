@@ -189,8 +189,9 @@ impl MemoryRepository {
     ) -> Result<Vec<MemoryRow>> {
         let rows = sqlx::query_as::<_, MemoryRow>(
             r#"
-            SELECT * FROM memories 
-            WHERE namespace_id = ? 
+            SELECT * FROM memories
+            WHERE namespace_id = ?
+            AND is_active = 1
             AND (metadata IS NULL OR json_extract(metadata, '$.agent.consolidated') IS NULL)
             ORDER BY created_at ASC
             LIMIT ?
@@ -270,6 +271,7 @@ impl MemoryRepository {
             r#"
             SELECT * FROM memories
             WHERE namespace_id = ?
+            AND is_active = 1
             AND content LIKE ?
             ORDER BY updated_at DESC
             LIMIT ?

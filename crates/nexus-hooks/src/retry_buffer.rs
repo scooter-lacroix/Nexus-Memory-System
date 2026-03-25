@@ -46,12 +46,16 @@ impl RetryBuffer {
     ///
     /// Uses XDG state directory: ~/.local/state/nexus-memory-system/pending-enrichment/
     pub fn buffer_path() -> PathBuf {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home)
-            .join(".local")
-            .join("state")
-            .join("nexus-memory-system")
-            .join("pending-enrichment")
+        if let Some(dir) = dirs::state_dir() {
+            dir.join("nexus-memory-system").join("pending-enrichment")
+        } else {
+            std::env::var("HOME")
+                .map(|h| {
+                    PathBuf::from(h)
+                        .join(".local/state/nexus-memory-system/pending-enrichment")
+                })
+                .unwrap_or_else(|_| PathBuf::from(".nexus-pending-enrichment"))
+        }
     }
 
     /// Write a failed enrichment attempt to the buffer.

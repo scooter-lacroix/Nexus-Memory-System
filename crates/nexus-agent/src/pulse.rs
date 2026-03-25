@@ -13,13 +13,12 @@ use tracing::debug;
 fn state_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("NEXUS_STATE_DIR") {
         PathBuf::from(dir)
+    } else if let Some(dir) = dirs::state_dir() {
+        dir.join("nexus-memory-system")
     } else {
-        let xdg = std::env::var("XDG_STATE_HOME").unwrap_or_else(|_| {
-            std::env::var("HOME")
-                .map(|h| format!("{}/.local/state", h))
-                .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().to_string())
-        });
-        PathBuf::from(xdg).join("nexus-memory-system")
+        std::env::var("HOME")
+            .map(|h| PathBuf::from(h).join(".local/state/nexus-memory-system"))
+            .unwrap_or_else(|_| std::env::temp_dir().join("nexus-memory-system"))
     }
 }
 

@@ -145,16 +145,24 @@ impl Config {
             config.agent.inbox_dir = inbox;
         }
         if let Ok(interval) = std::env::var("NEXUS_AGENT_CONSOLIDATION_INTERVAL_MINS") {
-            config.agent.consolidation_interval_mins = interval.parse().unwrap_or(30);
+            config.agent.consolidation_interval_mins = interval
+                .parse()
+                .unwrap_or(AgentConfig::default().consolidation_interval_mins);
         } else if let Ok(interval) = std::env::var("NEXUS_AGENT_CONSOLIDATION_INTERVAL") {
             // Backward compat: old name without unit suffix
-            config.agent.consolidation_interval_mins = interval.parse().unwrap_or(30);
+            config.agent.consolidation_interval_mins = interval
+                .parse()
+                .unwrap_or(AgentConfig::default().consolidation_interval_mins);
         }
         if let Ok(interval) = std::env::var("NEXUS_AGENT_SCAN_INTERVAL_SECS") {
-            config.agent.scan_interval_secs = interval.parse().unwrap_or(5);
+            config.agent.scan_interval_secs = interval
+                .parse()
+                .unwrap_or(AgentConfig::default().scan_interval_secs);
         } else if let Ok(interval) = std::env::var("NEXUS_AGENT_SCAN_INTERVAL") {
             // Backward compat: old name without unit suffix
-            config.agent.scan_interval_secs = interval.parse().unwrap_or(5);
+            config.agent.scan_interval_secs = interval
+                .parse()
+                .unwrap_or(AgentConfig::default().scan_interval_secs);
         }
 
         Ok(config)

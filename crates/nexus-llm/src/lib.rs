@@ -23,5 +23,5 @@ pub use factory::{
 };
 pub use fallback::FallbackClient;
 pub use models::list_models;
-pub use provider::Provider;
+pub use provider::{ALL_PROVIDERS, Provider};
 pub use types::{ChatMessage, GenerateParams, GenerateResponse, TokenUsage};

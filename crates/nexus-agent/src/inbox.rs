@@ -53,7 +53,7 @@ impl InboxScanner {
         let completed_paths = match processed_repo.get_completed_paths(namespace_id).await {
             Ok(paths) => paths,
             Err(e) => {
-                error!(error = %e, "Failed to fetch completed paths, falling back to per-file checks");
+                error!(error = %e, namespace_id, "Failed to fetch completed paths, falling back to per-file checks");
                 std::collections::HashSet::new()
             }
         };
@@ -80,7 +80,7 @@ impl InboxScanner {
             {
                 Ok(id) => id,
                 Err(e) => {
-                    error!(path = %path.display(), error = %e, "Failed to mark file as processing");
+                    error!(path = %path.display(), error = %e, namespace_id, "Failed to mark file as processing");
                     continue;
                 }
             };
@@ -144,7 +144,7 @@ impl InboxScanner {
                             processed += 1;
                         }
                         Err(e) => {
-                            error!(path = %path.display(), error = %e, "Failed to ingest file");
+                            error!(path = %path.display(), error = %e, namespace_id, "Failed to ingest file");
                             if let Err(e2) =
                                 processed_repo.mark_failed(file_id, &e.to_string()).await
                             {
@@ -159,7 +159,7 @@ impl InboxScanner {
                     }
                 }
                 Err(e) => {
-                    error!(path = %path.display(), error = %e, "Failed to read file");
+                    error!(path = %path.display(), error = %e, namespace_id, "Failed to read file");
                     if let Err(e2) = processed_repo.mark_failed(file_id, &e.to_string()).await {
                         warn!(
                             file_id = file_id,

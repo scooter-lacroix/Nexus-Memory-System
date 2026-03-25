@@ -157,7 +157,7 @@ impl AgentSupervisor {
                         );
                     }
                     Err(e) => {
-                        error!(error = %e, "Inbox scan failed");
+                        error!(error = %e, namespace_id, "Inbox scan failed");
                         let mut s = status.write().await;
                         s.errors.push(format!("Scan error: {}", e));
                         if s.errors.len() > 10 {
@@ -207,7 +207,7 @@ impl AgentSupervisor {
                         debug!("No memories to consolidate");
                     }
                     Err(e) => {
-                        error!(error = %e, "Consolidation failed");
+                        error!(error = %e, namespace_id, "Consolidation failed");
                         let mut s = status.write().await;
                         s.errors.push(format!("Consolidation error: {}", e));
                         if s.errors.len() > 10 {

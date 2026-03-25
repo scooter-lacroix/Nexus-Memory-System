@@ -33,7 +33,7 @@ impl ConsolidateService {
             .get_unconsolidated(namespace_id, self.config.consolidation_batch_size as i32)
             .await
             .map_err(|e| {
-                error!(error = %e, "Failed to get unconsolidated memories");
+                error!(error = %e, namespace_id, "Failed to get unconsolidated memories");
                 AgentError::Storage(e.to_string())
             })?;
 
@@ -63,7 +63,7 @@ impl ConsolidateService {
                 .store(conn.from_id, conn.to_id, &conn.relationship, conn.strength)
                 .await
                 .map_err(|e| {
-                    error!(error = %e, "Failed to store relation");
+                    error!(error = %e, from_id = conn.from_id, to_id = conn.to_id, "Failed to store relation");
                     AgentError::Storage(e.to_string())
                 })?;
         }
@@ -74,7 +74,7 @@ impl ConsolidateService {
             .mark_consolidated_batch(&ids)
             .await
             .map_err(|e| {
-                error!(error = %e, "Failed to mark memories as consolidated");
+                error!(error = %e, count = ids.len(), "Failed to mark memories as consolidated");
                 AgentError::Storage(e.to_string())
             })?;
 

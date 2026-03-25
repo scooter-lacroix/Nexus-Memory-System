@@ -3,7 +3,6 @@
 //! Tests a model against all aspects of the memory system and produces a scored report.
 //! This is a developer tool that evaluates LLM quality for memory operations.
 
-use std::path::PathBuf;
 use std::time::Instant;
 
 use nexus_core::config::{AgentConfig, Config, LlmConfig};
@@ -124,21 +123,18 @@ pub async fn execute(
     println!("Initializing evaluation environment...");
 
     // Create a temporary database for evaluation isolation
-    let db_path = PathBuf::from(format!("/tmp/nexus-eval-{}.db", uuid::Uuid::new_v4()));
+    let temp_db = tempfile::NamedTempFile::new()?;
+    let db_path = temp_db.path().to_path_buf();
     let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
 
     let mut storage = StorageManager::from_url(&db_url).await?;
     storage.initialize().await?;
 
-    // Ensure cleanup even on error
-    let cleanup_db = |path: &std::path::Path| {
-        let _ = std::fs::remove_file(path);
-    };
-
     let result = run_evaluation(&llm_config, &storage).await;
 
-    // Always clean up the temp database
-    cleanup_db(&db_path);
+    // Drop storage to close DB handle before temp file cleanup
+    drop(storage);
+    drop(temp_db);
 
     result
 }

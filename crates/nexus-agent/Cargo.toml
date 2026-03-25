@@ -42,6 +42,7 @@ notify = "6"
 
 # Misc
 uuid = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
