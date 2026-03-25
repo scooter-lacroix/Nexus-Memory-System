@@ -10,6 +10,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> crate::Result<()> {
     create_task_specifications_table(pool).await?;
     create_memory_relations_table(pool).await?;
     create_system_metrics_table(pool).await?;
+    create_processed_files_table(pool).await?;
     Ok(())
 }
 
@@ -116,6 +117,7 @@ async fn create_memory_relations_table(pool: &SqlitePool) -> crate::Result<()> {
             strength REAL DEFAULT 1.0,
             metadata TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source_memory_id, target_memory_id, relation_type),
             FOREIGN KEY (source_memory_id) REFERENCES memories(id),
             FOREIGN KEY (target_memory_id) REFERENCES memories(id)
         )
@@ -142,5 +144,36 @@ async fn create_system_metrics_table(pool: &SqlitePool) -> crate::Result<()> {
     .execute(pool)
     .await
     .map_err(db_error)?;
+    Ok(())
+}
+
+/// Create the processed_files table for inbox file tracking
+pub async fn create_processed_files_table(pool: &SqlitePool) -> crate::Result<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS processed_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            namespace_id INTEGER NOT NULL,
+            path TEXT NOT NULL,
+            content_hash TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            memory_id INTEGER,
+            last_error TEXT,
+            processed_at DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME,
+            FOREIGN KEY (namespace_id) REFERENCES agent_namespaces(id),
+            FOREIGN KEY (memory_id) REFERENCES memories(id),
+            UNIQUE(namespace_id, path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_processed_files_namespace ON processed_files(namespace_id);
+        CREATE INDEX IF NOT EXISTS idx_processed_files_status ON processed_files(status);
+        CREATE INDEX IF NOT EXISTS idx_processed_files_path ON processed_files(path);
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(db_error)?;
+
     Ok(())
 }

@@ -46,6 +46,12 @@ pub enum NexusError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("LLM error: {0}")]
+    Llm(String),
+
+    #[error("Agent error: {0}")]
+    Agent(String),
 }
 
 /// Result type alias for Nexus operations

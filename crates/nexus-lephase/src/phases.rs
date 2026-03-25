@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Phase types for memory organization
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PhaseType {
     /// Planning and analysis phase
@@ -22,13 +22,8 @@ pub enum PhaseType {
     Refinement,
 
     /// General/unclassified phase
+    #[default]
     General,
-}
-
-impl Default for PhaseType {
-    fn default() -> Self {
-        Self::General
-    }
 }
 
 impl std::fmt::Display for PhaseType {
@@ -70,7 +65,7 @@ impl PhaseType {
     }
 
     /// Parse from string
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "planning" => Some(Self::Planning),
             "execution" => Some(Self::Execution),
@@ -155,10 +150,10 @@ mod tests {
     }
 
     #[test]
-    fn test_phase_type_from_str() {
-        assert_eq!(PhaseType::from_str("planning"), Some(PhaseType::Planning));
-        assert_eq!(PhaseType::from_str("DEBUGGING"), Some(PhaseType::Debugging));
-        assert_eq!(PhaseType::from_str("unknown"), None);
+    fn test_phase_type_parse() {
+        assert_eq!(PhaseType::parse("planning"), Some(PhaseType::Planning));
+        assert_eq!(PhaseType::parse("DEBUGGING"), Some(PhaseType::Debugging));
+        assert_eq!(PhaseType::parse("unknown"), None);
     }
 
     #[test]

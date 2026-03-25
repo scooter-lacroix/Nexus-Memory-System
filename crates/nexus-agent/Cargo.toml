@@ -1,0 +1,49 @@
+[package]
+name = "nexus-memory-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Always-on memory agent for Nexus Memory System"
+
+[dependencies]
+nexus-core = { workspace = true }
+nexus-storage = { workspace = true }
+nexus-llm = { workspace = true }
+nexus-embeddings = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Database
+sqlx = { workspace = true }
+
+# File system
+walkdir = "2"
+notify = "6"
+
+# Misc
+uuid = { workspace = true }
+dirs = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

@@ -22,25 +22,20 @@ use uuid::Uuid;
 use crate::error::{OrchestratorError, Result};
 
 /// Event priority levels for processing order
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum EventPriority {
-    /// Highest priority, process immediately
-    Critical,
-    /// High priority
-    High,
-    /// Normal priority (default)
-    Normal,
+    /// Lowest priority, background processing
+    #[default]
+    Background,
     /// Low priority
     Low,
-    /// Lowest priority, background processing
-    Background,
-}
-
-impl Default for EventPriority {
-    fn default() -> Self {
-        Self::Normal
-    }
+    /// Normal priority (default)
+    Normal,
+    /// High priority
+    High,
+    /// Highest priority, process immediately
+    Critical,
 }
 
 impl EventPriority {

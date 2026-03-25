@@ -3,17 +3,12 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SyncPolicy {
+    #[default]
     Manual,
     Auto,
     Aggressive,
-}
-
-impl Default for SyncPolicy {
-    fn default() -> Self {
-        Self::Manual
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

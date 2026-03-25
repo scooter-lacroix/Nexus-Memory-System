@@ -19,6 +19,7 @@ Nexus gives multiple coding agents one consistent memory layer. It is designed f
 - SQLite-based persistence with repository-style access through `nexus-storage`
 - Native hook management for Claude Code, Gemini, Qwen, Codex, OpenCode, Amp, and Droid
 - Web dashboard and API routes under the `nexus-web` crate
+- Optional always-on memory agent with LLM-driven ingest, consolidation, and query (OpenAI, Anthropic, Gemini, and more)
 
 ## Quick Start
 
@@ -82,6 +83,16 @@ nexus hooks status
 nexus serve --transport http --port 8768
 ```
 
+### Start the web server with the always-on agent
+
+```bash
+# Set your LLM provider API key
+export OPENAI_API_KEY=sk-...
+
+# Start with agent enabled
+NEXUS_AGENT_ENABLED=true nexus serve --transport web --port 8768 --agent
+```
+
 ### Run the MCP-compatible stdio server
 
 ```bash
@@ -115,20 +126,24 @@ Agents and Tools
             +-- nexus-vectors
             +-- nexus-embeddings
             +-- nexus-orchestrator
+            +-- nexus-llm
+            +-- nexus-agent
 ```
 
-The shared domain model lives in `nexus-core`. Storage and repositories live in `nexus-storage`. Higher-level surfaces such as the CLI, hooks, MCP server, and web dashboard build on that foundation. The product is documented as one system even though the current implementation is organized as multiple crates.
+The shared domain model lives in `nexus-core`. Storage and repositories live in `nexus-storage`. Higher-level surfaces such as the CLI, hooks, MCP server, and web dashboard build on that foundation. The optional always-on agent (`nexus-llm` + `nexus-agent`) adds LLM-driven memory enrichment, consolidation, and query synthesis. The product is documented as one system even though the current implementation is organized as multiple crates.
 
 ## Repository Layout
 
 ```text
 .
 ├── crates/
+│   ├── nexus-agent/
 │   ├── nexus-cli/
 │   ├── nexus-core/
 │   ├── nexus-embeddings/
 │   ├── nexus-hooks/
 │   ├── nexus-lephase/
+│   ├── nexus-llm/
 │   ├── nexus-mcp/
 │   ├── nexus-orchestrator/
 │   ├── nexus-storage/
@@ -148,6 +163,24 @@ The shared domain model lives in `nexus-core`. Storage and repositories live in 
 - [HOOKS.md](HOOKS.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [docs/index.md](docs/index.md)
+
+## LLM Provider Evaluation
+
+The `nexus eval` command tests an LLM provider against the memory system's core operations: structured extraction, consolidation, and query synthesis. Each aspect is scored out of 200 (total 600).
+
+| Provider / Model | Extraction | Consolidation | Query | Total | Rating |
+|---|---|---|---|---|---|
+| OpenRouter / `arcee-ai/trinity-large-preview:free` | 185 | 185 | 185 | **555 / 600** | GOOD |
+| Z.ai / `glm-4.5` | 180 | 170 | 170 | **520 / 600** | GOOD |
+| Gemini / `gemini-3.1-flash-lite-preview` | 100 | 80 | 55 | **520 / 600** | GOOD |
+| Groq / `moonshotai/kimi-k2-instruct-0905` | 100 | 80 | 55 | **520 / 600** | GOOD |
+| Groq / `llama-3.3-70b-versatile` | 160 | 155 | 150 | **465 / 600** | ACCEPTABLE |
+
+### Recommendations
+
+**1st choice: OpenRouter / `arcee-ai/trinity-large-preview:free`** — Highest overall score across all aspects. Free to use with strong extraction and consolidation. Best value for production use.
+
+**2nd choice: Z.ai / `glm-4.5`** — Best structured JSON quality with the most consistent extraction scores. Recommended when a dedicated provider is preferred over a routing layer.
 
 ## Validation
 

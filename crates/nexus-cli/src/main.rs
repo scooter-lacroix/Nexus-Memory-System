@@ -42,6 +42,10 @@ enum Commands {
         /// Port for HTTP transport
         #[arg(short, long, default_value = "8768")]
         port: u16,
+
+        /// Enable the always-on memory agent
+        #[arg(long)]
+        agent: bool,
     },
 
     /// Store a memory
@@ -61,6 +65,14 @@ enum Commands {
         /// Memory labels (comma-separated)
         #[arg(short, long)]
         labels: Option<String>,
+
+        /// Metadata JSON object
+        #[arg(long)]
+        metadata_json: Option<String>,
+
+        /// Memory lane type (e.g., confidence, decision, workflow_note)
+        #[arg(long)]
+        memory_lane_type: Option<String>,
     },
 
     /// Search memories
@@ -103,6 +115,74 @@ enum Commands {
         #[command(subcommand)]
         command: commands::migrate::MigrateCommands,
     },
+
+    /// Ingest a hook event with LLM enrichment
+    IngestHookEvent {
+        /// Agent/namespace name (e.g., claude-code)
+        #[arg(long)]
+        agent: String,
+
+        /// Hook event name (e.g., post-tool-use)
+        #[arg(long)]
+        event: String,
+
+        /// Payload format (auto, claude-code)
+        #[arg(long, default_value = "auto")]
+        format: String,
+    },
+
+    /// Configure Nexus (interactive wizard, or use show/set subcommands)
+    Config {
+        #[command(subcommand)]
+        command: Option<ConfigCommands>,
+    },
+
+    /// Test LLM provider connectivity
+    Llm {
+        #[command(subcommand)]
+        command: LlmCommands,
+    },
+
+    /// Evaluate a model against all aspects of the memory system
+    Eval {
+        /// Override provider (uses current config if omitted)
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// Override model (uses current config if omitted)
+        #[arg(long)]
+        model: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Show current effective configuration
+    Show,
+
+    /// Set a configuration value, or pick a model interactively
+    Set {
+        /// Configuration key (e.g., NEXUS_LLM_PROVIDER)
+        /// If omitted, launches interactive model selector
+        key: Option<String>,
+
+        /// Configuration value
+        value: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum LlmCommands {
+    /// Test LLM provider connection
+    Test {
+        /// Override provider (e.g., openai, anthropic, gemini)
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// Override model (e.g., gpt-4o-mini, claude-sonnet-4-20250514)
+        #[arg(long)]
+        model: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -120,21 +200,38 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    // Load stored per-provider credentials before any command runs
+    commands::config::load_stored_credentials();
+
     // Execute command
     match cli.command {
         Commands::Init { reset } => {
             commands::init::execute(reset).await?;
         }
-        Commands::Serve { transport, port } => {
-            commands::serve::execute(transport, port).await?;
+        Commands::Serve {
+            transport,
+            port,
+            agent,
+        } => {
+            commands::serve::execute(transport, port, agent).await?;
         }
         Commands::Store {
             content,
             agent,
             category,
             labels,
+            metadata_json,
+            memory_lane_type,
         } => {
-            commands::store::execute(content, agent, category, labels).await?;
+            commands::store::execute(
+                content,
+                agent,
+                category,
+                labels,
+                metadata_json,
+                memory_lane_type,
+            )
+            .await?;
         }
         Commands::Search {
             query,
@@ -154,6 +251,41 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Migrate { command } => {
             commands::migrate::execute(command).await?;
+        }
+        Commands::IngestHookEvent {
+            agent,
+            event,
+            format,
+        } => {
+            commands::ingest_hook_event::execute(agent, event, format).await?;
+        }
+        Commands::Config { command } => match command {
+            Some(ConfigCommands::Show) => {
+                commands::config::execute_show().await?;
+            }
+            Some(ConfigCommands::Set { key, value }) => match (key, value) {
+                (Some(k), Some(v)) => {
+                    commands::config::execute_set(k, v).await?;
+                }
+                (Some(provider_hint), None) => {
+                    // Treat as provider name — launch model picker for that provider
+                    commands::config::execute_model_picker(Some(provider_hint)).await?;
+                }
+                (None, _) => {
+                    commands::config::execute_model_picker(None).await?;
+                }
+            },
+            None => {
+                commands::config::execute_wizard().await?;
+            }
+        },
+        Commands::Llm { command } => match command {
+            LlmCommands::Test { provider, model } => {
+                commands::llm::execute_test(provider, model).await?;
+            }
+        },
+        Commands::Eval { provider, model } => {
+            commands::eval::execute(provider, model).await?;
         }
     }
 

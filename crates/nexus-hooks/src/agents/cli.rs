@@ -37,7 +37,7 @@ impl CLIHook {
     /// Create a new CLI hook for the given agent type
     pub fn new(agent_type: impl Into<String>) -> Self {
         let agent_type_name = agent_type.into();
-        let agent_type = AgentType::from_str(&agent_type_name).unwrap_or(AgentType::Generic);
+        let agent_type = AgentType::parse(&agent_type_name).unwrap_or(AgentType::Generic);
 
         Self {
             base: BaseHook::new(&agent_type_name),

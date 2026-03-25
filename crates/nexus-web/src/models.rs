@@ -317,3 +317,66 @@ impl WebSocketMessage {
         Self::new(WebSocketMessageType::Pong, serde_json::Value::Null)
     }
 }
+
+// =============================================================================
+// Agent Request/Response Models
+// =============================================================================
+
+/// Request to ingest via the agent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentIngestRequest {
+    pub text: String,
+    #[serde(default = "default_source")]
+    pub source: String,
+}
+
+fn default_source() -> String {
+    "api".to_string()
+}
+
+/// Response from agent ingest
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentIngestResponse {
+    pub success: bool,
+    pub memory_id: Option<i64>,
+    pub summary: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Request to query the agent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentQueryRequest {
+    pub question: String,
+}
+
+/// Response from agent query
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentQueryResponse {
+    pub success: bool,
+    pub question: String,
+    pub answer: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Response from agent consolidate
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConsolidateResponse {
+    pub success: bool,
+    pub memories_processed: usize,
+    pub error: Option<String>,
+}
+
+/// Response from agent status
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentStatusResponse {
+    pub enabled: bool,
+    pub namespace: String,
+    pub inbox_dir: String,
+    pub files_processed: u64,
+    pub memories_consolidated: u64,
+    pub queries_answered: u64,
+    pub last_scan: Option<String>,
+    pub last_consolidation: Option<String>,
+    pub errors: Vec<String>,
+    pub uptime_secs: u64,
+}

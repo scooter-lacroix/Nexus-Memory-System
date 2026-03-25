@@ -23,7 +23,9 @@ fn marker_path() -> PathBuf {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
             PathBuf::from(home).join(".config")
         });
-    config_dir.join("nexus-memory-system").join(".star-attempted")
+    config_dir
+        .join("nexus-memory-system")
+        .join(".star-attempted")
 }
 
 fn star_repo_impl() -> std::io::Result<()> {
@@ -32,13 +34,24 @@ fn star_repo_impl() -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    if Command::new("gh").arg("auth").arg("status").output().is_err() {
+    if Command::new("gh")
+        .arg("auth")
+        .arg("status")
+        .output()
+        .is_err()
+    {
         std::fs::write(&marker, "")?;
         return Ok(());
     }
 
     let _ = Command::new("gh")
-        .args(["api", "--silent", "-X", "PUT", "/user/starred/scooter-lacroix/Nexus-Memory-System"])
+        .args([
+            "api",
+            "--silent",
+            "-X",
+            "PUT",
+            "/user/starred/scooter-lacroix/Nexus-Memory-System",
+        ])
         .output();
 
     std::fs::write(&marker, "")?;

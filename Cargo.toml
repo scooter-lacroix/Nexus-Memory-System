@@ -11,6 +11,8 @@ members = [
     "crates/nexus-web",
     "crates/nexus-cli",
     "crates/nexus-hooks",
+    "crates/nexus-llm",
+    "crates/nexus-agent",
 ]
 
 [workspace.package]
@@ -25,6 +27,7 @@ homepage = "https://github.com/scooter-lacroix/Nexus-Memory-System"
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 async-trait = "0.1"
 futures = "0.3"
 
@@ -78,6 +81,8 @@ nexus-lephase = { package = "nexus-memory-lephase", version = "1.1.2", path = "c
 nexus-mcp = { package = "nexus-memory-mcp", version = "1.1.2", path = "crates/nexus-mcp" }
 nexus-web = { package = "nexus-memory-web", version = "1.1.2", path = "crates/nexus-web" }
 nexus-hooks = { package = "nexus-memory-hooks", version = "1.1.2", path = "crates/nexus-hooks" }
+nexus-llm = { package = "nexus-memory-llm", version = "1.1.2", path = "crates/nexus-llm" }
+nexus-agent = { package = "nexus-memory-agent", version = "1.1.2", path = "crates/nexus-agent" }
 
 # ONNX Runtime and tokenizers
 ort = { version = "2.0.0-rc.11", features = ["load-dynamic"] }

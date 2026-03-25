@@ -37,8 +37,8 @@ use crate::types::{AgentType, SessionActivity, SkillMetadata};
 /// # Example
 ///
 /// ```rust,no_run
-/// use nexus_hooks::agents::PiMonoHook;
-/// use nexus_hooks::AgentHook;
+/// use nexus_memory_hooks::agents::PiMonoHook;
+/// use nexus_memory_hooks::AgentHook;
 ///
 /// #[tokio::main]
 /// async fn main() {

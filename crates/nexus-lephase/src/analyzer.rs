@@ -126,9 +126,10 @@ mod tests {
     use super::*;
 
     fn create_test_memory(content: &str) -> Memory {
-        let mut memory = Memory::default();
-        memory.content = content.to_string();
-        memory
+        Memory {
+            content: content.to_string(),
+            ..Default::default()
+        }
     }
 
     #[test]

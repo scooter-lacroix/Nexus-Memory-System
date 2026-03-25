@@ -48,7 +48,7 @@ impl std::fmt::Display for AgentType {
 
 impl AgentType {
     /// Parse from string
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "claude-code" | "claude" => Some(Self::ClaudeCode),
             "gemini" => Some(Self::Gemini),
@@ -285,15 +285,12 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_type_from_str() {
-        assert_eq!(
-            AgentType::from_str("claude-code"),
-            Some(AgentType::ClaudeCode)
-        );
-        assert_eq!(AgentType::from_str("claude"), Some(AgentType::ClaudeCode));
-        assert_eq!(AgentType::from_str("pi"), Some(AgentType::PiMono));
-        assert_eq!(AgentType::from_str("omp"), Some(AgentType::OhMyPi));
-        assert_eq!(AgentType::from_str("unknown"), None);
+    fn test_agent_type_parse() {
+        assert_eq!(AgentType::parse("claude-code"), Some(AgentType::ClaudeCode));
+        assert_eq!(AgentType::parse("claude"), Some(AgentType::ClaudeCode));
+        assert_eq!(AgentType::parse("pi"), Some(AgentType::PiMono));
+        assert_eq!(AgentType::parse("omp"), Some(AgentType::OhMyPi));
+        assert_eq!(AgentType::parse("unknown"), None);
     }
 
     #[test]

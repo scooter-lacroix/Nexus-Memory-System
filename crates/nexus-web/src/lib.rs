@@ -9,7 +9,7 @@
 //! ## Example
 //!
 //! ```rust,ignore
-//! use nexus_web::WebDashboard;
+//! use nexus_memory_web::WebDashboard;
 //! use std::sync::Arc;
 //! use tokio::sync::RwLock;
 //!
@@ -45,8 +45,9 @@ pub use models::*;
 pub use state::AppState;
 
 use api::{
-    create_memory, create_namespace, delete_memory, get_agent_stats, get_memory, get_namespace,
-    get_stats, health_check, list_memories, list_namespaces, search_memories, update_memory,
+    agent_consolidate, agent_ingest, agent_query, agent_status, create_memory, create_namespace,
+    delete_memory, get_agent_stats, get_memory, get_namespace, get_stats, health_check,
+    list_memories, list_namespaces, search_memories, update_memory,
 };
 use websocket::websocket_handler;
 
@@ -92,7 +93,12 @@ impl WebDashboard {
             .route("/stats", get(get_stats))
             .route("/stats/:agent", get(get_agent_stats))
             // Health check
-            .route("/health", get(health_check));
+            .route("/health", get(health_check))
+            // Agent endpoints
+            .route("/agent/ingest", post(agent_ingest))
+            .route("/agent/query", post(agent_query))
+            .route("/agent/consolidate", post(agent_consolidate))
+            .route("/agent/status", get(agent_status));
 
         // WebSocket route
         let ws_route = Router::new().route("/ws", get(websocket_handler));

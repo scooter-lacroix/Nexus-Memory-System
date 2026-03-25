@@ -39,7 +39,7 @@
 //! ## Example
 //!
 //! ```rust,ignore
-//! use nexus_orchestrator::{Orchestrator, OrchestratorConfig};
+//! use nexus_memory_orchestrator::{Orchestrator, OrchestratorConfig};
 //! use std::sync::Arc;
 //! use tokio::sync::RwLock;
 //!

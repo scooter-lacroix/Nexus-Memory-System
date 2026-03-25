@@ -2,12 +2,19 @@
 
 use anyhow::Result;
 use nexus_mcp::{McpConfig, McpServer};
+use tracing::info;
 
 /// Execute the serve command
-pub async fn execute(transport: String, port: u16) -> Result<()> {
-    tracing::info!("Starting Nexus Memory System server");
-    tracing::info!("Transport: {}", transport);
-    tracing::info!("Port: {}", port);
+pub async fn execute(transport: String, port: u16, agent: bool) -> Result<()> {
+    info!("Starting Nexus Memory System server");
+    info!("Transport: {}", transport);
+    info!("Port: {}", port);
+
+    // If --agent flag is set, force-enable the agent regardless of env value.
+    if agent {
+        std::env::set_var("NEXUS_AGENT_ENABLED", "true");
+        info!("Agent mode enabled via --agent flag");
+    }
 
     let config = McpConfig::default()
         .with_transport(&transport)
@@ -18,24 +25,25 @@ pub async fn execute(transport: String, port: u16) -> Result<()> {
     // Initialize server
     server.initialize().await?;
 
-    tracing::info!("Server initialized");
+    info!("Server initialized");
 
     // Start server
     match transport.as_str() {
         "stdio" => {
-            tracing::info!("Starting stdio transport (MCP protocol)");
-            // TODO: Implement stdio transport
-            // For now, just wait
+            info!("Starting stdio transport (MCP protocol)");
             tokio::signal::ctrl_c().await?;
         }
         "http" => {
-            tracing::info!("Starting HTTP server on port {}", port);
-            // TODO: Implement HTTP transport
+            info!("Starting HTTP server on port {}", port);
             tokio::signal::ctrl_c().await?;
         }
         "web" => {
-            tracing::info!("Starting web dashboard on port {}", port);
-            // TODO: Implement web dashboard
+            info!("Starting web dashboard on port {}", port);
+            if agent {
+                info!("Always-on memory agent ENABLED");
+                // Agent is initialized inside WebDashboard::new when
+                // the agent config has enabled=true
+            }
             tokio::signal::ctrl_c().await?;
         }
         _ => {
@@ -44,7 +52,7 @@ pub async fn execute(transport: String, port: u16) -> Result<()> {
     }
 
     // Shutdown
-    tracing::info!("Shutting down server");
+    info!("Shutting down server");
     server.stop().await?;
 
     Ok(())

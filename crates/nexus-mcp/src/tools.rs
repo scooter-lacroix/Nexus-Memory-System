@@ -12,6 +12,7 @@
 use crate::protocol::{CallToolResult, Tool};
 use chrono::{DateTime, Utc};
 use nexus_core::{AgentNamespace, Memory, MemoryCategory, MemoryLaneType};
+use nexus_storage::repository::StoreMemoryParams;
 use nexus_storage::{MemoryRepository, NamespaceRepository};
 use serde_json::Value as JsonValue;
 use sqlx::SqlitePool;
@@ -286,10 +287,7 @@ impl ToolHandler {
         }
     }
 
-    async fn handle_tool_help(
-        &self,
-        args: &serde_json::Map<String, JsonValue>,
-    ) -> CallToolResult {
+    async fn handle_tool_help(&self, args: &serde_json::Map<String, JsonValue>) -> CallToolResult {
         let requested = args
             .get("tool_name")
             .or_else(|| args.get("tool"))
@@ -382,7 +380,7 @@ impl ToolHandler {
             .get("category")
             .and_then(|v| v.as_str())
             .unwrap_or("general");
-        let category = MemoryCategory::from_str(category_str).unwrap_or(MemoryCategory::General);
+        let category = MemoryCategory::parse(category_str).unwrap_or(MemoryCategory::General);
 
         // Extract labels (optional)
         let labels: Vec<String> = args
@@ -413,16 +411,16 @@ impl ToolHandler {
         // Store the memory
         let mem_repo = MemoryRepository::new(self.pool.clone());
         match mem_repo
-            .store(
-                namespace.id,
-                &content,
-                &category,
-                None as Option<&MemoryLaneType>,
-                &labels,
-                &metadata,
-                None, // No embedding for now
-                None, // No embedding model
-            )
+            .store(StoreMemoryParams {
+                namespace_id: namespace.id,
+                content: &content,
+                category: &category,
+                memory_lane_type: None as Option<&MemoryLaneType>,
+                labels: &labels,
+                metadata: &metadata,
+                embedding: None,
+                embedding_model: None,
+            })
             .await
         {
             Ok(memory) => CallToolResult::json(serde_json::json!({
@@ -475,7 +473,7 @@ impl ToolHandler {
         let mem_repo = MemoryRepository::new(self.pool.clone());
         match mem_repo.search_by_namespace(namespace.id, limit, 0).await {
             Ok(memories) => {
-                let results: Vec<_> = memories.iter().map(|m| memory_to_json(m)).collect();
+                let results: Vec<_> = memories.iter().map(memory_to_json).collect();
 
                 CallToolResult::json(serde_json::json!({
                     "success": true,
@@ -552,7 +550,7 @@ impl ToolHandler {
             .await
         {
             Ok(memories) => {
-                let results: Vec<_> = memories.iter().map(|m| memory_to_json(m)).collect();
+                let results: Vec<_> = memories.iter().map(memory_to_json).collect();
 
                 // Get total count
                 let total = mem_repo.count_by_namespace(namespace.id).await.unwrap_or(0);
@@ -602,7 +600,7 @@ impl ToolHandler {
         let ns_repo = NamespaceRepository::new(self.pool.clone());
         match ns_repo.list_all().await {
             Ok(namespaces) => {
-                let results: Vec<_> = namespaces.iter().map(|ns| namespace_to_json(ns)).collect();
+                let results: Vec<_> = namespaces.iter().map(namespace_to_json).collect();
 
                 CallToolResult::json(serde_json::json!({
                     "success": true,

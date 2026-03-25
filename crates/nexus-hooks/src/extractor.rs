@@ -50,7 +50,7 @@ impl ExtractionStats {
 /// # Example
 ///
 /// ```ignore
-/// use nexus_hooks::{HookFactory, MultiLayerExtractor};
+/// use nexus_memory_hooks::{HookFactory, MultiLayerExtractor};
 /// use std::sync::Arc;
 ///
 /// #[tokio::main]
@@ -114,7 +114,7 @@ pub enum ExtractionEvent {
     Completed {
         agent_type: String,
         source: ExtractionSource,
-        context: SessionContext,
+        context: Box<SessionContext>,
     },
 
     /// Extraction failed
@@ -158,7 +158,7 @@ impl MultiLayerExtractor {
             let _ = event_sender.send(ExtractionEvent::Completed {
                 agent_type: agent_type_clone.clone(),
                 source: ExtractionSource::NativeHook("session_end".to_string()),
-                context: ctx,
+                context: Box::new(ctx),
             });
         });
 
@@ -194,7 +194,7 @@ impl MultiLayerExtractor {
         // Convert to AgentType for monitor
         let agent_types_enum: Vec<AgentType> = agent_types
             .iter()
-            .filter_map(|s| AgentType::from_str(s))
+            .filter_map(|s| AgentType::parse(s))
             .collect();
 
         // Start session monitor
@@ -380,7 +380,7 @@ impl MultiLayerExtractor {
                 let _ = self.event_sender.send(ExtractionEvent::Completed {
                     agent_type: agent_type.to_string(),
                     source: ExtractionSource::Manual,
-                    context: context.clone(),
+                    context: Box::new(context.clone()),
                 });
 
                 let mut stats = self.stats.write().await;

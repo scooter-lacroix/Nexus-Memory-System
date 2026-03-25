@@ -20,6 +20,8 @@ nexus-storage = { workspace = true }
 nexus-vectors = { workspace = true }
 nexus-mcp = { workspace = true }
 nexus-lephase = { workspace = true }
+nexus-agent = { workspace = true }
+nexus-llm = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -33,6 +35,9 @@ clap = { workspace = true }
 async-trait = { workspace = true }
 sqlx = { workspace = true }
 indicatif = "0.17"
+dialoguer = "0.11"
+dirs = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

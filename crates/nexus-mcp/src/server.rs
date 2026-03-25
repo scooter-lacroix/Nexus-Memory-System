@@ -13,18 +13,13 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Server state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ServerState {
+    #[default]
     Stopped,
     Starting,
     Running,
     Stopping,
-}
-
-impl Default for ServerState {
-    fn default() -> Self {
-        Self::Stopped
-    }
 }
 
 /// Transport type
@@ -93,10 +88,16 @@ impl McpServer {
                 .join("nexus");
             format!("sqlite:{}/nexus.db?mode=rwc", home.to_string_lossy())
         });
+        // Ensure plain filesystem paths are prefixed with sqlite: URL scheme
+        let db_url = if db_path.starts_with("sqlite:") {
+            db_path
+        } else {
+            format!("sqlite:{}?mode=rwc", db_path)
+        };
 
-        tracing::info!("Connecting to database: {}", db_path);
+        tracing::info!("Connecting to database: {}", db_url);
 
-        let mut storage = StorageManager::from_url(&db_path)
+        let mut storage = StorageManager::from_url(&db_url)
             .await
             .map_err(|e| nexus_core::NexusError::Database(e.to_string()))?;
 
@@ -182,7 +183,7 @@ impl McpServer {
         let pool = self
             .storage
             .as_ref()
-            .ok_or_else(|| nexus_core::NexusError::NotInitialized)?
+            .ok_or(nexus_core::NexusError::NotInitialized)?
             .pool()
             .clone();
 

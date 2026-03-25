@@ -29,19 +29,24 @@ pub async fn get_stats(State(state): State<Arc<RwLock<AppState>>>) -> Result<Jso
     let mut agent_stats: Vec<AgentStats> = Vec::new();
 
     for namespace in &namespaces {
-        // Count memories for this namespace
-        let count = state.memory_repo.count_by_namespace(namespace.id).await?;
+        // Count memories using unfiltered queries for accurate totals
+        let ns_total = state
+            .memory_repo
+            .count_all_by_namespace(namespace.id)
+            .await?;
+        let ns_active = state.memory_repo.count_by_namespace(namespace.id).await?;
+        let ns_archived = state
+            .memory_repo
+            .count_archived_by_namespace(namespace.id)
+            .await?;
 
-        // Get all memories to calculate detailed stats
+        // Get active memories for category breakdown
         let memories = state
             .memory_repo
             .search_by_namespace(namespace.id, 10000, 0)
             .await?;
 
-        let ns_active = memories.iter().filter(|m| m.is_active).count() as i64;
-        let ns_archived = memories.iter().filter(|m| m.is_archived).count() as i64;
-
-        // Count categories
+        // Count categories from active memories
         let mut ns_categories: HashMap<String, i64> = HashMap::new();
         for memory in &memories {
             let cat = memory.category.to_string();
@@ -56,7 +61,7 @@ pub async fn get_stats(State(state): State<Arc<RwLock<AppState>>>) -> Result<Jso
         agent_stats.push(AgentStats {
             agent_type: namespace.agent_type.clone(),
             namespace_name: namespace.name.clone(),
-            total_memories: count,
+            total_memories: ns_total,
             active_memories: ns_active,
             archived_memories: ns_archived,
             categories: json!(ns_categories),
@@ -64,7 +69,7 @@ pub async fn get_stats(State(state): State<Arc<RwLock<AppState>>>) -> Result<Jso
             newest_memory: newest.map(|d| d.to_rfc3339()),
         });
 
-        total_memories += count;
+        total_memories += ns_total;
         active_memories += ns_active;
         archived_memories += ns_archived;
     }
@@ -99,17 +104,22 @@ pub async fn get_agent_stats(
         .get_or_create(&agent_type, &agent_type)
         .await?;
 
-    // Count memories
-    let count = state.memory_repo.count_by_namespace(namespace.id).await?;
+    // Count memories using unfiltered queries for accurate totals
+    let count = state
+        .memory_repo
+        .count_all_by_namespace(namespace.id)
+        .await?;
+    let active = state.memory_repo.count_by_namespace(namespace.id).await?;
+    let archived = state
+        .memory_repo
+        .count_archived_by_namespace(namespace.id)
+        .await?;
 
-    // Get all memories for detailed stats
+    // Get active memories for category breakdown
     let memories = state
         .memory_repo
         .search_by_namespace(namespace.id, 10000, 0)
         .await?;
-
-    let active = memories.iter().filter(|m| m.is_active).count() as i64;
-    let archived = memories.iter().filter(|m| m.is_archived).count() as i64;
 
     // Count categories
     let mut ns_categories: HashMap<String, i64> = HashMap::new();

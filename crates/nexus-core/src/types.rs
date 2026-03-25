@@ -4,21 +4,16 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Memory category types (Nexus categories)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryCategory {
+    #[default]
     General,
     Facts,
     Preferences,
     Context,
     Specifications,
     Session,
-}
-
-impl Default for MemoryCategory {
-    fn default() -> Self {
-        Self::General
-    }
 }
 
 impl std::fmt::Display for MemoryCategory {
@@ -48,7 +43,7 @@ impl MemoryCategory {
     }
 
     /// Parse from string
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "general" => Some(Self::General),
             "facts" => Some(Self::Facts),
@@ -103,7 +98,7 @@ impl std::fmt::Display for MemoryLaneCognitiveType {
 
 impl MemoryLaneCognitiveType {
     /// Parse from string
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "semantic" => Some(Self::Semantic),
             "episodic" => Some(Self::Episodic),
@@ -173,7 +168,7 @@ impl MemoryLanePriorityType {
     }
 
     /// Parse from string
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "correction" => Some(Self::Correction),
             "decision" => Some(Self::Decision),
@@ -209,10 +204,10 @@ impl std::fmt::Display for MemoryLaneType {
 
 impl MemoryLaneType {
     /// Parse from string
-    pub fn from_str(s: &str) -> Option<Self> {
-        MemoryLaneCognitiveType::from_str(s)
+    pub fn parse(s: &str) -> Option<Self> {
+        MemoryLaneCognitiveType::parse(s)
             .map(Self::Cognitive)
-            .or_else(|| MemoryLanePriorityType::from_str(s).map(Self::Priority))
+            .or_else(|| MemoryLanePriorityType::parse(s).map(Self::Priority))
     }
 }
 
@@ -409,12 +404,9 @@ mod tests {
     }
 
     #[test]
-    fn test_category_from_str() {
-        assert_eq!(
-            MemoryCategory::from_str("facts"),
-            Some(MemoryCategory::Facts)
-        );
-        assert_eq!(MemoryCategory::from_str("invalid"), None);
+    fn test_category_parse() {
+        assert_eq!(MemoryCategory::parse("facts"), Some(MemoryCategory::Facts));
+        assert_eq!(MemoryCategory::parse("invalid"), None);
     }
 
     #[test]
@@ -449,14 +441,14 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_lane_type_from_str() {
-        let cognitive = MemoryLaneType::from_str("semantic");
+    fn test_memory_lane_type_parse() {
+        let cognitive = MemoryLaneType::parse("semantic");
         assert!(matches!(
             cognitive,
             Some(MemoryLaneType::Cognitive(MemoryLaneCognitiveType::Semantic))
         ));
 
-        let priority = MemoryLaneType::from_str("correction");
+        let priority = MemoryLaneType::parse("correction");
         assert!(matches!(
             priority,
             Some(MemoryLaneType::Priority(MemoryLanePriorityType::Correction))

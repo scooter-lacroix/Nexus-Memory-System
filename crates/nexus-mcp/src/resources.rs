@@ -123,7 +123,7 @@ impl ResourceHandler {
                 self.list_all_agents().await
             } else {
                 let agent_type = parts[0];
-                let sub_resource = parts.get(1).map(|s| *s);
+                let sub_resource = parts.get(1).copied();
 
                 match sub_resource {
                     Some("memories") => self.get_agent_memories(agent_type).await,
@@ -294,7 +294,7 @@ impl ResourceHandler {
         match ns_repo.get_by_name(agent_type).await {
             Ok(Some(ns)) => match mem_repo.search_by_namespace(ns.id, 100, 0).await {
                 Ok(memories) => {
-                    let memory_list: Vec<_> = memories.iter().map(|m| memory_to_json(m)).collect();
+                    let memory_list: Vec<_> = memories.iter().map(memory_to_json).collect();
 
                     let value = serde_json::json!({
                         "agent_type": agent_type,

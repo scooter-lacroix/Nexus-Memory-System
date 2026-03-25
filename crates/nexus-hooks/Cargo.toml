@@ -31,12 +31,16 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 dirs = { workspace = true }
 serde_yaml = { workspace = true }
+sha2 = "0.10"
+hex = "0.4"
 
 # Process monitoring
 sysinfo = "0.33"
 
 # Internal dependencies
 nexus-core = { workspace = true }
+nexus-llm = { workspace = true }
+nexus-storage = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -53,3 +57,4 @@ windows = { version = "0.58", features = [
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }

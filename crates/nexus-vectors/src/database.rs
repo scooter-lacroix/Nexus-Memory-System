@@ -401,7 +401,7 @@ impl VectorDatabase {
         let entry = self
             .vectors
             .get(&memory_id)
-            .ok_or_else(|| nexus_core::NexusError::MemoryNotFound(memory_id))?;
+            .ok_or(nexus_core::NexusError::MemoryNotFound(memory_id))?;
 
         let query = entry.embedding.clone();
         let namespace_id = entry.namespace_id;
@@ -472,7 +472,7 @@ impl VectorDatabase {
         let entry = self
             .vectors
             .get_mut(&id)
-            .ok_or_else(|| nexus_core::NexusError::MemoryNotFound(id))?;
+            .ok_or(nexus_core::NexusError::MemoryNotFound(id))?;
 
         entry.embedding = new_embedding;
         entry.created_at = chrono::Utc::now();
@@ -948,10 +948,10 @@ mod tests {
     fn test_top_k_similar() {
         let query = vec![1.0, 0.0];
         let vectors: Vec<(i64, &[f32])> = vec![
-            (1, &[1.0, 0.0].as_slice()),     // similarity 1.0
-            (2, &[0.0, 1.0].as_slice()),     // similarity 0.0
-            (3, &[0.707, 0.707].as_slice()), // similarity ~0.707
-            (4, &[0.9, 0.1].as_slice()),     // similarity ~0.9
+            (1, &[1.0, 0.0]),     // similarity 1.0
+            (2, &[0.0, 1.0]),     // similarity 0.0
+            (3, &[0.707, 0.707]), // similarity ~0.707
+            (4, &[0.9, 0.1]),     // similarity ~0.9
         ];
 
         let top_k = top_k_similar(&query, &vectors, 2, 0.0);

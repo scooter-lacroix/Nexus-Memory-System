@@ -310,19 +310,25 @@ impl GraphTree {
 
     /// Get tree statistics
     pub fn stats(&self) -> TreeStats {
-        let mut stats = TreeStats::default();
-        stats.total_nodes = self.nodes.len();
-        stats.root_count = self.roots.len();
-        stats.category_count = self.category_roots.len();
+        let memory_count = self
+            .nodes
+            .values()
+            .filter(|node| node.node_type == NodeType::MemoryLeaf)
+            .count();
+        let max_depth = self
+            .nodes
+            .values()
+            .map(|node| node.depth)
+            .max()
+            .unwrap_or(0);
 
-        for node in self.nodes.values() {
-            if node.node_type == NodeType::MemoryLeaf {
-                stats.memory_count += 1;
-            }
-            stats.max_depth = stats.max_depth.max(node.depth);
+        TreeStats {
+            total_nodes: self.nodes.len(),
+            root_count: self.roots.len(),
+            category_count: self.category_roots.len(),
+            memory_count,
+            max_depth,
         }
-
-        stats
     }
 
     // Private methods
@@ -481,14 +487,10 @@ impl GraphTree {
         let mut path = Vec::new();
         let mut current = node_id;
 
-        loop {
-            if let Some(node) = self.nodes.get(&current) {
-                path.push(current);
-                if let Some(parent_id) = node.parent_id {
-                    current = parent_id;
-                } else {
-                    break;
-                }
+        while let Some(node) = self.nodes.get(&current) {
+            path.push(current);
+            if let Some(parent_id) = node.parent_id {
+                current = parent_id;
             } else {
                 break;
             }

@@ -345,7 +345,7 @@ impl AgentHook for PiSkillsHook {
         for known_skill in Self::KNOWN_SKILLS {
             let is_available = self.has_skill(known_skill);
             context.add_custom(
-                &format!("skill_{}_available", known_skill.replace('-', "_")),
+                format!("skill_{}_available", known_skill.replace('-', "_")),
                 serde_json::Value::Bool(is_available),
             );
         }

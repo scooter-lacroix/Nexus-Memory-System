@@ -13,7 +13,14 @@ This changelog covers the public Rust workspace and its release history.
 
 ### Added
 
-- None yet
+- Always-on memory agent (`nexus-agent` crate) with LLM-driven ingest, consolidate, and query services
+- Multi-provider LLM abstraction (`nexus-llm` crate) supporting OpenAI, Anthropic, Gemini, OpenRouter, Groq, Z.ai, Minimax, and Mistral
+- Agent API endpoints: `/api/agent/ingest`, `/api/agent/query`, `/api/agent/consolidate`, `/api/agent/status`
+- Inbox file watcher for automatic ingestion
+- Periodic memory consolidation with pattern discovery
+- `processed_files` table for inbox file deduplication
+- `--agent` flag for `nexus serve` command
+- `AgentConfig` and `LlmConfig` in core configuration
 
 ---
 

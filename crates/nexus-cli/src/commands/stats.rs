@@ -31,8 +31,8 @@ pub async fn execute(agent: Option<String>) -> Result<()> {
                 r#"
                 SELECT
                     COUNT(*) AS total_memories,
-                    SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active_memories,
-                    SUM(CASE WHEN is_archived = 1 THEN 1 ELSE 0 END) AS archived_memories
+                    COALESCE(SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), 0) AS active_memories,
+                    COALESCE(SUM(CASE WHEN is_archived = 1 THEN 1 ELSE 0 END), 0) AS archived_memories
                 FROM memories
                 WHERE namespace_id = ?
                 "#,
@@ -42,7 +42,10 @@ pub async fn execute(agent: Option<String>) -> Result<()> {
             .await?;
 
             println!("Namespace: {}", agent_name);
-            println!("  Total memories: {}", totals.get::<i64, _>("total_memories"));
+            println!(
+                "  Total memories: {}",
+                totals.get::<i64, _>("total_memories")
+            );
             println!(
                 "  Active memories: {}",
                 totals.get::<i64, _>("active_memories")
@@ -100,7 +103,10 @@ pub async fn execute(agent: Option<String>) -> Result<()> {
             "  Total namespaces: {}",
             global.get::<i64, _>("total_namespaces")
         );
-        println!("  Total memories: {}", global.get::<i64, _>("total_memories"));
+        println!(
+            "  Total memories: {}",
+            global.get::<i64, _>("total_memories")
+        );
         println!(
             "  Active memories: {}",
             global.get::<i64, _>("active_memories")
