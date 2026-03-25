@@ -706,8 +706,8 @@ fn write_env_file(
         "NEXUS_AGENT_ENABLED",
         "NEXUS_AGENT_NAMESPACE",
         "NEXUS_AGENT_INBOX_DIR",
-        "NEXUS_AGENT_CONSOLIDATION_INTERVAL",
-        "NEXUS_AGENT_SCAN_INTERVAL",
+        "NEXUS_AGENT_CONSOLIDATION_INTERVAL_MINS",
+        "NEXUS_AGENT_SCAN_INTERVAL_SECS",
     ];
 
     let mut lines: Vec<String> = Vec::new();
@@ -794,8 +794,8 @@ fn validate_key(key: &str) -> anyhow::Result<()> {
         "NEXUS_AGENT_ENABLED",
         "NEXUS_AGENT_NAMESPACE",
         "NEXUS_AGENT_INBOX_DIR",
-        "NEXUS_AGENT_CONSOLIDATION_INTERVAL",
-        "NEXUS_AGENT_SCAN_INTERVAL",
+        "NEXUS_AGENT_CONSOLIDATION_INTERVAL_MINS",
+        "NEXUS_AGENT_SCAN_INTERVAL_SECS",
         "NEXUS_LOG_LEVEL",
     ];
 

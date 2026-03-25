@@ -144,10 +144,16 @@ impl Config {
         if let Ok(inbox) = std::env::var("NEXUS_AGENT_INBOX_DIR") {
             config.agent.inbox_dir = inbox;
         }
-        if let Ok(interval) = std::env::var("NEXUS_AGENT_CONSOLIDATION_INTERVAL") {
+        if let Ok(interval) = std::env::var("NEXUS_AGENT_CONSOLIDATION_INTERVAL_MINS") {
+            config.agent.consolidation_interval_mins = interval.parse().unwrap_or(30);
+        } else if let Ok(interval) = std::env::var("NEXUS_AGENT_CONSOLIDATION_INTERVAL") {
+            // Backward compat: old name without unit suffix
             config.agent.consolidation_interval_mins = interval.parse().unwrap_or(30);
         }
-        if let Ok(interval) = std::env::var("NEXUS_AGENT_SCAN_INTERVAL") {
+        if let Ok(interval) = std::env::var("NEXUS_AGENT_SCAN_INTERVAL_SECS") {
+            config.agent.scan_interval_secs = interval.parse().unwrap_or(5);
+        } else if let Ok(interval) = std::env::var("NEXUS_AGENT_SCAN_INTERVAL") {
+            // Backward compat: old name without unit suffix
             config.agent.scan_interval_secs = interval.parse().unwrap_or(5);
         }
 

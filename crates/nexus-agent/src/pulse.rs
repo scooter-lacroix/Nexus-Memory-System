@@ -48,7 +48,10 @@ pub fn write_pulse(action: &str, memories_consolidated: u64, files_processed: u6
     let path = pulse_path();
 
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            debug!(error = %e, path = %parent.display(), "Failed to create state directory for pulse file");
+            return;
+        }
     }
 
     let pulse = AgentPulse {
