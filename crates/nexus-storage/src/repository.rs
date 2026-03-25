@@ -203,6 +203,35 @@ impl MemoryRepository {
         Ok(())
     }
 
+    /// Mark multiple memories as consolidated in a single query
+    pub async fn mark_consolidated_batch(&self, ids: &[i64]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            r#"
+            UPDATE memories
+            SET metadata = json_set(
+                COALESCE(metadata, '{{}}'),
+                '$.agent.consolidated',
+                true,
+                '$.agent.consolidated_at',
+                datetime('now')
+            ),
+            updated_at = datetime('now')
+            WHERE id IN ({})
+            "#,
+            placeholders
+        );
+        let mut q = sqlx::query(&query);
+        for id in ids {
+            q = q.bind(*id);
+        }
+        q.execute(&self.pool).await.map_err(db_error)?;
+        Ok(())
+    }
+
     /// Search memories by text content (LIKE search)
     pub async fn search_by_text(
         &self,
@@ -362,6 +391,22 @@ impl<'a> ProcessedFileRepository<'a> {
                 .map_err(db_error)?;
 
         Ok(row.is_some())
+    }
+
+    /// Get all completed file paths for a namespace (for batch dedup checks)
+    pub async fn get_completed_paths(
+        &self,
+        namespace_id: i64,
+    ) -> Result<std::collections::HashSet<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT path FROM processed_files WHERE namespace_id = ? AND status = 'completed'",
+        )
+        .bind(namespace_id)
+        .fetch_all(self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(rows.into_iter().map(|r| r.0).collect())
     }
 
     /// Mark a file as being processed

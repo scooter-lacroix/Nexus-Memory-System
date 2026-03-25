@@ -103,7 +103,6 @@ pub struct MultiLayerExtractor {
 
 /// Events emitted by the extractor
 #[derive(Debug, Clone)]
-#[allow(clippy::large_enum_variant)]
 pub enum ExtractionEvent {
     /// Extraction started
     Started {
@@ -115,7 +114,7 @@ pub enum ExtractionEvent {
     Completed {
         agent_type: String,
         source: ExtractionSource,
-        context: SessionContext,
+        context: Box<SessionContext>,
     },
 
     /// Extraction failed
@@ -159,7 +158,7 @@ impl MultiLayerExtractor {
             let _ = event_sender.send(ExtractionEvent::Completed {
                 agent_type: agent_type_clone.clone(),
                 source: ExtractionSource::NativeHook("session_end".to_string()),
-                context: ctx,
+                context: Box::new(ctx),
             });
         });
 
@@ -381,7 +380,7 @@ impl MultiLayerExtractor {
                 let _ = self.event_sender.send(ExtractionEvent::Completed {
                     agent_type: agent_type.to_string(),
                     source: ExtractionSource::Manual,
-                    context: context.clone(),
+                    context: Box::new(context.clone()),
                 });
 
                 let mut stats = self.stats.write().await;

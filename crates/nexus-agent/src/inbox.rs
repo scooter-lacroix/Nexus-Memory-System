@@ -49,6 +49,15 @@ impl InboxScanner {
         let mut processed = 0;
         let mut failed = 0;
 
+        // Batch-fetch all completed file paths to avoid N+1 queries
+        let completed_paths = match processed_repo.get_completed_paths(namespace_id).await {
+            Ok(paths) => paths,
+            Err(e) => {
+                error!(error = %e, "Failed to fetch completed paths, falling back to per-file checks");
+                std::collections::HashSet::new()
+            }
+        };
+
         // Walk the inbox directory
         for entry in WalkDir::new(inbox_path)
             .follow_links(false)
@@ -59,14 +68,9 @@ impl InboxScanner {
             let path = entry.path();
             let path_str = path.to_string_lossy().to_string();
 
-            // Check if already processed
-            match processed_repo.is_processed(namespace_id, &path_str).await {
-                Ok(true) => continue,
-                Ok(false) => {}
-                Err(e) => {
-                    error!(path = %path.display(), error = %e, "Failed to check processed status");
-                    continue;
-                }
+            // Skip already-processed files (in-memory check)
+            if completed_paths.contains(&path_str) {
+                continue;
             }
 
             // Mark as processing

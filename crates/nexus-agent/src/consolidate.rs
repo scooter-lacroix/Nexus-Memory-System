@@ -68,16 +68,15 @@ impl ConsolidateService {
                 })?;
         }
 
-        // Step 5: Mark source memories as consolidated
-        for memory in &memories {
-            memory_repo
-                .mark_consolidated(memory.id)
-                .await
-                .map_err(|e| {
-                    error!(memory_id = memory.id, error = %e, "Failed to mark memory as consolidated");
-                    AgentError::Storage(e.to_string())
-                })?;
-        }
+        // Step 5: Mark source memories as consolidated (batch update)
+        let ids: Vec<i64> = memories.iter().map(|m| m.id).collect();
+        memory_repo
+            .mark_consolidated_batch(&ids)
+            .await
+            .map_err(|e| {
+                error!(error = %e, "Failed to mark memories as consolidated");
+                AgentError::Storage(e.to_string())
+            })?;
 
         info!(
             connections = result.connections.len(),

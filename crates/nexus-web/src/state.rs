@@ -39,7 +39,7 @@ impl AppState {
         let (ws_sender, _) = broadcast::channel(1000);
 
         // Initialize agent supervisor if enabled
-        let agent_supervisor = match Self::create_agent_supervisor(&pool, &namespace_repo) {
+        let agent_supervisor = match Self::create_agent_supervisor(&pool, &namespace_repo).await {
             Ok(Some(supervisor)) => {
                 info!("Agent supervisor initialized");
                 Some(supervisor)
@@ -148,7 +148,7 @@ impl AppState {
     }
 
     /// Create an agent supervisor if agent mode is enabled in the config.
-    fn create_agent_supervisor(
+    async fn create_agent_supervisor(
         pool: &SqlitePool,
         namespace_repo: &NamespaceRepository,
     ) -> Result<Option<AgentSupervisor>> {
@@ -162,13 +162,15 @@ impl AppState {
             .map_err(|e| WebError::Config(format!("Failed to create LLM client: {}", e)))?;
 
         // Ensure the agent namespace exists
-        let namespace = tokio::runtime::Handle::current()
-            .block_on(namespace_repo.get_or_create(&config.agent.namespace, "nexus-agent"))
+        let namespace = namespace_repo
+            .get_or_create(&config.agent.namespace, "nexus-agent")
+            .await
             .map_err(|e| WebError::Storage(e.to_string()))?;
 
         let mut supervisor = AgentSupervisor::new(config.agent, llm, pool.clone(), namespace.id);
-        tokio::runtime::Handle::current()
-            .block_on(supervisor.start())
+        supervisor
+            .start()
+            .await
             .map_err(|e| WebError::Config(format!("Failed to start agent supervisor: {}", e)))?;
 
         Ok(Some(supervisor))
