@@ -14,8 +14,11 @@ fn state_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("NEXUS_STATE_DIR") {
         PathBuf::from(dir)
     } else {
-        let xdg = std::env::var("XDG_STATE_HOME")
-            .unwrap_or_else(|_| std::env::var("HOME").unwrap_or_else(|_| ".".to_string()));
+        let xdg = std::env::var("XDG_STATE_HOME").unwrap_or_else(|_| {
+            std::env::var("HOME")
+                .map(|h| format!("{}/.local/state", h))
+                .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().to_string())
+        });
         PathBuf::from(xdg).join("nexus-memory-system")
     }
 }

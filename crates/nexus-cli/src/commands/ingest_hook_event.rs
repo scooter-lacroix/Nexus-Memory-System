@@ -15,7 +15,7 @@ use nexus_hooks::retry_buffer::RetryBuffer;
 use nexus_storage::{MemoryRepository, NamespaceRepository, StorageManager};
 
 /// Execute the ingest-hook-event command
-pub async fn execute(agent: String, event: String, _format: String) -> Result<()> {
+pub async fn execute(agent: String, event: String, format: String) -> Result<()> {
     // 1. Read raw JSON from stdin
     let mut raw_input = String::new();
     std::io::stdin()
@@ -25,10 +25,19 @@ pub async fn execute(agent: String, event: String, _format: String) -> Result<()
     let raw: serde_json::Value =
         serde_json::from_str(&raw_input).context("Failed to parse stdin as JSON")?;
 
-    tracing::info!(agent = %agent, event = %event, "Processing hook event");
+    tracing::info!(agent = %agent, event = %event, format = %format, "Processing hook event");
 
     // 2. Normalize the payload
-    let normalized = normalize_claude_payload(&agent, &event, &raw);
+    let normalized = if format.is_empty() || format == "claude" {
+        normalize_claude_payload(&agent, &event, &raw)
+    } else {
+        tracing::warn!(
+            format = %format,
+            "No normalizer for format '{}', falling back to Claude normalization",
+            format
+        );
+        normalize_claude_payload(&agent, &event, &raw)
+    };
     tracing::debug!(tool_name = ?normalized.tool_name, "Normalized event");
 
     // 3. Initialize storage

@@ -210,20 +210,24 @@ write_env_file() {
 
     # Preserve existing user-configured values — only write if file doesn't exist
     if [[ -f "${ENV_FILE}" ]]; then
-        # Ensure base paths are up to date by patching them in-place
-        sed -i.bak \
+        # Ensure base paths are up to date by patching them in-place (portable)
+        local temp_env
+        temp_env=$(mktemp)
+        sed \
             -e "s|^export NEXUS_DATABASE_PATH=.*|export NEXUS_DATABASE_PATH=\"${DB_PATH}\"|" \
             -e "s|^export NEXUS_AGENT_INBOX_DIR=.*|export NEXUS_AGENT_INBOX_DIR=\"${DATA_DIR}/inbox\"|" \
-            "${ENV_FILE}"
-        rm -f "${ENV_FILE}.bak"
+            "${ENV_FILE}" > "${temp_env}"
+        mv "${temp_env}" "${ENV_FILE}"
 
-        # Patch fish env similarly
+        # Patch fish env similarly (portable: use temp file instead of -i)
         if [[ -f "${FISH_ENV_FILE}" ]]; then
-            sed -i.bak \
+            local temp_fish
+            temp_fish=$(mktemp)
+            sed \
                 -e "s|^set -gx NEXUS_DATABASE_PATH.*|set -gx NEXUS_DATABASE_PATH \"${DB_PATH}\"|" \
                 -e "s|^set -gx NEXUS_AGENT_INBOX_DIR.*|set -gx NEXUS_AGENT_INBOX_DIR \"${DATA_DIR}/inbox\"|" \
-                "${FISH_ENV_FILE}"
-            rm -f "${FISH_ENV_FILE}.bak"
+                "${FISH_ENV_FILE}" > "${temp_fish}"
+            mv "${temp_fish}" "${FISH_ENV_FILE}"
         fi
         ok "Updated paths in existing ${ENV_FILE}"
         return

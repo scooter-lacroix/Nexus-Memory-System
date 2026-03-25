@@ -10,9 +10,8 @@ pub async fn execute(transport: String, port: u16, agent: bool) -> Result<()> {
     info!("Transport: {}", transport);
     info!("Port: {}", port);
 
-    // If --agent flag is set, ensure NEXUS_AGENT_ENABLED is in the environment
-    // so that Config::from_env() picks it up during initialization.
-    if agent && std::env::var("NEXUS_AGENT_ENABLED").is_err() {
+    // If --agent flag is set, force-enable the agent regardless of env value.
+    if agent {
         std::env::set_var("NEXUS_AGENT_ENABLED", "true");
         info!("Agent mode enabled via --agent flag");
     }

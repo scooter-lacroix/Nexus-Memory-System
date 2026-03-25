@@ -88,12 +88,15 @@ pub async fn agent_query(
         )
         .await
     {
-        Ok(answer) => Ok(Json(AgentQueryResponse {
-            success: true,
-            question: request.question,
-            answer: Some(answer.answer),
-            error: None,
-        })),
+        Ok(answer) => {
+            supervisor.increment_queries_answered().await;
+            Ok(Json(AgentQueryResponse {
+                success: true,
+                question: request.question,
+                answer: Some(answer.answer),
+                error: None,
+            }))
+        }
         Err(e) => {
             error!(error = %e, "Agent query failed");
             Ok(Json(AgentQueryResponse {

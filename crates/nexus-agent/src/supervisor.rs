@@ -100,6 +100,12 @@ impl AgentSupervisor {
         self.status.read().await.clone()
     }
 
+    /// Increment the queries answered counter (for external callers like the web API).
+    pub async fn increment_queries_answered(&self) {
+        let mut s = self.status.write().await;
+        s.queries_answered += 1;
+    }
+
     pub fn query_service(&self) -> QueryService {
         QueryService::new(self.llm.clone(), self.config.clone())
     }
@@ -126,8 +132,8 @@ impl AgentSupervisor {
         let interval_secs = config.scan_interval_secs;
 
         let handle = tokio::spawn(async move {
-            let scanner =
-                InboxScanner::new(config.clone(), IngestService::new(llm, config.clone()));
+            let ingest_service = IngestService::new(llm, config.clone());
+            let scanner = InboxScanner::new(config, ingest_service);
             let mut ticker = interval(Duration::from_secs(interval_secs));
 
             loop {

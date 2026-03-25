@@ -359,7 +359,8 @@ pub async fn execute_set(key: String, value: String) -> anyhow::Result<()> {
     let env_file = env_file_path();
     let mut entries = read_env_file(&env_file);
     entries.insert(key.clone(), value.clone());
-    write_env_file(&env_file, &entries, false)?;
+    let is_secret = key.contains("API_KEY");
+    write_env_file(&env_file, &entries, is_secret)?;
 
     println!("Set {}=\"{}\" in {}", key, value, env_file.display());
     println!();
