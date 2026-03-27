@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 
-use crate::base::{AgentHook, BaseHook, SessionEndCallback};
+use crate::base::{AgentHook, BaseHook, LifecycleCapabilities, SessionEndCallback};
 use crate::error::Result;
 use crate::monitor::ProcessMonitor;
 use crate::session::SessionContext;
@@ -111,6 +111,10 @@ impl AgentHook for QwenHook {
     fn reliability_score(&self) -> f32 {
         0.95
     }
+
+    fn lifecycle_capabilities(&self) -> LifecycleCapabilities {
+        LifecycleCapabilities::monitor_only()
+    }
 }
 
 #[cfg(test)]
@@ -129,5 +133,15 @@ mod tests {
         let activity = hook.detect_session_activity().await.unwrap();
 
         assert_eq!(activity.agent_type, AgentType::Qwen);
+    }
+
+    #[test]
+    fn test_qwen_hook_lifecycle_capabilities() {
+        let hook = QwenHook::new();
+        let caps = hook.lifecycle_capabilities();
+
+        assert!(!caps.session_start, "Qwen does not support session_start");
+        assert!(!caps.session_end, "Qwen is monitor-only");
+        assert!(!caps.checkpoint, "Qwen does not support checkpoint");
     }
 }

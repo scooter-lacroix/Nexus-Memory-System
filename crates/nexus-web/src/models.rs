@@ -380,3 +380,151 @@ pub struct AgentStatusResponse {
     pub errors: Vec<String>,
     pub uptime_secs: u64,
 }
+
+// =============================================================================
+// Observability Request/Response Models
+// =============================================================================
+
+/// A single job entry returned by the observability endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobEntry {
+    pub id: i64,
+    pub job_type: String,
+    pub status: String,
+    pub priority: i64,
+    pub attempts: i64,
+    pub last_error: Option<String>,
+    pub lease_owner: Option<String>,
+    pub lease_expires_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<nexus_storage::MemoryJobRow> for JobEntry {
+    fn from(row: nexus_storage::MemoryJobRow) -> Self {
+        Self {
+            id: row.id,
+            job_type: row.job_type,
+            status: row.status,
+            priority: row.priority,
+            attempts: row.attempts,
+            last_error: row.last_error,
+            lease_owner: row.lease_owner,
+            lease_expires_at: row.lease_expires_at,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+/// Response for listing jobs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobListResponse {
+    pub success: bool,
+    pub namespace: String,
+    pub jobs: Vec<JobEntry>,
+    pub total: i64,
+}
+
+/// Response for job status summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobSummaryResponse {
+    pub success: bool,
+    pub namespace: String,
+    pub counts: std::collections::HashMap<String, i64>,
+}
+
+/// A single session digest entry returned by the observability endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DigestEntry {
+    pub id: i64,
+    pub session_key: String,
+    pub digest_kind: String,
+    pub memory_id: i64,
+    pub start_memory_id: Option<i64>,
+    pub end_memory_id: Option<i64>,
+    pub token_count: i64,
+    pub created_at: String,
+}
+
+impl From<nexus_storage::SessionDigestRow> for DigestEntry {
+    fn from(row: nexus_storage::SessionDigestRow) -> Self {
+        Self {
+            id: row.id,
+            session_key: row.session_key,
+            digest_kind: row.digest_kind,
+            memory_id: row.memory_id,
+            start_memory_id: row.start_memory_id,
+            end_memory_id: row.end_memory_id,
+            token_count: row.token_count,
+            created_at: row.created_at,
+        }
+    }
+}
+
+/// Response for listing digests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DigestListResponse {
+    pub success: bool,
+    pub namespace: String,
+    pub digests: Vec<DigestEntry>,
+    pub total: i64,
+}
+
+/// Response for runtime health.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeResponse {
+    pub success: bool,
+    pub version: String,
+    pub uptime_seconds: u64,
+    pub db_connected: bool,
+    pub agent_enabled: bool,
+    pub active_sessions: usize,
+}
+
+/// A compact reflection sample shown in the observability endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReflectionSampleEntry {
+    pub id: i64,
+    pub content: String,
+    pub created_at: String,
+    pub confidence: Option<f64>,
+}
+
+impl From<Memory> for ReflectionSampleEntry {
+    fn from(memory: Memory) -> Self {
+        let confidence = memory
+            .metadata
+            .get("cognitive")
+            .and_then(|cognitive| cognitive.get("confidence"))
+            .and_then(|value| value.as_f64());
+
+        Self {
+            id: memory.id,
+            content: memory.content,
+            created_at: memory.created_at.to_rfc3339(),
+            confidence,
+        }
+    }
+}
+
+/// Response for reflection/dream observability.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReflectionStateResponse {
+    pub success: bool,
+    pub namespace: String,
+    pub contradiction_count: i64,
+    pub derived_count: i64,
+    pub recent_contradictions: Vec<ReflectionSampleEntry>,
+    pub recent_derived: Vec<ReflectionSampleEntry>,
+}
+
+/// Response for cognition overview (aggregated job/digest/evidence counts).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CognitionOverviewResponse {
+    pub success: bool,
+    pub namespace: String,
+    pub jobs_by_status: std::collections::HashMap<String, i64>,
+    pub digest_count: i64,
+    pub evidence_count: i64,
+}

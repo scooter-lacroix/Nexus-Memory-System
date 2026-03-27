@@ -61,10 +61,13 @@ pub mod signal;
 pub mod types;
 
 // Re-export main types
-pub use base::{AgentHook, HookResult};
+pub use base::{AgentHook, HookResult, LifecycleCapabilities};
 pub use buffer::PersistentBuffer;
 pub use candidate::{derive_candidates, MemoryCandidate};
-pub use claude_payload::NormalizedHookEvent;
+pub use claude_payload::{
+    flatten_text_value, normalize_claude_payload, normalize_generic_payload, normalize_payload,
+    NormalizedHookEvent,
+};
 pub use detector::InactivityDetector;
 pub use enrichment::{EnrichedMemory, EnrichmentBatchResult, EnrichmentService};
 pub use error::{HookError, Result};

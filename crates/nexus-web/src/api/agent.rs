@@ -120,24 +120,33 @@ pub async fn agent_consolidate(
         .as_ref()
         .ok_or_else(|| WebError::InvalidRequest("Agent is not enabled".to_string()))?;
 
-    let consolidate_svc = supervisor.consolidate_service();
     let namespace_id = supervisor.namespace_id();
+    let config = nexus_core::Config::from_env().map_err(|e| WebError::Config(e.to_string()))?;
 
-    let memory_repo = nexus_storage::MemoryRepository::new(state.pool().clone());
-    let relation_repo = nexus_storage::MemoryRelationRepository::new(state.pool());
-
-    match consolidate_svc
-        .consolidate(namespace_id, &memory_repo, &relation_repo)
-        .await
+    let lease_owner = format!("web-agent-consolidate-{}", namespace_id);
+    match nexus_agent::runtime::run_dream_cycle(
+        state.pool().clone(),
+        &config.cognition,
+        &nexus_core::config::AgentConfig {
+            namespace: supervisor.get_status().await.namespace,
+            ..Default::default()
+        },
+        nexus_llm::create_client_auto_with_fallback()
+            .map_err(|e| WebError::Config(format!("Failed to create LLM client: {}", e)))?,
+        nexus_agent::runtime::DreamCycleRequest {
+            namespace_id,
+            lease_owner: &lease_owner,
+            perspective: None,
+            session_key: None,
+            reflect_reason: "web_manual_dream",
+            digest_reason: "web_manual_digest",
+        },
+    )
+    .await
     {
-        Ok(Some(count)) => Ok(Json(AgentConsolidateResponse {
+        Ok(processed) => Ok(Json(AgentConsolidateResponse {
             success: true,
-            memories_processed: count as usize,
-            error: None,
-        })),
-        Ok(None) => Ok(Json(AgentConsolidateResponse {
-            success: true,
-            memories_processed: 0,
+            memories_processed: processed,
             error: None,
         })),
         Err(e) => {

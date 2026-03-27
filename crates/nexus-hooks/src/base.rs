@@ -14,6 +14,40 @@ use crate::types::{ExtractionSource, SessionActivity};
 /// Callback type for session end events
 pub type SessionEndCallback = Arc<dyn Fn(SessionContext) + Send + Sync>;
 
+/// Describes which lifecycle events an agent hook can handle.
+///
+/// Each field indicates whether the agent's native hook/config model
+/// supports that particular lifecycle event. Agents should override
+/// `AgentHook::lifecycle_capabilities()` to report their honest support.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleCapabilities {
+    /// Native session start hook support (e.g. Claude Code's SessionStart hook)
+    pub session_start: bool,
+    /// Session end hook support (via skills, native hooks, or atexit)
+    pub session_end: bool,
+    /// Periodic checkpoint hook support
+    pub checkpoint: bool,
+    /// Error-triggered hook support
+    pub error_hook: bool,
+    /// Compact/compression hook support
+    pub compact: bool,
+}
+
+impl LifecycleCapabilities {
+    /// Helper to create a capabilities set with only session end support.
+    pub fn end_only() -> Self {
+        Self {
+            session_end: true,
+            ..Default::default()
+        }
+    }
+
+    /// Helper to create a monitor-only capabilities set (process detection, atexit).
+    pub fn monitor_only() -> Self {
+        Self::default()
+    }
+}
+
 /// Result of a hook operation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookResult {
@@ -144,6 +178,20 @@ pub trait AgentHook: Send + Sync {
     /// Ok(()) if hook was installed successfully
     async fn install_session_end_hook(&mut self, callback: SessionEndCallback) -> Result<()>;
 
+    /// Optional: Install the session start hook.
+    async fn install_session_start_hook(&mut self, _callback: SessionEndCallback) -> Result<()> {
+        Err(crate::error::HookError::NotSupported(
+            "Session start hooks not supported for this agent".to_string(),
+        ))
+    }
+
+    /// Optional: Install a compact/checkpoint hook.
+    async fn install_compact_hook(&mut self, _callback: SessionEndCallback) -> Result<()> {
+        Err(crate::error::HookError::NotSupported(
+            "Compact/checkpoint hooks not supported for this agent".to_string(),
+        ))
+    }
+
     /// Detect if the agent session is currently active
     ///
     /// This method checks for agent activity through various means:
@@ -205,6 +253,14 @@ pub trait AgentHook: Send + Sync {
     /// Optional: Get hook reliability score (0.0-1.0)
     fn reliability_score(&self) -> f32 {
         1.0
+    }
+
+    /// Report which lifecycle events this agent hook supports.
+    ///
+    /// Default assumes session-end only. Agents with richer native hook
+    /// support (e.g. Claude Code's SessionStart hook) should override this.
+    fn lifecycle_capabilities(&self) -> LifecycleCapabilities {
+        LifecycleCapabilities::end_only()
     }
 }
 
@@ -292,5 +348,32 @@ mod tests {
 
         hook.trigger_callbacks(SessionContext::new("test"));
         assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_lifecycle_capabilities_default() {
+        let caps = LifecycleCapabilities::default();
+        assert!(!caps.session_start);
+        assert!(!caps.session_end);
+        assert!(!caps.checkpoint);
+        assert!(!caps.error_hook);
+        assert!(!caps.compact);
+    }
+
+    #[test]
+    fn test_lifecycle_capabilities_end_only() {
+        let caps = LifecycleCapabilities::end_only();
+        assert!(!caps.session_start);
+        assert!(caps.session_end);
+        assert!(!caps.checkpoint);
+        assert!(!caps.error_hook);
+        assert!(!caps.compact);
+    }
+
+    #[test]
+    fn test_lifecycle_capabilities_monitor_only() {
+        let caps = LifecycleCapabilities::monitor_only();
+        assert!(!caps.session_end);
+        assert!(!caps.session_start);
     }
 }

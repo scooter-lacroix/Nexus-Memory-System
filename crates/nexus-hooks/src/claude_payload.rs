@@ -1,7 +1,9 @@
-//! Claude Code hook payload normalization
+//! Hook payload normalization
 //!
-//! Normalizes raw Claude Code hook payloads into a stable internal event schema.
-//! Handles both snake_case and camelCase field names.
+//! Normalizes raw hook payloads from any agent into a stable internal event
+//! schema.  Provides a Claude-specific normalizer (handles snake_case and
+//! camelCase), a generic normalizer (common field names across agents), and a
+//! unified dispatcher that selects the right one automatically.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -22,6 +24,129 @@ pub struct NormalizedHookEvent {
     pub assistant_message_text: Option<String>,
     pub user_message_text: Option<String>,
     pub raw_payload: Value,
+}
+
+/// Agent type strings that should use the Claude-specific normalizer.
+const CLAUDE_AGENT_TYPES: &[&str] = &["claude-code", "claude"];
+
+/// Flatten a JSON value to a plain-text string.
+///
+/// Handles strings directly, arrays of strings (joined with newlines),
+/// and objects that contain a "text" key.  Returns `None` for null or empty.
+pub fn flatten_text_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(s) if s.is_empty() => None,
+        Value::String(s) => Some(s.clone()),
+        Value::Array(items) => {
+            let flattened: Vec<String> = items.iter().filter_map(flatten_text_value).collect();
+            if flattened.is_empty() {
+                None
+            } else {
+                Some(flattened.join("\n"))
+            }
+        }
+        Value::Object(map) => {
+            if let Some(text) = map.get("text").and_then(|v| v.as_str()) {
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text.to_string())
+                }
+            } else {
+                Some(value.to_string())
+            }
+        }
+        _ => Some(value.to_string()),
+    }
+}
+
+/// Normalize a generic (non-Claude) hook payload into the stable event schema.
+///
+/// Tries common field names across different agent formats (Gemini, Qwen,
+/// Codex, Amp, Droid, etc.) for tool_name, tool_input, session_id, cwd,
+/// and message content.
+pub fn normalize_generic_payload(agent: &str, event: &str, raw: &Value) -> NormalizedHookEvent {
+    let obj = raw.as_object().cloned().unwrap_or_default();
+
+    let tool_name = obj
+        .get("tool_name")
+        .or_else(|| obj.get("toolName"))
+        .or_else(|| obj.get("name"))
+        .cloned();
+
+    let tool_input = obj
+        .get("tool_input")
+        .or_else(|| obj.get("toolInput"))
+        .or_else(|| obj.get("input"))
+        .or_else(|| obj.get("arguments"))
+        .cloned();
+
+    let tool_response_text = obj
+        .get("tool_response_text")
+        .or_else(|| obj.get("toolResponseText"))
+        .or_else(|| obj.get("output"))
+        .or_else(|| obj.get("result"))
+        .and_then(flatten_text_value);
+
+    let assistant_message_text = obj
+        .get("assistant_message_text")
+        .or_else(|| obj.get("assistantMessageText"))
+        .or_else(|| obj.get("assistant_message"))
+        .or_else(|| obj.get("response"))
+        .and_then(flatten_text_value);
+
+    let user_message_text = obj
+        .get("user_message_text")
+        .or_else(|| obj.get("userMessageText"))
+        .or_else(|| obj.get("user_message"))
+        .or_else(|| obj.get("prompt"))
+        .and_then(flatten_text_value);
+
+    let session_id = obj
+        .get("session_id")
+        .or_else(|| obj.get("sessionId"))
+        .or_else(|| obj.get("sessionKey"))
+        .and_then(|v| v.as_str().map(String::from));
+
+    let turn_id = obj
+        .get("turn_id")
+        .or_else(|| obj.get("turnId"))
+        .and_then(|v| v.as_str().map(String::from));
+
+    let cwd = obj
+        .get("cwd")
+        .or_else(|| obj.get("working_directory"))
+        .or_else(|| obj.get("workingDirectory"))
+        .and_then(|v| v.as_str().map(String::from));
+
+    NormalizedHookEvent {
+        agent: agent.to_string(),
+        event_name: event.to_string(),
+        observed_at: chrono::Utc::now(),
+        session_id,
+        turn_id,
+        cwd,
+        tool_name: tool_name.and_then(|v| v.as_str().map(String::from)),
+        tool_input,
+        tool_response_text,
+        assistant_message_text,
+        user_message_text,
+        raw_payload: raw.clone(),
+    }
+}
+
+/// Normalize a hook payload into the stable event schema.
+///
+/// Automatically selects the Claude-specific or generic normalizer based
+/// on the agent type string.
+pub fn normalize_payload(agent: &str, event: &str, raw: &Value) -> NormalizedHookEvent {
+    let agent_lower = agent.to_lowercase();
+    if CLAUDE_AGENT_TYPES.contains(&agent_lower.as_str()) {
+        normalize_claude_payload(agent, event, raw)
+    } else {
+        normalize_generic_payload(agent, event, raw)
+    }
 }
 
 /// Normalize a Claude Code hook payload into a stable event schema.
@@ -333,5 +458,254 @@ mod tests {
         let normalized = normalize_claude_payload("claude-code", "test", &raw);
 
         assert_eq!(normalized.user_message_text, None);
+    }
+
+    // ── Generic normalizer tests ─────────────────────────────────────
+
+    #[test]
+    fn test_normalize_generic_gemini_payload() {
+        let raw = json!({
+            "toolName": "Bash",
+            "toolInput": {"command": "npm test"},
+            "output": "12 tests passed",
+            "sessionId": "gem-sess-1",
+            "workingDirectory": "/home/user/project"
+        });
+
+        let normalized = normalize_generic_payload("gemini", "post-tool-use", &raw);
+
+        assert_eq!(normalized.agent, "gemini");
+        assert_eq!(normalized.event_name, "post-tool-use");
+        assert_eq!(normalized.tool_name, Some("Bash".to_string()));
+        assert_eq!(normalized.session_id, Some("gem-sess-1".to_string()));
+        assert_eq!(normalized.cwd, Some("/home/user/project".to_string()));
+        assert_eq!(
+            normalized.tool_response_text,
+            Some("12 tests passed".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_generic_qwen_payload() {
+        let raw = json!({
+            "name": "Read",
+            "input": {"file_path": "src/main.rs"},
+            "sessionKey": "qw-sess-1",
+            "cwd": "/project"
+        });
+
+        let normalized = normalize_generic_payload("qwen", "tool-use", &raw);
+
+        assert_eq!(normalized.agent, "qwen");
+        assert_eq!(normalized.tool_name, Some("Read".to_string()));
+        assert_eq!(normalized.session_id, Some("qw-sess-1".to_string()));
+        assert_eq!(normalized.cwd, Some("/project".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_generic_minimal_payload() {
+        let raw = json!({});
+
+        let normalized = normalize_generic_payload("codex", "event", &raw);
+
+        assert_eq!(normalized.agent, "codex");
+        assert_eq!(normalized.event_name, "event");
+        assert_eq!(normalized.tool_name, None);
+        assert_eq!(normalized.session_id, None);
+        assert_eq!(normalized.cwd, None);
+    }
+
+    #[test]
+    fn test_normalize_generic_camelcase_fields() {
+        let raw = json!({
+            "toolName": "Write",
+            "toolInput": {"path": "foo.rs"},
+            "toolResponseText": "Written 42 bytes",
+            "assistantMessageText": "File created successfully",
+            "userMessageText": "Create a new file",
+            "turnId": "turn-1",
+            "workingDirectory": "/workspace"
+        });
+
+        let normalized = normalize_generic_payload("amp", "post-tool-use", &raw);
+
+        assert_eq!(normalized.tool_name, Some("Write".to_string()));
+        assert!(normalized.tool_input.is_some());
+        assert_eq!(
+            normalized.tool_response_text,
+            Some("Written 42 bytes".to_string())
+        );
+        assert_eq!(
+            normalized.assistant_message_text,
+            Some("File created successfully".to_string())
+        );
+        assert_eq!(
+            normalized.user_message_text,
+            Some("Create a new file".to_string())
+        );
+        assert_eq!(normalized.turn_id, Some("turn-1".to_string()));
+        assert_eq!(normalized.cwd, Some("/workspace".to_string()));
+    }
+
+    #[test]
+    fn test_flatten_text_value_null() {
+        assert_eq!(flatten_text_value(&Value::Null), None);
+    }
+
+    #[test]
+    fn test_flatten_text_value_empty_string() {
+        assert_eq!(flatten_text_value(&Value::String(String::new())), None);
+    }
+
+    #[test]
+    fn test_flatten_text_value_string() {
+        assert_eq!(
+            flatten_text_value(&Value::String("hello".to_string())),
+            Some("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn test_flatten_text_value_array() {
+        let arr = json!(["line1", "line2", "line3"]);
+        assert_eq!(
+            flatten_text_value(&arr),
+            Some("line1\nline2\nline3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_flatten_text_value_object_with_text() {
+        let obj = json!({"text": "content"});
+        assert_eq!(flatten_text_value(&obj), Some("content".to_string()));
+    }
+
+    // ── Unified dispatcher tests ──────────────────────────────────────
+
+    #[test]
+    fn test_normalize_payload_dispatches_claude() {
+        let raw = json!({
+            "tool_name": "Bash",
+            "session_id": "sess-1"
+        });
+
+        let normalized = normalize_payload("claude-code", "event", &raw);
+        assert_eq!(normalized.agent, "claude-code");
+        // Claude normalizer picks up session_id from "session_id"
+        assert_eq!(normalized.session_id, Some("sess-1".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_payload_dispatches_generic() {
+        let raw = json!({
+            "toolName": "Read",
+            "sessionId": "sess-2"
+        });
+
+        let normalized = normalize_payload("gemini", "event", &raw);
+        assert_eq!(normalized.agent, "gemini");
+        // Generic normalizer picks up session_id from "sessionId"
+        assert_eq!(normalized.session_id, Some("sess-2".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_payload_dispatches_by_alias() {
+        let raw = json!({
+            "tool_name": "Bash",
+        });
+
+        let normalized = normalize_payload("claude", "event", &raw);
+        assert_eq!(normalized.agent, "claude");
+        assert_eq!(normalized.tool_name, Some("Bash".to_string()));
+    }
+
+    // ── Cross-agent consistency tests ───────────────────────────────
+
+    #[test]
+    fn test_normalize_codex_payload() {
+        let raw = json!({
+            "toolName": "Bash",
+            "toolInput": {"command": "go test ./..."},
+            "toolResponseText": "PASS",
+            "sessionId": "cx-1",
+            "turnId": "t-1",
+            "workingDirectory": "/project"
+        });
+
+        let normalized = normalize_payload("codex", "post-tool-use", &raw);
+        assert_eq!(normalized.agent, "codex");
+        assert_eq!(normalized.tool_name, Some("Bash".to_string()));
+        assert_eq!(normalized.session_id, Some("cx-1".to_string()));
+        assert_eq!(normalized.turn_id, Some("t-1".to_string()));
+        assert_eq!(normalized.cwd, Some("/project".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_amp_payload() {
+        let raw = json!({
+            "tool_name": "Edit",
+            "tool_input": {"file": "src/lib.rs"},
+            "tool_response_text": "Updated 3 lines",
+            "assistant_message_text": "Fixed the off-by-one error",
+            "session_id": "amp-sess",
+            "cwd": "/workspace"
+        });
+
+        let normalized = normalize_payload("amp", "post-tool-use", &raw);
+        assert_eq!(normalized.agent, "amp");
+        assert_eq!(normalized.tool_name, Some("Edit".to_string()));
+        assert_eq!(normalized.session_id, Some("amp-sess".to_string()));
+        assert_eq!(normalized.cwd, Some("/workspace".to_string()));
+        assert_eq!(
+            normalized.assistant_message_text,
+            Some("Fixed the off-by-one error".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_droid_payload_minimal() {
+        let raw = json!({
+            "name": "Read",
+            "input": {"file_path": "README.md"}
+        });
+
+        let normalized = normalize_payload("droid", "tool-use", &raw);
+        assert_eq!(normalized.agent, "droid");
+        assert_eq!(normalized.tool_name, Some("Read".to_string()));
+        assert_eq!(normalized.session_id, None);
+        assert_eq!(normalized.cwd, None);
+    }
+
+    #[test]
+    fn test_all_agents_produce_stable_schema() {
+        let agents = [
+            "claude-code",
+            "claude",
+            "gemini",
+            "qwen",
+            "codex",
+            "amp",
+            "droid",
+            "opencode",
+        ];
+        for agent in agents {
+            let raw = json!({
+                "tool_name": "Test",
+                "session_id": "s-1",
+            });
+            let normalized = normalize_payload(agent, "test-event", &raw);
+            assert_eq!(normalized.agent, agent, "agent name mismatch for {}", agent);
+            assert_eq!(
+                normalized.event_name, "test-event",
+                "event_name mismatch for {}",
+                agent
+            );
+            // All agents should produce a non-empty raw_payload
+            assert!(
+                !normalized.raw_payload.is_null(),
+                "raw_payload should not be null for {}",
+                agent
+            );
+        }
     }
 }

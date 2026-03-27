@@ -10,6 +10,7 @@ homepage.workspace = true
 description = "MCP server implementation for Nexus Memory System"
 
 [dependencies]
+nexus-agent = { workspace = true }
 nexus-core = { workspace = true }
 nexus-storage = { workspace = true }
 nexus-vectors = { workspace = true }

@@ -10,6 +10,18 @@ use std::collections::HashSet;
 
 use crate::claude_payload::NormalizedHookEvent;
 
+/// Truncate a string to at most `max_chars` characters, appending "..." if truncated.
+///
+/// Operates on `char` boundaries (not bytes) so it is safe for multi-byte UTF-8.
+pub(crate) fn truncate_str(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_chars).collect();
+        format!("{}...", truncated)
+    }
+}
+
 /// A candidate memory derived from a hook event, pending LLM enrichment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryCandidate {
@@ -44,7 +56,7 @@ const HIGH_SIGNAL_PATTERNS: &[&str] = &[
 ///
 /// Returns a vector of candidates (typically 0-1). Returns empty if:
 /// - The event has no extractable content
-/// - The signal score is below threshold (0.3)
+/// - The signal score is below threshold (0.4)
 /// - The event is a duplicate (based on fingerprint)
 pub fn derive_candidates(
     event: &NormalizedHookEvent,
@@ -119,8 +131,8 @@ pub fn derive_candidates(
         signal_score += 0.2;
     }
 
-    // User prompt submit is high signal
-    if event.event_name == "user-prompt-submit" {
+    // User prompt submit is high signal only if it has actual content
+    if event.event_name == "user-prompt-submit" && event.user_message_text.is_some() {
         signal_score += 0.3;
     }
 
@@ -130,18 +142,30 @@ pub fn derive_candidates(
         signal_score += 0.2;
     }
 
-    // Skip conditions: no content at all
-    let has_any_content = event.tool_input.is_some()
-        || event.tool_response_text.is_some()
-        || event.assistant_message_text.is_some()
-        || event.user_message_text.is_some();
+    // Require meaningful content, not just metadata presence
+    let has_meaningful_tool_input = event.tool_input.as_ref().is_some_and(|v| {
+        !v.is_null() && !v.as_object().is_some_and(|o| o.is_empty()) && v.to_string().len() > 5
+    });
+    let has_any_content = has_meaningful_tool_input
+        || event
+            .tool_response_text
+            .as_ref()
+            .is_some_and(|s| s.len() > 10)
+        || event
+            .assistant_message_text
+            .as_ref()
+            .is_some_and(|s| s.len() > 20)
+        || event
+            .user_message_text
+            .as_ref()
+            .is_some_and(|s| s.len() > 10);
 
     if !has_any_content {
         return Vec::new();
     }
 
     // Skip if signal score is too low
-    if signal_score < 0.3 {
+    if signal_score < 0.4 {
         return Vec::new();
     }
 
@@ -208,13 +232,7 @@ fn derive_memory_text(event: &NormalizedHookEvent) -> String {
         let excerpt = event
             .tool_response_text
             .as_ref()
-            .map(|s| {
-                if s.len() > 100 {
-                    format!("{}...", &s[..97])
-                } else {
-                    s.clone()
-                }
-            })
+            .map(|s| truncate_str(s, 100))
             .unwrap_or_default();
 
         if !excerpt.is_empty() {
@@ -248,11 +266,7 @@ fn derive_memory_text(event: &NormalizedHookEvent) -> String {
             || msg.to_lowercase().contains("will")
             || msg.to_lowercase().contains("going to")
         {
-            let excerpt = if msg.len() > 150 {
-                format!("{}...", &msg[..147])
-            } else {
-                msg.clone()
-            };
+            let excerpt = truncate_str(msg, 150);
             return format!("Decision: {}", excerpt);
         }
     }
@@ -287,20 +301,12 @@ fn build_evidence(event: &NormalizedHookEvent) -> Value {
     }
 
     if let Some(response) = &event.tool_response_text {
-        let excerpt = if response.len() > 200 {
-            format!("{}...", &response[..197])
-        } else {
-            response.clone()
-        };
+        let excerpt = truncate_str(response, 200);
         evidence.insert("tool_response_excerpt".to_string(), Value::String(excerpt));
     }
 
     if let Some(msg) = &event.assistant_message_text {
-        let excerpt = if msg.len() > 200 {
-            format!("{}...", &msg[..197])
-        } else {
-            msg.clone()
-        };
+        let excerpt = truncate_str(msg, 200);
         evidence.insert(
             "assistant_message_excerpt".to_string(),
             Value::String(excerpt),
@@ -308,11 +314,7 @@ fn build_evidence(event: &NormalizedHookEvent) -> Value {
     }
 
     if let Some(msg) = &event.user_message_text {
-        let excerpt = if msg.len() > 200 {
-            format!("{}...", &msg[..197])
-        } else {
-            msg.clone()
-        };
+        let excerpt = truncate_str(msg, 200);
         evidence.insert("user_message_excerpt".to_string(), Value::String(excerpt));
     }
 
@@ -414,7 +416,7 @@ mod tests {
         let mut seen = HashSet::new();
         let candidates = derive_candidates(&event, &mut seen);
 
-        // Simple ls command should have low signal (<0.3)
+        // Simple ls command should have low signal (<0.4)
         assert!(candidates.is_empty());
     }
 
@@ -433,7 +435,7 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         let candidate = &candidates[0];
-        assert!(candidate.signal_score >= 0.3);
+        assert!(candidate.signal_score >= 0.4);
         assert!(candidate.memory_text.contains("Ran"));
         assert!(candidate.labels.iter().any(|l| l == "tool:bash"));
     }
@@ -550,6 +552,41 @@ mod tests {
             .and_then(|v| v.as_str());
         assert!(excerpt.is_some());
         assert!(excerpt.unwrap().len() <= 203); // 200 + "..."
+    }
+
+    #[test]
+    fn test_truncate_utf8_multibyte() {
+        // Japanese characters are 3 bytes each in UTF-8
+        let s = "日本語テスト文字列";
+        assert_eq!(truncate_str(s, 100), s);
+        let truncated = truncate_str(s, 4);
+        assert_eq!(truncated, "日本語テ...");
+        // Verify it's valid UTF-8
+        assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn test_truncate_mixed_ascii_multibyte() {
+        let s = "Hello日本語World";
+        assert_eq!(truncate_str(s, 100), s);
+        let truncated = truncate_str(s, 7);
+        assert_eq!(truncated, "Hello日本...");
+        assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn test_truncate_empty_and_short() {
+        assert_eq!(truncate_str("", 10), "");
+        assert_eq!(truncate_str("hi", 10), "hi");
+        assert_eq!(truncate_str("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_exact_boundary() {
+        let s = "abcdefghij";
+        assert_eq!(truncate_str(s, 10), s); // exactly at limit, no "..."
+        let longer = "abcdefghijklmno";
+        assert_eq!(truncate_str(longer, 10), "abcdefghij...");
     }
 
     #[test]

@@ -23,6 +23,7 @@ pub enum AgentType {
     Codex,
     Amp,
     Droid,
+    Hermes,
 
     // Generic
     Generic,
@@ -41,6 +42,7 @@ impl std::fmt::Display for AgentType {
             AgentType::Codex => write!(f, "codex"),
             AgentType::Amp => write!(f, "amp"),
             AgentType::Droid => write!(f, "droid"),
+            AgentType::Hermes => write!(f, "hermes"),
             AgentType::Generic => write!(f, "generic"),
         }
     }
@@ -60,6 +62,7 @@ impl AgentType {
             "codex" => Some(Self::Codex),
             "amp" => Some(Self::Amp),
             "droid" => Some(Self::Droid),
+            "hermes" | "hermes-cli" => Some(Self::Hermes),
             _ => None,
         }
     }
@@ -73,9 +76,11 @@ impl AgentType {
             | AgentType::PiMono
             | AgentType::OhMyPi
             | AgentType::PiSkills => DetectionLayer::Native,
-            AgentType::OpenCode | AgentType::Codex | AgentType::Amp | AgentType::Droid => {
-                DetectionLayer::CLI
-            }
+            AgentType::OpenCode
+            | AgentType::Codex
+            | AgentType::Amp
+            | AgentType::Droid
+            | AgentType::Hermes => DetectionLayer::CLI,
             AgentType::Generic => DetectionLayer::CLI,
         }
     }
@@ -93,6 +98,7 @@ impl AgentType {
             AgentType::Codex => &["codex", "codex-cli"],
             AgentType::Amp => &["amp"],
             AgentType::Droid => &["droid"],
+            AgentType::Hermes => &["hermes", "hermes-cli"],
             AgentType::Generic => &[],
         }
     }
@@ -110,6 +116,7 @@ impl AgentType {
             AgentType::Codex => ".codex",
             AgentType::Amp => ".amp",
             AgentType::Droid => ".droid",
+            AgentType::Hermes => ".hermes",
             AgentType::Generic => ".nexus",
         }
     }

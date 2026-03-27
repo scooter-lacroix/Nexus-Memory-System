@@ -3,7 +3,10 @@
 //! Builds rich metadata and persists memories via the storage layer.
 
 use chrono::Utc;
-use nexus_core::{MemoryCategory, MemoryLaneType};
+use nexus_core::{
+    infer_perspective, CognitiveLevel, CognitiveMetadata, MemoryCategory, MemoryLaneType,
+    PerspectiveSource,
+};
 use nexus_storage::repository::MemoryRepository;
 use serde_json::json;
 use std::collections::HashMap;
@@ -21,6 +24,8 @@ pub struct PersistResult {
     pub skipped: usize,
     /// Breakdown by category
     pub categories: HashMap<String, usize>,
+    /// Stored memory IDs, in insertion order
+    pub stored_memory_ids: Vec<i64>,
 }
 
 /// Persist enriched memories to the database with rich metadata.
@@ -38,6 +43,17 @@ pub async fn persist_enriched_memories(
     model_name: &str,
 ) -> anyhow::Result<PersistResult> {
     let mut result = PersistResult::default();
+    let derived_session_key = derive_session_key(
+        &event.agent,
+        event.session_id.as_deref(),
+        event.cwd.as_deref(),
+    );
+    let perspective = infer_perspective(
+        PerspectiveSource::HookIngest,
+        event.agent.clone(),
+        None::<String>,
+        Some(derived_session_key.clone()),
+    );
 
     for enriched in &batch.memories {
         if !enriched.store {
@@ -79,11 +95,21 @@ pub async fn persist_enriched_memories(
         });
 
         // Build rich metadata
-        let metadata = json!({
+        let mut cognitive = CognitiveMetadata::new(
+            CognitiveLevel::Explicit,
+            perspective.observer.clone(),
+            perspective.subject.clone(),
+            perspective.session_key.clone(),
+            "hook_persistence",
+        );
+        cognitive.confidence = Some(enriched.confidence);
+
+        let metadata = cognitive.merge_into(&json!({
             "source": {
                 "agent": event.agent,
                 "event_name": event.event_name,
                 "session_id": event.session_id,
+                "derived_session_key": derived_session_key,
                 "turn_id": event.turn_id,
                 "cwd": event.cwd,
             },
@@ -99,7 +125,7 @@ pub async fn persist_enriched_memories(
                 "text": enriched.comment,
             },
             "confidence": enriched.confidence,
-        });
+        }));
 
         // Store the memory
         let params = nexus_storage::repository::StoreMemoryParams {
@@ -116,6 +142,7 @@ pub async fn persist_enriched_memories(
         match memory_repo.store(params).await {
             Ok(memory) => {
                 result.stored += 1;
+                result.stored_memory_ids.push(memory.id);
                 *result
                     .categories
                     .entry(enriched.category.clone())
@@ -143,6 +170,21 @@ pub async fn persist_enriched_memories(
     );
 
     Ok(result)
+}
+
+fn derive_session_key(agent: &str, session_key: Option<&str>, cwd: Option<&str>) -> String {
+    if let Some(value) = session_key.filter(|value| !value.trim().is_empty()) {
+        return value.to_string();
+    }
+
+    let fallback_scope = cwd
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("unknown-cwd");
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    agent.hash(&mut hasher);
+    fallback_scope.hash(&mut hasher);
+    format!("derived-{:016x}", hasher.finish())
 }
 
 #[cfg(test)]

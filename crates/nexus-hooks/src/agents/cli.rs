@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 
-use crate::base::{AgentHook, BaseHook, SessionEndCallback};
+use crate::base::{AgentHook, BaseHook, LifecycleCapabilities, SessionEndCallback};
 use crate::error::Result;
 use crate::monitor::ProcessMonitor;
 use crate::session::SessionContext;
@@ -18,6 +18,7 @@ use crate::types::{AgentType, SessionActivity};
 /// - Codex
 /// - Amp
 /// - Droid
+/// - Hermes
 /// - Other generic agents
 pub struct CLIHook {
     /// Base hook functionality
@@ -198,6 +199,10 @@ impl AgentHook for CLIHook {
     fn reliability_score(&self) -> f32 {
         0.95 // CLI hooks have 95% reliability
     }
+
+    fn lifecycle_capabilities(&self) -> LifecycleCapabilities {
+        LifecycleCapabilities::monitor_only()
+    }
 }
 
 #[cfg(test)]
@@ -208,6 +213,9 @@ mod tests {
     fn test_cli_hook_new() {
         let hook = CLIHook::new("opencode");
         assert_eq!(hook.agent_type(), "opencode");
+
+        let hermes = CLIHook::new("hermes");
+        assert_eq!(hermes.agent_type(), "hermes");
     }
 
     #[tokio::test]
@@ -216,5 +224,18 @@ mod tests {
         let activity = hook.detect_session_activity().await.unwrap();
 
         assert_eq!(activity.agent_type, AgentType::Codex);
+    }
+
+    #[test]
+    fn test_cli_hook_lifecycle_capabilities() {
+        let hook = CLIHook::new("codex");
+        let caps = hook.lifecycle_capabilities();
+
+        assert!(
+            !caps.session_start,
+            "CLI agents do not support session_start"
+        );
+        assert!(!caps.session_end, "CLI agents are monitor-only");
+        assert!(!caps.checkpoint, "CLI agents do not support checkpoint");
     }
 }

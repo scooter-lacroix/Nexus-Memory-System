@@ -60,6 +60,7 @@ impl HookFactory {
             AgentType::Codex,
             AgentType::Amp,
             AgentType::Droid,
+            AgentType::Hermes,
             AgentType::Generic,
         ] {
             supported.insert(agent_type.to_string(), *agent_type);
@@ -77,6 +78,15 @@ impl HookFactory {
 
     /// Create a hook for the specified agent type
     pub fn create_hook(&self, agent_type: &str) -> Result<Box<dyn AgentHook>> {
+        self.create_hook_internal(agent_type, false)
+    }
+
+    /// Create a hook for inspection/status reporting without mutating user state.
+    pub fn create_hook_readonly(&self, agent_type: &str) -> Result<Box<dyn AgentHook>> {
+        self.create_hook_internal(agent_type, true)
+    }
+
+    fn create_hook_internal(&self, agent_type: &str, readonly: bool) -> Result<Box<dyn AgentHook>> {
         // Normalize agent type
         let normalized = self.normalize_agent_type(agent_type);
 
@@ -87,13 +97,26 @@ impl HookFactory {
             Some(AgentType::ClaudeCode) => Ok(Box::new(ClaudeCodeHook::new())),
             Some(AgentType::Gemini) => Ok(Box::new(GeminiHook::new())),
             Some(AgentType::Qwen) => Ok(Box::new(QwenHook::new())),
-            Some(AgentType::PiMono) => Ok(Box::new(PiMonoHook::new())),
-            Some(AgentType::OhMyPi) => Ok(Box::new(OhMyPiHook::new())),
-            Some(AgentType::PiSkills) => Ok(Box::new(PiSkillsHook::new())),
+            Some(AgentType::PiMono) => Ok(Box::new(if readonly {
+                PiMonoHook::new_readonly()
+            } else {
+                PiMonoHook::new()
+            })),
+            Some(AgentType::OhMyPi) => Ok(Box::new(if readonly {
+                OhMyPiHook::new_readonly()
+            } else {
+                OhMyPiHook::new()
+            })),
+            Some(AgentType::PiSkills) => Ok(Box::new(if readonly {
+                PiSkillsHook::new_readonly()
+            } else {
+                PiSkillsHook::new()
+            })),
             Some(AgentType::OpenCode)
             | Some(AgentType::Codex)
             | Some(AgentType::Amp)
             | Some(AgentType::Droid)
+            | Some(AgentType::Hermes)
             | Some(AgentType::Generic) => Ok(Box::new(CLIHook::new(normalized.clone()))),
             None => Err(HookError::AgentNotFound(format!(
                 "Unknown agent type: {}",
@@ -221,6 +244,7 @@ mod tests {
         assert!(agents.contains(&"claude-code".to_string()));
         assert!(agents.contains(&"pi-mono".to_string()));
         assert!(agents.contains(&"oh-my-pi".to_string()));
+        assert!(agents.contains(&"hermes".to_string()));
     }
 
     #[test]
