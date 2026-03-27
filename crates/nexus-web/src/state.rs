@@ -4,7 +4,6 @@ use crate::error::Result;
 use crate::WebError;
 use nexus_agent::AgentSupervisor;
 use nexus_core::traits::EmbeddingService;
-use nexus_embeddings::{EmbeddingConfig as RuntimeEmbeddingConfig, OrtEmbeddingService};
 use nexus_orchestrator::{Event, EventType, Orchestrator};
 use nexus_storage::{MemoryRepository, NamespaceRepository, StorageManager};
 use sqlx::SqlitePool;
@@ -163,17 +162,14 @@ impl AppState {
         let llm = nexus_llm::create_client_auto_with_fallback()
             .map_err(|e| WebError::Config(format!("Failed to create LLM client: {}", e)))?;
 
-        let query_embedder: Option<Arc<dyn EmbeddingService>> = if config.embedding.enabled {
-            match OrtEmbeddingService::new(RuntimeEmbeddingConfig::from_env()).await {
-                Ok(service) => Some(Arc::new(service)),
+        let query_embedder: Option<Arc<dyn EmbeddingService>> =
+            match nexus_embeddings::create_service(&config).await {
+                Ok(service) => service,
                 Err(error) => {
                     error!("Failed to initialize query embedding service: {}", error);
                     None
                 }
-            }
-        } else {
-            None
-        };
+            };
 
         // Ensure the agent namespace exists
         let namespace = namespace_repo

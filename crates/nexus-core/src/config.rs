@@ -205,11 +205,47 @@ impl Config {
         }
 
         if let Ok(enabled) = std::env::var("NEXUS_EMBEDDINGS_ENABLED") {
-            config.embedding.enabled = enabled.parse().unwrap_or(true);
+            config.embedding.enabled = enabled.parse().unwrap_or(false);
+        }
+
+        if let Ok(backend) = std::env::var("NEXUS_EMBEDDING_BACKEND") {
+            config.embedding.backend = backend;
+        }
+
+        if let Ok(provider) = std::env::var("NEXUS_EMBEDDING_PROVIDER") {
+            config.embedding.provider = provider;
         }
 
         if let Ok(model) = std::env::var("NEXUS_EMBEDDING_MODEL") {
             config.embedding.model = model;
+        }
+
+        if let Ok(key_env) = std::env::var("NEXUS_EMBEDDING_API_KEY_ENV") {
+            config.embedding.api_key_env = key_env;
+        }
+
+        if let Ok(base_url) = std::env::var("NEXUS_EMBEDDING_BASE_URL") {
+            config.embedding.base_url = Some(base_url);
+        }
+
+        if let Ok(dimension) = std::env::var("NEXUS_EMBEDDING_DIMENSION") {
+            config.embedding.dimension = dimension
+                .parse()
+                .unwrap_or(EmbeddingConfig::default().dimension);
+        }
+
+        if let Ok(timeout) = std::env::var("NEXUS_EMBEDDING_TIMEOUT_SECS") {
+            config.embedding.timeout_secs = timeout
+                .parse()
+                .unwrap_or(EmbeddingConfig::default().timeout_secs);
+        }
+
+        if let Ok(model_path) = std::env::var("NEXUS_EMBEDDING_MODEL_PATH") {
+            config.embedding.local_model_path = Some(model_path);
+        }
+
+        if let Ok(tokenizer_path) = std::env::var("NEXUS_TOKENIZER_PATH") {
+            config.embedding.local_tokenizer_path = Some(tokenizer_path);
         }
 
         if let Ok(policy) = std::env::var("NEXUS_SYNC_POLICY") {
@@ -445,19 +481,48 @@ pub struct EmbeddingConfig {
     /// Enable embeddings
     pub enabled: bool,
 
+    /// Embedding backend (`local` or `openai-compatible`)
+    pub backend: String,
+
+    /// Embedding provider/profile (`inherit`, `openai`, `gemini`, `openrouter`,
+    /// `vllm`, `lmstudio`, `llamacpp`, `custom`, etc.)
+    pub provider: String,
+
     /// Embedding model name
     pub model: String,
 
+    /// API key environment variable name for remote embedding providers
+    pub api_key_env: String,
+
+    /// Base URL override for remote or local OpenAI-compatible runtimes
+    pub base_url: Option<String>,
+
     /// Embedding dimension
     pub dimension: usize,
+
+    /// Request timeout for remote embedding providers
+    pub timeout_secs: u64,
+
+    /// Path to a local ONNX embedding model
+    pub local_model_path: Option<String>,
+
+    /// Path to the tokenizer directory for local ONNX embeddings
+    pub local_tokenizer_path: Option<String>,
 }
 
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
+            backend: "local".to_string(),
+            provider: "local".to_string(),
             model: "all-MiniLM-L6-v2".to_string(),
+            api_key_env: "OPENAI_API_KEY".to_string(),
+            base_url: None,
             dimension: 384,
+            timeout_secs: 60,
+            local_model_path: Some("models/all-MiniLM-L6-v2.onnx".to_string()),
+            local_tokenizer_path: Some("models/all-MiniLM-L6-v2-tokenizer".to_string()),
         }
     }
 }
@@ -488,7 +553,9 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert!(config.embedding.enabled);
+        assert!(!config.embedding.enabled);
+        assert_eq!(config.embedding.backend, "local");
+        assert_eq!(config.embedding.provider, "local");
         assert_eq!(config.embedding.dimension, 384);
         assert_eq!(config.server.port, 8768);
     }
@@ -535,5 +602,39 @@ mod tests {
         std::env::remove_var("NEXUS_COGNITION_MAX_JOB_BATCH");
         std::env::remove_var("NEXUS_COGNITION_REPRESENTATION_MAX_ITEMS");
         std::env::remove_var("NEXUS_COGNITION_INCLUDE_RAW_BY_DEFAULT");
+    }
+
+    #[test]
+    fn test_embedding_config_from_env() {
+        std::env::set_var("NEXUS_EMBEDDINGS_ENABLED", "true");
+        std::env::set_var("NEXUS_EMBEDDING_BACKEND", "openai-compatible");
+        std::env::set_var("NEXUS_EMBEDDING_PROVIDER", "inherit");
+        std::env::set_var("NEXUS_EMBEDDING_MODEL", "text-embedding-004");
+        std::env::set_var("NEXUS_EMBEDDING_API_KEY_ENV", "GEMINI_API_KEY");
+        std::env::set_var(
+            "NEXUS_EMBEDDING_BASE_URL",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        );
+        std::env::set_var("NEXUS_EMBEDDING_TIMEOUT_SECS", "45");
+
+        let config = Config::from_env().expect("config from env");
+        assert!(config.embedding.enabled);
+        assert_eq!(config.embedding.backend, "openai-compatible");
+        assert_eq!(config.embedding.provider, "inherit");
+        assert_eq!(config.embedding.model, "text-embedding-004");
+        assert_eq!(config.embedding.api_key_env, "GEMINI_API_KEY");
+        assert_eq!(
+            config.embedding.base_url.as_deref(),
+            Some("https://generativelanguage.googleapis.com/v1beta/openai")
+        );
+        assert_eq!(config.embedding.timeout_secs, 45);
+
+        std::env::remove_var("NEXUS_EMBEDDINGS_ENABLED");
+        std::env::remove_var("NEXUS_EMBEDDING_BACKEND");
+        std::env::remove_var("NEXUS_EMBEDDING_PROVIDER");
+        std::env::remove_var("NEXUS_EMBEDDING_MODEL");
+        std::env::remove_var("NEXUS_EMBEDDING_API_KEY_ENV");
+        std::env::remove_var("NEXUS_EMBEDDING_BASE_URL");
+        std::env::remove_var("NEXUS_EMBEDDING_TIMEOUT_SECS");
     }
 }

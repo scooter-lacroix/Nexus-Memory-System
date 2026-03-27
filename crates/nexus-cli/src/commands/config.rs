@@ -10,6 +10,28 @@ use nexus_llm::{
     create_client_with_fallback, list_models, ChatMessage, GenerateParams, Provider, ALL_PROVIDERS,
 };
 
+const LOCAL_LLM_RUNTIME_LABEL: &str =
+    "Local OpenAI-compatible runtime (vLLM / LM Studio / llama.cpp)";
+
+struct WizardLlmSelection {
+    provider_id: String,
+    api_key_env: String,
+    api_key: String,
+    base_url: Option<String>,
+    model: String,
+}
+
+struct WizardEmbeddingSelection {
+    enabled: bool,
+    backend: String,
+    provider: String,
+    model: String,
+    api_key_env: String,
+    base_url: Option<String>,
+    local_model_path: Option<String>,
+    local_tokenizer_path: Option<String>,
+}
+
 // ── Public entry points ──────────────────────────────────────────────
 
 /// Interactive configuration wizard.
@@ -40,8 +62,103 @@ pub async fn execute_wizard() -> anyhow::Result<()> {
     );
     println!();
 
-    // ── Provider selection ────────────────────────────────────────
-    let items: Vec<&str> = ALL_PROVIDERS.iter().map(|p| p.display_label()).collect();
+    let stored_entries = read_env_file(&env_file);
+    let llm = prompt_llm_selection(&config, &stored_entries).await?;
+    let embedding = prompt_embedding_selection(&config, &llm)?;
+
+    // ── Always-on agent ───────────────────────────────────────────
+    let enable_agent = if config.agent.enabled {
+        Confirm::new()
+            .with_prompt("Keep always-on agent enabled?")
+            .default(true)
+            .interact()?
+    } else {
+        Confirm::new()
+            .with_prompt("Enable always-on agent?")
+            .default(false)
+            .interact()?
+    };
+
+    // ── Save ──────────────────────────────────────────────────────
+    let mut entries = read_env_file(&env_file);
+
+    entries.insert("NEXUS_LLM_PROVIDER".into(), llm.provider_id.clone());
+    entries.insert("NEXUS_LLM_MODEL".into(), llm.model.clone());
+    entries.insert("NEXUS_LLM_API_KEY_ENV".into(), llm.api_key_env.clone());
+    entries.insert("NEXUS_LLM_API_KEY".into(), llm.api_key.clone());
+
+    // Store per-provider key so switching providers doesn't lose it
+    let provider_key_var = format!("NEXUS_LLM_KEY_{}", llm.provider_id);
+    if !llm.api_key.is_empty() {
+        entries.insert(provider_key_var, llm.api_key.clone());
+    }
+
+    // Store per-provider base URL
+    let provider_base_url_var = format!("NEXUS_LLM_BASE_URL_{}", llm.provider_id);
+    if let Some(base_url) = &llm.base_url {
+        entries.insert(provider_base_url_var, base_url.clone());
+    } else {
+        entries.remove(&provider_base_url_var);
+    }
+
+    // Active base URL (backward compat)
+    if let Some(base_url) = &llm.base_url {
+        entries.insert("NEXUS_LLM_BASE_URL".into(), base_url.clone());
+    } else {
+        entries.remove("NEXUS_LLM_BASE_URL");
+    }
+
+    apply_embedding_selection(&mut entries, &embedding);
+
+    entries.insert(
+        "NEXUS_AGENT_ENABLED".into(),
+        if enable_agent { "true" } else { "false" }.into(),
+    );
+
+    write_env_file(&env_file, &entries, true)?;
+
+    println!();
+    println!("  Configuration saved to {}", env_file.display());
+    println!();
+
+    // ── Test connection ───────────────────────────────────────────
+    if !entries
+        .get("NEXUS_LLM_API_KEY")
+        .map_or(true, |v| v.is_empty())
+    {
+        let test = Confirm::new()
+            .with_prompt("Test connection now?")
+            .default(true)
+            .interact()?;
+
+        if test {
+            println!();
+            let key_value = entries
+                .get("NEXUS_LLM_API_KEY")
+                .cloned()
+                .unwrap_or_default();
+            test_connection_with_key(&llm.provider_id, &llm.model, &key_value).await?;
+        }
+    }
+
+    println!();
+    println!("  Restart your shell or run:");
+    println!("    source {}", env_file.display());
+
+    Ok(())
+}
+
+async fn prompt_llm_selection(
+    config: &Config,
+    stored_entries: &HashMap<String, String>,
+) -> anyhow::Result<WizardLlmSelection> {
+    let mut items: Vec<String> = ALL_PROVIDERS
+        .iter()
+        .map(|p| p.display_label().to_string())
+        .collect();
+    items.push(LOCAL_LLM_RUNTIME_LABEL.to_string());
+    let item_refs: Vec<&str> = items.iter().map(|s| s.as_str()).collect();
+
     let current_idx = ALL_PROVIDERS
         .iter()
         .position(|p| p.to_string() == config.llm.provider)
@@ -49,16 +166,17 @@ pub async fn execute_wizard() -> anyhow::Result<()> {
 
     let selection = Select::new()
         .with_prompt("Select LLM provider")
-        .items(&items)
+        .items(&item_refs)
         .default(current_idx)
         .interact()?;
 
-    let provider = ALL_PROVIDERS[selection];
+    if selection == item_refs.len() - 1 {
+        return prompt_local_llm_runtime();
+    }
 
-    // ── API key ───────────────────────────────────────────────────
+    let provider = ALL_PROVIDERS[selection];
     let provider_id = provider.to_string();
     let stored_key_var = format!("NEXUS_LLM_KEY_{}", provider_id);
-    let stored_entries = read_env_file(&env_file);
     let stored_key = stored_entries.get(&stored_key_var).cloned();
 
     let prompt = if stored_key.is_some() {
@@ -88,15 +206,13 @@ pub async fn execute_wizard() -> anyhow::Result<()> {
         eprintln!();
     }
 
-    // ── Base URL (optional) ───────────────────────────────────────
-    let base_url: String = Input::new()
+    let base_url_input: String = Input::new()
         .with_prompt("Base URL (press Enter for default)")
         .allow_empty(true)
         .interact_text()?;
+    let base_url = (!base_url_input.trim().is_empty()).then_some(base_url_input.clone());
 
-    // ── Fetch available models ────────────────────────────────────
     let model = if !api_key.is_empty() {
-        // Inject the key so list_models can find it
         std::env::set_var("NEXUS_LLM_API_KEY", &api_key);
         println!();
         println!(
@@ -109,8 +225,8 @@ pub async fn execute_wizard() -> anyhow::Result<()> {
             api_key_env: "NEXUS_LLM_API_KEY".into(),
             ..Default::default()
         };
-        if !base_url.is_empty() {
-            llm_config.base_url = Some(base_url.clone());
+        if let Some(url) = &base_url {
+            llm_config.base_url = Some(url.clone());
         }
 
         match list_models(&llm_config).await {
@@ -125,15 +241,12 @@ pub async fn execute_wizard() -> anyhow::Result<()> {
             Ok(models) => {
                 println!("  Found {} models", models.len());
                 println!();
-
-                // Find the current/default model in the list for pre-selection
                 let current_model = if config.llm.provider == provider_id {
                     &config.llm.model
                 } else {
                     provider.default_model()
                 };
                 let default_idx = models.iter().position(|m| m == current_model).unwrap_or(0);
-
                 let items: Vec<&str> = models.iter().map(|s| s.as_str()).collect();
                 let selected = Select::new()
                     .with_prompt("Select model")
@@ -159,84 +272,327 @@ pub async fn execute_wizard() -> anyhow::Result<()> {
             .interact_text()?
     };
 
-    // ── Always-on agent ───────────────────────────────────────────
-    let enable_agent = if config.agent.enabled {
-        Confirm::new()
-            .with_prompt("Keep always-on agent enabled?")
-            .default(true)
-            .interact()?
-    } else {
-        Confirm::new()
-            .with_prompt("Enable always-on agent?")
-            .default(false)
-            .interact()?
+    Ok(WizardLlmSelection {
+        provider_id,
+        api_key_env: "NEXUS_LLM_API_KEY".to_string(),
+        api_key,
+        base_url,
+        model,
+    })
+}
+
+fn prompt_local_llm_runtime() -> anyhow::Result<WizardLlmSelection> {
+    let runtime_options = ["vLLM", "LM Studio", "llama.cpp", "Custom OpenAI-compatible"];
+    let selection = Select::new()
+        .with_prompt("Select local LLM runtime")
+        .items(&runtime_options)
+        .default(0)
+        .interact()?;
+    let runtime = runtime_options[selection];
+    let default_base_url = default_local_runtime_base_url(runtime);
+
+    let base_url: String = Input::new()
+        .with_prompt("Base URL")
+        .default(default_base_url.to_string())
+        .interact_text()?;
+    let model: String = Input::new()
+        .with_prompt("Model")
+        .default("openai/gpt-4o-mini".to_string())
+        .interact_text()?;
+    let api_key: String = Input::new()
+        .with_prompt("API key (press Enter to use a harmless local placeholder)")
+        .allow_empty(true)
+        .interact_text()?;
+
+    Ok(WizardLlmSelection {
+        provider_id: "openai".to_string(),
+        api_key_env: "NEXUS_LLM_API_KEY".to_string(),
+        api_key: if api_key.is_empty() {
+            "local".to_string()
+        } else {
+            api_key
+        },
+        base_url: Some(base_url),
+        model,
+    })
+}
+
+fn prompt_embedding_selection(
+    config: &Config,
+    llm: &WizardLlmSelection,
+) -> anyhow::Result<WizardEmbeddingSelection> {
+    println!();
+    let options = [
+        "Disable semantic embeddings",
+        "Use the same remote provider as the main LLM",
+        "Use a different remote embedding provider",
+        "Use a local OpenAI-compatible runtime (vLLM / LM Studio / llama.cpp)",
+        "Use a local ONNX embedding model",
+    ];
+    let selection = Select::new()
+        .with_prompt("Select embedding backend")
+        .items(&options)
+        .default(if config.embedding.enabled { 1 } else { 0 })
+        .interact()?;
+
+    match selection {
+        0 => Ok(WizardEmbeddingSelection {
+            enabled: false,
+            backend: "local".to_string(),
+            provider: "local".to_string(),
+            model: config.embedding.model.clone(),
+            api_key_env: String::new(),
+            base_url: None,
+            local_model_path: config.embedding.local_model_path.clone(),
+            local_tokenizer_path: config.embedding.local_tokenizer_path.clone(),
+        }),
+        1 => Ok(WizardEmbeddingSelection {
+            enabled: true,
+            backend: "openai-compatible".to_string(),
+            provider: "inherit".to_string(),
+            model: prompt_embedding_model_for_inherited_provider(
+                &llm.model,
+                default_embedding_model_for_provider(&llm.provider_id),
+            )?,
+            api_key_env: llm.api_key_env.clone(),
+            base_url: llm.base_url.clone(),
+            local_model_path: None,
+            local_tokenizer_path: None,
+        }),
+        2 => prompt_remote_embedding_provider(),
+        3 => prompt_local_embedding_runtime(),
+        4 => prompt_local_onnx_embeddings(config),
+        _ => unreachable!(),
+    }
+}
+
+fn prompt_remote_embedding_provider() -> anyhow::Result<WizardEmbeddingSelection> {
+    let providers = [
+        "OpenAI",
+        "Google Gemini (OpenAI-compatible endpoint)",
+        "OpenRouter",
+        "Groq",
+        "Mistral",
+        "Custom OpenAI-compatible provider",
+    ];
+    let selection = Select::new()
+        .with_prompt("Select remote embedding provider")
+        .items(&providers)
+        .default(0)
+        .interact()?;
+
+    let (provider_id, default_base_url, default_api_env) = match selection {
+        0 => (
+            "openai",
+            Some("https://api.openai.com/v1"),
+            "OPENAI_API_KEY",
+        ),
+        1 => (
+            "gemini",
+            Some("https://generativelanguage.googleapis.com/v1beta/openai"),
+            "GEMINI_API_KEY",
+        ),
+        2 => (
+            "openrouter",
+            Some("https://openrouter.ai/api/v1"),
+            "OPENROUTER_API_KEY",
+        ),
+        3 => (
+            "groq",
+            Some("https://api.groq.com/openai/v1"),
+            "GROQ_API_KEY",
+        ),
+        4 => (
+            "mistral",
+            Some("https://api.mistral.ai/v1"),
+            "MISTRAL_API_KEY",
+        ),
+        _ => ("custom", None, ""),
     };
 
-    // ── Save ──────────────────────────────────────────────────────
-    let mut entries = read_env_file(&env_file);
+    let model = prompt_embedding_model(
+        "Embedding model",
+        default_embedding_model_for_provider(provider_id),
+    )?;
+    let base_url_input: String = Input::new()
+        .with_prompt("Embedding base URL")
+        .default(
+            default_base_url
+                .unwrap_or("https://api.openai.com/v1")
+                .to_string(),
+        )
+        .interact_text()?;
+    let api_key_env: String = Input::new()
+        .with_prompt("API key env var (leave empty if the endpoint does not require one)")
+        .default(default_api_env.to_string())
+        .allow_empty(true)
+        .interact_text()?;
 
-    entries.insert("NEXUS_LLM_PROVIDER".into(), provider_id.clone());
-    entries.insert("NEXUS_LLM_MODEL".into(), model.clone());
-    entries.insert("NEXUS_LLM_API_KEY_ENV".into(), "NEXUS_LLM_API_KEY".into());
-    entries.insert("NEXUS_LLM_API_KEY".into(), api_key.clone());
+    Ok(WizardEmbeddingSelection {
+        enabled: true,
+        backend: "openai-compatible".to_string(),
+        provider: provider_id.to_string(),
+        model,
+        api_key_env,
+        base_url: Some(base_url_input),
+        local_model_path: None,
+        local_tokenizer_path: None,
+    })
+}
 
-    // Store per-provider key so switching providers doesn't lose it
-    let provider_key_var = format!("NEXUS_LLM_KEY_{}", provider_id);
-    if !api_key.is_empty() {
-        entries.insert(provider_key_var, api_key);
-    }
+fn prompt_local_embedding_runtime() -> anyhow::Result<WizardEmbeddingSelection> {
+    let runtimes = ["vLLM", "LM Studio", "llama.cpp", "Custom OpenAI-compatible"];
+    let selection = Select::new()
+        .with_prompt("Select local embedding runtime")
+        .items(&runtimes)
+        .default(0)
+        .interact()?;
+    let runtime = runtimes[selection];
+    let base_url: String = Input::new()
+        .with_prompt("Embedding base URL")
+        .default(default_local_runtime_base_url(runtime).to_string())
+        .interact_text()?;
+    let model = prompt_embedding_model("Embedding model", "text-embedding-3-small")?;
 
-    // Store per-provider base URL
-    let provider_base_url_var = format!("NEXUS_LLM_BASE_URL_{}", provider_id);
-    if !base_url.is_empty() {
-        entries.insert(provider_base_url_var, base_url.clone());
+    Ok(WizardEmbeddingSelection {
+        enabled: true,
+        backend: "openai-compatible".to_string(),
+        provider: runtime.to_lowercase().replace(['.', ' '], ""),
+        model,
+        api_key_env: String::new(),
+        base_url: Some(base_url),
+        local_model_path: None,
+        local_tokenizer_path: None,
+    })
+}
+
+fn prompt_local_onnx_embeddings(config: &Config) -> anyhow::Result<WizardEmbeddingSelection> {
+    let model_path: String = Input::new()
+        .with_prompt("ONNX model path")
+        .default(
+            config
+                .embedding
+                .local_model_path
+                .clone()
+                .unwrap_or_else(|| "models/all-MiniLM-L6-v2.onnx".to_string()),
+        )
+        .interact_text()?;
+    let tokenizer_path: String = Input::new()
+        .with_prompt("Tokenizer directory")
+        .default(
+            config
+                .embedding
+                .local_tokenizer_path
+                .clone()
+                .unwrap_or_else(|| "models/all-MiniLM-L6-v2-tokenizer".to_string()),
+        )
+        .interact_text()?;
+
+    Ok(WizardEmbeddingSelection {
+        enabled: true,
+        backend: "local".to_string(),
+        provider: "local".to_string(),
+        model: "all-MiniLM-L6-v2".to_string(),
+        api_key_env: String::new(),
+        base_url: None,
+        local_model_path: Some(model_path),
+        local_tokenizer_path: Some(tokenizer_path),
+    })
+}
+
+fn prompt_embedding_model(prompt: &str, default_model: &str) -> anyhow::Result<String> {
+    Input::new()
+        .with_prompt(prompt)
+        .default(default_model.to_string())
+        .interact_text()
+        .map_err(Into::into)
+}
+
+fn prompt_embedding_model_for_inherited_provider(
+    llm_model: &str,
+    default_embedding_model: &str,
+) -> anyhow::Result<String> {
+    let options = [
+        format!("Use the same model as the main LLM ({})", llm_model),
+        format!(
+            "Use a different embedding model ({})",
+            default_embedding_model
+        ),
+    ];
+    let option_refs: Vec<&str> = options.iter().map(|s| s.as_str()).collect();
+    let selection = Select::new()
+        .with_prompt("Embedding model strategy")
+        .items(&option_refs)
+        .default(1)
+        .interact()?;
+
+    if selection == 0 {
+        Ok("inherit".to_string())
     } else {
-        entries.remove(&provider_base_url_var);
+        prompt_embedding_model("Embedding model", default_embedding_model)
     }
+}
 
-    // Active base URL (backward compat)
-    if !base_url.is_empty() {
-        entries.insert("NEXUS_LLM_BASE_URL".into(), base_url);
-    } else {
-        entries.remove("NEXUS_LLM_BASE_URL");
+fn default_embedding_model_for_provider(provider: &str) -> &str {
+    match provider {
+        "openai" => "text-embedding-3-small",
+        "gemini" | "google" => "text-embedding-004",
+        "openrouter" => "openai/text-embedding-3-small",
+        "mistral" => "mistral-embed",
+        _ => "text-embedding-3-small",
     }
+}
 
+fn default_local_runtime_base_url(runtime: &str) -> &'static str {
+    match runtime {
+        "vLLM" => "http://127.0.0.1:8000/v1",
+        "LM Studio" => "http://127.0.0.1:1234/v1",
+        "llama.cpp" => "http://127.0.0.1:8080/v1",
+        _ => "http://127.0.0.1:8000/v1",
+    }
+}
+
+fn apply_embedding_selection(
+    entries: &mut HashMap<String, String>,
+    embedding: &WizardEmbeddingSelection,
+) {
     entries.insert(
-        "NEXUS_AGENT_ENABLED".into(),
-        if enable_agent { "true" } else { "false" }.into(),
+        "NEXUS_EMBEDDINGS_ENABLED".into(),
+        if embedding.enabled { "true" } else { "false" }.to_string(),
     );
+    entries.insert("NEXUS_EMBEDDING_BACKEND".into(), embedding.backend.clone());
+    entries.insert(
+        "NEXUS_EMBEDDING_PROVIDER".into(),
+        embedding.provider.clone(),
+    );
+    entries.insert("NEXUS_EMBEDDING_MODEL".into(), embedding.model.clone());
 
-    write_env_file(&env_file, &entries, true)?;
-
-    println!();
-    println!("  Configuration saved to {}", env_file.display());
-    println!();
-
-    // ── Test connection ───────────────────────────────────────────
-    if !entries
-        .get("NEXUS_LLM_API_KEY")
-        .map_or(true, |v| v.is_empty())
-    {
-        let test = Confirm::new()
-            .with_prompt("Test connection now?")
-            .default(true)
-            .interact()?;
-
-        if test {
-            println!();
-            let key_value = entries
-                .get("NEXUS_LLM_API_KEY")
-                .cloned()
-                .unwrap_or_default();
-            test_connection_with_key(&provider_id, &model, &key_value).await?;
-        }
+    if !embedding.api_key_env.trim().is_empty() {
+        entries.insert(
+            "NEXUS_EMBEDDING_API_KEY_ENV".into(),
+            embedding.api_key_env.clone(),
+        );
+    } else {
+        entries.remove("NEXUS_EMBEDDING_API_KEY_ENV");
     }
 
-    println!();
-    println!("  Restart your shell or run:");
-    println!("    source {}", env_file.display());
+    if let Some(base_url) = &embedding.base_url {
+        entries.insert("NEXUS_EMBEDDING_BASE_URL".into(), base_url.clone());
+    } else {
+        entries.remove("NEXUS_EMBEDDING_BASE_URL");
+    }
 
-    Ok(())
+    if let Some(model_path) = &embedding.local_model_path {
+        entries.insert("NEXUS_EMBEDDING_MODEL_PATH".into(), model_path.clone());
+    } else {
+        entries.remove("NEXUS_EMBEDDING_MODEL_PATH");
+    }
+
+    if let Some(tokenizer_path) = &embedding.local_tokenizer_path {
+        entries.insert("NEXUS_TOKENIZER_PATH".into(), tokenizer_path.clone());
+    } else {
+        entries.remove("NEXUS_TOKENIZER_PATH");
+    }
 }
 
 /// Show the current effective Nexus configuration.
@@ -278,6 +634,29 @@ pub async fn execute_show() -> anyhow::Result<()> {
                 ""
             };
             println!("    {}: {}{}", id, masked, marker);
+        }
+    }
+    println!();
+
+    println!("Embeddings:");
+    println!("  enabled:     {}", config.embedding.enabled);
+    println!("  backend:     {}", config.embedding.backend);
+    println!("  provider:    {}", config.embedding.provider);
+    println!("  model:       {}", config.embedding.model);
+    if !config.embedding.api_key_env.is_empty() {
+        println!("  api_key_env: {}", config.embedding.api_key_env);
+    }
+    if let Some(ref url) = config.embedding.base_url {
+        println!("  base_url:    {}", url);
+    }
+    if config.embedding.backend.eq_ignore_ascii_case("local")
+        || config.embedding.backend.eq_ignore_ascii_case("onnx")
+    {
+        if let Some(ref path) = config.embedding.local_model_path {
+            println!("  model_path:  {}", path);
+        }
+        if let Some(ref path) = config.embedding.local_tokenizer_path {
+            println!("  tokenizer:   {}", path);
         }
     }
     println!();
@@ -644,6 +1023,13 @@ fn write_env_file(
         "NEXUS_SYNC_POLICY",
         "NEXUS_AUTO_INGEST",
         "NEXUS_EMBEDDINGS_ENABLED",
+        "NEXUS_EMBEDDING_BACKEND",
+        "NEXUS_EMBEDDING_PROVIDER",
+        "NEXUS_EMBEDDING_MODEL",
+        "NEXUS_EMBEDDING_API_KEY_ENV",
+        "NEXUS_EMBEDDING_BASE_URL",
+        "NEXUS_EMBEDDING_MODEL_PATH",
+        "NEXUS_TOKENIZER_PATH",
         "NEXUS_LLM_PROVIDER",
         "NEXUS_LLM_MODEL",
         "NEXUS_LLM_API_KEY",
@@ -735,6 +1121,13 @@ fn validate_key(key: &str) -> anyhow::Result<()> {
         "NEXUS_SYNC_POLICY",
         "NEXUS_AUTO_INGEST",
         "NEXUS_EMBEDDINGS_ENABLED",
+        "NEXUS_EMBEDDING_BACKEND",
+        "NEXUS_EMBEDDING_PROVIDER",
+        "NEXUS_EMBEDDING_MODEL",
+        "NEXUS_EMBEDDING_API_KEY_ENV",
+        "NEXUS_EMBEDDING_BASE_URL",
+        "NEXUS_EMBEDDING_MODEL_PATH",
+        "NEXUS_TOKENIZER_PATH",
         "NEXUS_LLM_PROVIDER",
         "NEXUS_LLM_MODEL",
         "NEXUS_LLM_API_KEY",

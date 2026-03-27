@@ -1667,11 +1667,14 @@ pub async fn create_embedding_service(
     if !config.embedding.enabled {
         return None;
     }
-    use nexus_embeddings::{EmbeddingConfig as RuntimeEmbeddingConfig, OrtEmbeddingService};
-    match OrtEmbeddingService::new(RuntimeEmbeddingConfig::from_env()).await {
-        Ok(service) => Some(Arc::new(service)),
+    match nexus_embeddings::create_service(config).await {
+        Ok(Some(service)) => Some(service),
+        Ok(None) => None,
         Err(error) => {
-            warn!(%error, "Failed to initialize embedding service, cognition will run without embeddings");
+            warn!(
+                %error,
+                "Failed to initialize embedding service; configured LLM features remain available and cognition will run without semantic embeddings. Configure a remote embedding provider, local OpenAI-compatible runtime, or set NEXUS_EMBEDDINGS_ENABLED=false"
+            );
             None
         }
     }

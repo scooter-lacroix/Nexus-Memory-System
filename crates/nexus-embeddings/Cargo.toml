@@ -17,6 +17,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+reqwest = { workspace = true }
 
 # ONNX Runtime for inference
 ort = { workspace = true }
@@ -33,6 +34,7 @@ once_cell = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 criterion = { workspace = true }
 tempfile = { workspace = true }
+axum = { workspace = true }
 
 [[bench]]
 name = "embedding"

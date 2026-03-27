@@ -33,6 +33,10 @@ pub enum EmbeddingError {
     #[error("Embedding service not initialized")]
     NotInitialized,
 
+    /// Remote provider/API error
+    #[error("Remote embedding error: {0}")]
+    RemoteError(String),
+
     /// Cache error
     #[error("Cache error: {0}")]
     CacheError(String),

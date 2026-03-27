@@ -8,7 +8,6 @@ use nexus_core::{
     config::Config, traits::EmbeddingService, CognitiveLevel, Memory, WorkingRepresentation,
     WorkingRepresentationRequest,
 };
-use nexus_embeddings::{EmbeddingConfig as RuntimeEmbeddingConfig, OrtEmbeddingService};
 use nexus_storage::repository::{MemoryRepository, SemanticCandidateParams};
 use nexus_vectors::{SearchOptions, SemanticSearch, VectorEntry};
 use tokio::sync::OnceCell;
@@ -39,10 +38,24 @@ impl EmbedderProvider {
             Self::Auto(cell) => {
                 let embedder = cell
                     .get_or_init(|| async {
-                        match OrtEmbeddingService::new(RuntimeEmbeddingConfig::from_env()).await {
-                            Ok(service) => Some(Arc::new(service) as Arc<dyn EmbeddingService>),
+                        let config = match Config::from_env() {
+                            Ok(config) => config,
                             Err(error) => {
-                                warn!(error = %error, "Failed to initialize embedding service; semantic retrieval will fall back to text");
+                                warn!(
+                                    error = %error,
+                                    "Failed to load Nexus config for semantic embeddings; semantic retrieval will fall back to text"
+                                );
+                                return None;
+                            }
+                        };
+                        match nexus_embeddings::create_service(&config).await {
+                            Ok(Some(service)) => Some(service),
+                            Ok(None) => None,
+                            Err(error) => {
+                                warn!(
+                                    error = %error,
+                                    "Failed to initialize embedding service; semantic retrieval will fall back to text. Configure a remote embedding provider, local OpenAI-compatible runtime, or set NEXUS_EMBEDDINGS_ENABLED=false"
+                                );
                                 None
                             }
                         }
