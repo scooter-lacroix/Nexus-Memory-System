@@ -17,7 +17,7 @@ Nexus gives multiple coding agents one consistent memory layer. It is designed f
 - Current Rust workspace layout separates core types, storage, vectors, embeddings, orchestration, hooks, web, MCP, and CLI concerns
 - User-level installer that creates a shared `nexus` runtime for local agent tools
 - SQLite-based persistence with repository-style access through `nexus-storage`
-- Native hook management for Claude Code, Gemini, Qwen, Codex, OpenCode, Amp, and Droid
+- Native hook management for Claude Code, Gemini, Qwen, Codex, OpenCode, Amp, Droid, and Hermes
 - Web dashboard and API routes under the `nexus-web` crate
 - Optional always-on memory agent with LLM-driven ingest, consolidation, and query (OpenAI, Anthropic, Gemini, and more)
 

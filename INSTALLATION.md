@@ -21,7 +21,7 @@ cargo build --release -p nexus-memory
 ### 2. Install the shared launcher
 
 ```bash
-./scripts/install.sh --binary ./target/release/nexus
+./scripts/install.sh
 ```
 
 ### 3. Initialize the database
@@ -42,18 +42,18 @@ nexus stats
 The installer writes a user-level setup by default:
 
 - `~/.local/bin/nexus`
-- `~/.local/bin/nexus-bin`
 - `~/.config/nexus-memory-system/nexus.env`
 - `~/.local/share/nexus-memory-system/nexus.db`
 
 It also creates helper wrappers such as `nexus-with` and tool-specific `*-nexus` launchers when matching tools are present in `PATH`.
+Those wrappers automatically issue best-effort `nexus session start` / `nexus session end` calls around the wrapped CLI so memory capture and bounded dreaming work without manually running `nexus serve`.
 
 ## Useful Installer Examples
 
 ```bash
-./scripts/install.sh --binary ./target/release/nexus
-./scripts/install.sh --binary ./target/release/nexus --db-path "$HOME/.nexus/nexus.db"
-./scripts/install.sh --binary ./target/release/nexus --skip-profile
+./scripts/install.sh
+./scripts/install.sh --db-path "$HOME/.nexus/nexus.db"
+./scripts/install.sh --skip-profile
 ```
 
 ## Running Without Installing
@@ -94,3 +94,4 @@ export NEXUS_EMBEDDINGS_ENABLED="true"
 - run `nexus hooks status`
 - confirm the target tool exists in `PATH`
 - review [HOOKS.md](HOOKS.md)
+- review [Cognition Rollout Guide](docs/guide/cognition-rollout.md) for lifecycle, backfill, dreaming, and benchmark guidance

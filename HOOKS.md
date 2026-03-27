@@ -11,6 +11,7 @@ Nexus hooks provide automatic memory capture for supported agent tools by instal
 - OpenCode
 - Amp
 - Droid
+- Hermes
 
 ## Common Commands
 
