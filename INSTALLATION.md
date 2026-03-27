@@ -1,12 +1,14 @@
 # Installation Guide
 
-Nexus Memory System installs from this Rust workspace as a local CLI, wrapper, and hook-enabled cognition runtime for supported AI coding agents.
+Nexus installs as a local CLI, runtime wrapper layer, hook integration set, and optional web/API surface for supported agent workflows.
+
+The recommended install path keeps the binary current, refreshes wrappers and hooks, and gives you a reliable local runtime without requiring a heavyweight service stack.
 
 ## Requirements
 
 - Rust stable toolchain
 - Cargo
-- a system capable of running SQLite-backed Rust binaries
+- a machine capable of running SQLite-backed Rust binaries
 
 ## Recommended Install Path
 
@@ -18,7 +20,7 @@ cd Nexus-Memory-System
 cargo build --release -p nexus-memory
 ```
 
-### 2. Install or upgrade the shared launcher
+### 2. Install or upgrade Nexus
 
 ```bash
 ./scripts/install.sh --binary ./target/release/nexus
@@ -30,26 +32,29 @@ cargo build --release -p nexus-memory
 nexus init
 ```
 
-### 4. Verify the installation
+### 4. Verify the install
 
 ```bash
-nexus --help
+nexus --version
 nexus stats
+nexus hooks status
 ```
 
-## Installer Behavior
+## What the Installer Does
 
-The installer writes a user-level setup by default and refreshes it on repeat runs:
+The installer writes and refreshes a user-level setup by default:
 
 - `~/.local/bin/nexus`
 - `~/.config/nexus-memory-system/nexus.env`
 - `~/.local/share/nexus-memory-system/nexus.db`
 
 It also creates helper wrappers such as `nexus-with` and tool-specific `*-nexus` launchers when matching tools are present in `PATH`.
-Those wrappers automatically issue best-effort `nexus session start` / `nexus session end` calls around the wrapped CLI so memory capture and bounded dreaming work without manually running `nexus serve`.
-If `nexus` is already installed, rerunning the installer replaces the installed binary in place so the local command stays up to date.
 
-## Useful Installer Examples
+Those wrappers can issue best-effort `nexus session start` and `nexus session end` around supported CLIs so memory capture and bounded dreaming work during normal usage without manually starting a separate server.
+
+If `nexus` is already installed, rerunning the installer replaces the installed binary in place so the local command stays current.
+
+## Installer Examples
 
 ```bash
 ./scripts/install.sh --binary ./target/release/nexus
@@ -59,21 +64,58 @@ If `nexus` is already installed, rerunning the installer replaces the installed 
 
 ## Running Without Installing
 
+You can run directly from the built binary when needed:
+
 ```bash
 cargo build --release -p nexus-memory
 ./target/release/nexus init
 ./target/release/nexus stats
 ```
 
-## Environment Variables
+That said, the installed path is the better operator experience because it also keeps wrappers, hooks, and environment wiring aligned.
 
-Common settings written by the installer:
+## Environment Model
+
+The installer writes `~/.config/nexus-memory-system/nexus.env`, which acts as the shared runtime environment for the installed system.
+
+Common settings include:
 
 ```bash
 export NEXUS_DATABASE_PATH="$HOME/.local/share/nexus-memory-system/nexus.db"
 export NEXUS_SYNC_POLICY="auto"
 export NEXUS_AUTO_INGEST="true"
-export NEXUS_EMBEDDINGS_ENABLED="true"
+export NEXUS_AGENT_ENABLED="true"
+```
+
+### Generation and embeddings
+
+Nexus treats generation and embeddings as separate configurable systems.
+
+That means you can choose:
+
+- a remote provider for generation
+- the same or different provider for embeddings
+- the same or different model for embeddings
+- a local ONNX embedding model
+- a local OpenAI-compatible runtime such as `vLLM`, `LM Studio`, or `llama.cpp`
+
+The interactive `nexus config` flow is the easiest way to set this up.
+
+## First-Run Suggestions
+
+After installation:
+
+```bash
+nexus config
+nexus hooks install --agent all
+nexus hooks status --verbose
+```
+
+Then try:
+
+```bash
+nexus store --content "Nexus is installed and ready" --agent codex --category session
+nexus recall --agent codex --query "What just happened?"
 ```
 
 ## Troubleshooting
@@ -98,7 +140,16 @@ export NEXUS_EMBEDDINGS_ENABLED="true"
 
 ### Hooks do not appear installed
 
-- run `nexus hooks status`
+- run `nexus hooks status --verbose`
 - confirm the target tool exists in `PATH`
 - review [HOOKS.md](HOOKS.md)
-- review [Cognition Rollout Guide](docs/guide/cognition-rollout.md) for lifecycle, backfill, dreaming, and benchmark guidance
+
+### Semantic recall is not active
+
+- run `nexus config show`
+- verify the embedding backend, provider, and model
+- review [Embeddings Guide](docs/guide/embeddings.md)
+
+### I want rollout and migration guidance
+
+- review [Cognition Rollout Guide](docs/guide/cognition-rollout.md)

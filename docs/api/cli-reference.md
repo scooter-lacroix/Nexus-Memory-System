@@ -1,25 +1,34 @@
 # CLI Reference
 
-The `nexus` binary is published in the `nexus-memory` package and implemented by the CLI crate in `crates/nexus-cli`.
+The `nexus` binary is the main operator surface for the entire system: install validation, memory storage, recall, dreaming, hook management, serving, migration, and observability.
 
-## Top-Level Commands
+## Core Command Groups
+
+### Setup and runtime
 
 - `init`
 - `serve`
+- `config`
+- `session`
+
+### Memory and cognition
+
 - `store`
 - `search`
 - `list`
 - `recall`
-- `stats`
-- `hooks`
-- `migrate`
+- `represent`
 - `digest`
 - `dream`
-- `represent`
 - `lineage`
-- `session`
+- `stats`
 
-## Examples
+### Integrations and migration
+
+- `hooks`
+- `migrate`
+
+## Common Workflows
 
 ### Initialize the database
 
@@ -46,10 +55,29 @@ nexus search --query "release completed" --agent codex --limit 10
 nexus list --agent claude-code --since 24h --limit 20
 ```
 
-### Recall relevant memories for context
+### Recall relevant context
 
 ```bash
 nexus recall --agent claude-code --query "provider rollout timeline"
+```
+
+### Inspect the working representation
+
+```bash
+nexus represent --agent claude-code --query "provider rollout timeline" --introspect
+```
+
+### Inspect a digest or run a dream cycle
+
+```bash
+nexus digest latest --agent claude-code --session-key <session-key>
+nexus dream run --agent claude-code
+```
+
+### Explain memory lineage
+
+```bash
+nexus lineage show --memory-id <id>
 ```
 
 ### Show statistics
@@ -58,15 +86,11 @@ nexus recall --agent claude-code --query "provider rollout timeline"
 nexus stats
 ```
 
-### Serve over HTTP
+### Serve the API and dashboard
 
 ```bash
 nexus serve --transport http --port 8768
-```
-
-### Serve over stdio
-
-```bash
+nexus serve --transport web --port 8768 --agent
 nexus serve --transport stdio
 ```
 
@@ -74,21 +98,8 @@ nexus serve --transport stdio
 
 ```bash
 nexus hooks install --agent all
-nexus hooks status
+nexus hooks status --verbose
 nexus hooks uninstall --agent codex
-```
-
-### Inspect a digest or run a dream cycle
-
-```bash
-nexus digest --agent claude-code --session-key <session-key>
-nexus dream --agent claude-code
-```
-
-### Inspect a working representation
-
-```bash
-nexus represent --agent claude-code --query "provider rollout timeline" --introspect
 ```
 
 ### Inspect tool help and schemas
@@ -97,10 +108,9 @@ nexus represent --agent claude-code --query "provider rollout timeline" --intros
 nexus tools help
 nexus tools help store_memory
 nexus tools schema store_memory
-nexus tool help store_memory
 ```
 
-### Migration commands
+### Run cognition migration and backfill
 
 ```bash
 nexus migrate discover
@@ -110,3 +120,11 @@ nexus migrate validate
 nexus migrate rollback
 nexus migrate cognition --dry-run
 ```
+
+## Practical Operator Notes
+
+- `search` is useful for direct retrieval.
+- `recall` is the better first stop when you want the cognition engine to assemble relevant context.
+- `represent --introspect` is the best way to see what the subconscious is actually surfacing.
+- `dream` and `digest` are the quickest commands for inspecting the background cognition layer directly.
+- `hooks status --verbose` is the first troubleshooting command for lifecycle capture issues.

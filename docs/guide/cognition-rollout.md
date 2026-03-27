@@ -1,29 +1,30 @@
 # Cognition Rollout Guide
 
-This guide covers the shipped Nexus cognition stack: automatic session lifecycle capture, explicit derivation, session digests, bounded dreaming, representation-first recall, and the operator knobs that keep the system resource-aware.
+This guide covers the shipped Nexus cognition stack: automatic session lifecycle capture, explicit derivation, session digests, bounded dreaming, representation-first recall, and the operator knobs that keep the system fast, honest, and resource-aware.
 
 ## What Ships
 
 The current cognition system includes:
 
-- automatic session lifecycle capture through the local CLI runtime and installer wrappers
+- automatic session lifecycle capture through the local runtime, hooks, and installer wrappers
 - raw activity capture with later distillation instead of immediate discard
 - explicit derivation with evidence lineage
 - short and long session digests
 - bounded reflective dreaming for reinforcement and contradiction handling
 - representation-first query recall with digest, recent, derived, semantic, and contradiction blending
-- observability surfaces for jobs, digests, lineage, and runtime health
+- observability surfaces for jobs, digests, lineage, runtime health, and recall composition
 
-The system is designed to work without manually starting `nexus serve` for normal CLI capture flows.
+The system is designed to work without manually starting `nexus serve` for normal CLI capture flows. The server exists for API, dashboard, and MCP-style surfaces, not as a prerequisite for ordinary CLI memory capture.
 
 ## Recommended Rollout Order
 
 1. Install or reinstall the launcher and wrappers.
 2. Initialize or migrate the database.
 3. Verify hook and wrapper status.
-4. Backfill cognition metadata for older memories.
-5. Let normal sessions generate new cognition artifacts.
-6. Run targeted benchmark and validation commands before wider rollout.
+4. Configure generation and embeddings.
+5. Backfill cognition metadata for older memories.
+6. Let normal sessions generate new cognition artifacts.
+7. Run targeted benchmark and validation commands before wider rollout.
 
 ## Install And Verify
 
@@ -32,11 +33,12 @@ Recommended commands:
 ```bash
 ./scripts/install.sh
 nexus init
+nexus config
 nexus hooks status
 nexus stats
 ```
 
-If you launch supported tools through installed wrappers, Nexus will best-effort issue `session start` and `session end` around the wrapped CLI.
+If you launch supported tools through installed wrappers, Nexus will best-effort issue `session start` and `session end` around the wrapped CLI. That gives the system reliable boundaries for digest refresh, bounded shutdown dreaming, and session-scoped recall.
 
 ## Backfill Existing Memory
 
@@ -64,7 +66,7 @@ What this does:
 
 ## Dreaming
 
-In user-facing language, consolidation and reflection are branded as dreaming.
+In user-facing language, consolidation and reflection are branded as dreaming. This is not just a label change. It describes the behavior of the subsystem: bounded background work that improves memory quality between active moments of interaction.
 
 Current bounded dream behavior includes:
 
@@ -79,7 +81,7 @@ Automatic shutdown dreaming now queues:
 - a perspective-scoped reflection pass for the ending session
 - a forced digest refresh for that same session
 
-Namespace-wide dreaming is still available, but it is an explicit/manual or backfill-oriented operation rather than the default shutdown path.
+Namespace-wide dreaming is still available, but it is an explicit manual or backfill-oriented operation rather than the default shutdown path.
 
 Useful commands:
 
@@ -91,7 +93,7 @@ nexus lineage show --memory-id <id>
 
 ## Resource Guardrails
 
-The main cognition guardrails currently ship in `CognitionConfig`.
+The main cognition guardrails ship in `CognitionConfig`.
 
 Important defaults:
 
@@ -115,7 +117,7 @@ Important defaults:
 - `session_end_dream_timeout_secs = 8`
 - `retry_buffer_drain_limit = 8`
 
-These can be tuned through environment variables under the `NEXUS_COGNITION_*` namespace.
+These can be tuned through environment variables under the `NEXUS_COGNITION_*` namespace. The defaults are intentionally conservative so the subconscious remains useful without quietly turning into a background resource hog.
 
 ## Benchmarking
 
@@ -135,7 +137,7 @@ The harness currently measures:
 
 Current baseline measurements are recorded in [Cognition Benchmark Baseline](cognition-benchmark-baseline.md).
 
-This is benchmark scaffolding, not a full production performance report. Use it as a repeatable baseline when adjusting guardrails and ranking constants.
+This is benchmark scaffolding, not a full production performance report. Use it as a repeatable baseline when adjusting guardrails, ranking constants, and dream intensity.
 
 ## Validation Commands
 
