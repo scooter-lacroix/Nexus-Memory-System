@@ -41,6 +41,7 @@ FISH_ENV_FILE="${CONFIG_DIR}/nexus.fish"
 SKIP_BUILD=0
 SKIP_PROFILE=0
 PROFILE_FILE=""
+EXPLICIT_BINARY_PATH=""
 
 # ── Usage ─────────────────────────────────────────────────────────────
 usage() {
@@ -51,13 +52,14 @@ Builds all workspace crates from source and installs everything:
   - nexus CLI binary  (installed to ${BIN_DIR}/nexus)
   - environment files  (bash + fish)
   - shell profiles     (auto-detected or --profile)
-  - Claude Code hooks  (env vars + PostToolUse hook shim)
-  - tool wrappers      (codex-nexus, claude-nexus, etc.)
+  - Claude Code hooks  (env vars + lifecycle hook shim)
+  - tool wrappers      (codex-nexus, claude-nexus, etc. with auto session lifecycle)
 
 Usage: $0 [options]
 
 Options:
   --skip-build          Skip cargo build; use existing binary
+  --binary PATH         Install a specific nexus binary (for example ./target/release/nexus)
   --bin-dir DIR         Executable directory (default: ${BIN_DIR})
   --config-dir DIR      Config directory (default: ${CONFIG_DIR})
   --data-dir DIR        Data directory (default: ${DATA_DIR})
@@ -82,6 +84,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-build)   SKIP_BUILD=1; shift ;;
         --skip-profile) SKIP_PROFILE=1; shift ;;
+        --binary)       EXPLICIT_BINARY_PATH="$2"; shift 2 ;;
         --bin-dir)      BIN_DIR="$2"; shift 2 ;;
         --config-dir)
             CONFIG_DIR="$2"
@@ -125,13 +128,20 @@ build_nexus() {
 resolve_binary() {
     local binary=""
 
-    if [[ -x "${REPO_ROOT}/target/release/nexus" ]]; then
+    if [[ -n "${EXPLICIT_BINARY_PATH}" ]]; then
+        binary="${EXPLICIT_BINARY_PATH}"
+    elif [[ -x "${REPO_ROOT}/target/release/nexus" ]]; then
         binary="${REPO_ROOT}/target/release/nexus"
     elif command -v nexus >/dev/null 2>&1; then
         binary="$(command -v nexus)"
     else
         err "Could not find nexus binary. Run without --skip-build or build first:"
         err "  cargo build --release -p nexus-memory"
+        exit 1
+    fi
+
+    if [[ ! -f "${binary}" ]]; then
+        err "Specified binary does not exist: ${binary}"
         exit 1
     fi
 
@@ -152,7 +162,7 @@ install_binaries() {
     # Install the real binary directly as "nexus"
     install -m 0755 "${binary}" "${BIN_DIR}/nexus"
 
-    # nexus-with: sources env then runs an arbitrary command (for tool wrappers)
+    # nexus-with: sources env and wraps supported CLIs with best-effort session lifecycle
     cat > "${BIN_DIR}/nexus-with" <<WITH_EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -163,32 +173,140 @@ if [[ \$# -eq 0 ]]; then
     echo "Usage: nexus-with <command> [args...]" >&2
     exit 1
 fi
-exec "\$@"
+
+nexus_warn() {
+    echo "[nexus-with] \$1" >&2
+}
+
+run_nexus_lifecycle() {
+    local action="\$1"
+    if [[ -z "\${NEXUS_WRAPPED_AGENT:-}" || "\${NEXUS_DISABLE_WRAPPER_LIFECYCLE:-0}" == "1" ]]; then
+        return 0
+    fi
+
+    local args=("${BIN_DIR}/nexus" session "\${action}" --agent "\${NEXUS_WRAPPED_AGENT}")
+    if [[ "\${action}" == "start" ]]; then
+        args+=(--mode "\${NEXUS_WRAPPED_RUNTIME_MODE:-session}")
+    else
+        args+=(--reason "\${NEXUS_WRAPPED_EXIT_REASON:-wrapper-exit}")
+    fi
+
+    if [[ -n "\${NEXUS_WRAPPED_SESSION_KEY:-}" ]]; then
+        args+=(--session-key "\${NEXUS_WRAPPED_SESSION_KEY}")
+    fi
+
+    local cwd="\${PWD}"
+    if [[ -n "\${NEXUS_WRAPPED_CWD:-}" ]]; then
+        cwd="\${NEXUS_WRAPPED_CWD}"
+    fi
+    args+=(--cwd "\${cwd}")
+
+    if ! "\${args[@]}" >/dev/null 2>&1; then
+        nexus_warn "best-effort session \${action} failed for \${NEXUS_WRAPPED_AGENT}"
+    fi
+}
+
+nexus_cleanup_done=0
+child_pid=""
+child_group_pid=""
+
+launch_wrapped_tool() {
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "\$@" &
+        child_pid=\$!
+        child_group_pid="\${child_pid}"
+    else
+        "\$@" &
+        child_pid=\$!
+        child_group_pid=""
+    fi
+}
+
+wait_for_wrapped_tool() {
+    if [[ -z "\${child_pid}" ]]; then
+        return 0
+    fi
+
+    set +e
+    wait "\${child_pid}"
+    local status=\$?
+    set -e
+    return "\${status}"
+}
+
+finalize_wrapper() {
+    if [[ "\${nexus_cleanup_done}" == "1" ]]; then
+        return 0
+    fi
+    nexus_cleanup_done=1
+    run_nexus_lifecycle "end"
+}
+
+handle_signal() {
+    local signal="\$1"
+    local status=1
+
+    if [[ -n "\${child_group_pid}" ]] && kill -0 -- "-\${child_group_pid}" 2>/dev/null; then
+        kill -s "\${signal}" -- "-\${child_group_pid}" 2>/dev/null || true
+        wait_for_wrapped_tool || true
+    elif [[ -n "\${child_pid}" ]] && kill -0 "\${child_pid}" 2>/dev/null; then
+        kill -s "\${signal}" "\${child_pid}" 2>/dev/null || true
+        wait_for_wrapped_tool || true
+    fi
+
+    case "\${signal}" in
+        INT) status=130 ;;
+        TERM) status=143 ;;
+    esac
+
+    finalize_wrapper
+    trap - EXIT INT TERM
+    exit "\${status}"
+}
+
+trap 'finalize_wrapper' EXIT
+trap 'handle_signal INT' INT
+trap 'handle_signal TERM' TERM
+
+run_nexus_lifecycle "start"
+status=0
+launch_wrapped_tool "\$@"
+wait_for_wrapped_tool || status=\$?
+finalize_wrapper
+trap - EXIT INT TERM
+exit "\${status}"
 WITH_EOF
     chmod +x "${BIN_DIR}/nexus-with"
 
-    ok "Installed nexus to ${BIN_DIR}/nexus"
+    local installed_version
+    installed_version="$("${BIN_DIR}/nexus" --version 2>/dev/null || echo "unknown")"
+    ok "Installed nexus to ${BIN_DIR}/nexus (${installed_version})"
 }
 
 # ── Tool wrappers ─────────────────────────────────────────────────────
 install_tool_wrappers() {
     local tools=(
-        codex
-        claude
-        claude-code
-        gemini
-        qwen
-        amp
-        droid
-        opencode
+        "codex:codex"
+        "claude:claude-code"
+        "claude-code:claude-code"
+        "gemini:gemini"
+        "qwen:qwen"
+        "amp:amp"
+        "droid:droid"
+        "opencode:opencode"
+        "hermes:hermes"
     )
     local installed=0
 
-    for tool in "${tools[@]}"; do
+    for tool_entry in "${tools[@]}"; do
+        local tool="${tool_entry%%:*}"
+        local agent="${tool_entry##*:}"
         if command -v "${tool}" >/dev/null 2>&1; then
             cat > "${BIN_DIR}/${tool}-nexus" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+export NEXUS_WRAPPED_AGENT="${agent}"
+export NEXUS_WRAPPED_CWD="\${PWD}"
 exec "${BIN_DIR}/nexus-with" "${tool}" "\$@"
 EOF
             chmod +x "${BIN_DIR}/${tool}-nexus"
@@ -238,7 +356,23 @@ write_env_file() {
 export NEXUS_DATABASE_PATH="${DB_PATH}"
 export NEXUS_SYNC_POLICY="auto"
 export NEXUS_AUTO_INGEST="true"
-export NEXUS_EMBEDDINGS_ENABLED="true"
+export NEXUS_EMBEDDINGS_ENABLED="false"
+
+# Optional semantic embeddings
+# Remote provider example:
+# export NEXUS_EMBEDDINGS_ENABLED="true"
+# export NEXUS_EMBEDDING_BACKEND="openai-compatible"
+# export NEXUS_EMBEDDING_PROVIDER="inherit"
+# export NEXUS_EMBEDDING_MODEL="text-embedding-004"
+# Local ONNX example:
+# export NEXUS_EMBEDDING_BACKEND="local"
+# export NEXUS_EMBEDDING_MODEL_PATH="${REPO_ROOT}/models/all-MiniLM-L6-v2.onnx"
+# export NEXUS_TOKENIZER_PATH="${REPO_ROOT}/models/all-MiniLM-L6-v2-tokenizer"
+# Local OpenAI-compatible runtime example (vLLM / LM Studio / llama.cpp):
+# export NEXUS_EMBEDDING_BACKEND="openai-compatible"
+# export NEXUS_EMBEDDING_PROVIDER="lmstudio"
+# export NEXUS_EMBEDDING_BASE_URL="http://127.0.0.1:1234/v1"
+# export NEXUS_EMBEDDING_MODEL="text-embedding-3-small"
 
 # Always-on agent (uncomment and configure to enable)
 # export NEXUS_LLM_PROVIDER="openai"
@@ -256,7 +390,23 @@ EOF
 set -gx NEXUS_DATABASE_PATH "${DB_PATH}"
 set -gx NEXUS_SYNC_POLICY "auto"
 set -gx NEXUS_AUTO_INGEST "true"
-set -gx NEXUS_EMBEDDINGS_ENABLED "true"
+set -gx NEXUS_EMBEDDINGS_ENABLED "false"
+
+# Optional semantic embeddings
+# Remote provider example:
+# set -gx NEXUS_EMBEDDINGS_ENABLED "true"
+# set -gx NEXUS_EMBEDDING_BACKEND "openai-compatible"
+# set -gx NEXUS_EMBEDDING_PROVIDER "inherit"
+# set -gx NEXUS_EMBEDDING_MODEL "text-embedding-004"
+# Local ONNX example:
+# set -gx NEXUS_EMBEDDING_BACKEND "local"
+# set -gx NEXUS_EMBEDDING_MODEL_PATH "${REPO_ROOT}/models/all-MiniLM-L6-v2.onnx"
+# set -gx NEXUS_TOKENIZER_PATH "${REPO_ROOT}/models/all-MiniLM-L6-v2-tokenizer"
+# Local OpenAI-compatible runtime example (vLLM / LM Studio / llama.cpp):
+# set -gx NEXUS_EMBEDDING_BACKEND "openai-compatible"
+# set -gx NEXUS_EMBEDDING_PROVIDER "lmstudio"
+# set -gx NEXUS_EMBEDDING_BASE_URL "http://127.0.0.1:1234/v1"
+# set -gx NEXUS_EMBEDDING_MODEL "text-embedding-3-small"
 
 # Always-on agent (uncomment and configure to enable)
 # set -gx NEXUS_LLM_PROVIDER "openai"
@@ -357,12 +507,15 @@ configure_profiles() {
     esac
 
     # Also update any other detected shells so PATH works everywhere
-    [[ "${shell_name}" != "bash" && -f "${HOME}/.bashrc" ]] && \
+    if [[ "${shell_name}" != "bash" && -f "${HOME}/.bashrc" ]]; then
         upsert_profile_block_posix "${HOME}/.bashrc"
-    [[ "${shell_name}" != "zsh" && -f "${HOME}/.zshrc" ]] && \
+    fi
+    if [[ "${shell_name}" != "zsh" && -f "${HOME}/.zshrc" ]]; then
         upsert_profile_block_posix "${HOME}/.zshrc"
-    [[ "${shell_name}" != "fish" && -d "${HOME}/.config/fish" ]] && \
+    fi
+    if [[ "${shell_name}" != "fish" && -d "${HOME}/.config/fish" ]]; then
         upsert_profile_block_fish "${HOME}/.config/fish/config.fish"
+    fi
 }
 
 # ── Database ──────────────────────────────────────────────────────────
@@ -391,24 +544,29 @@ configure_claude_code() {
         return
     fi
 
-    # Check if NEXUS_DATABASE_PATH is already present
-    if python3 -c "
-import json, sys
-with open('${settings_file}') as f:
-    s = json.load(f)
-if s.get('env', {}).get('NEXUS_DATABASE_PATH'):
-    sys.exit(0)
-sys.exit(1)
-" 2>/dev/null; then
-        ok "Claude Code settings.json already has Nexus env vars"
-        return
-    fi
-
     python3 -c "
 import json
+import os
 
 settings_path = '${settings_file}'
-db_path = '${DB_PATH}'
+env_path = '${ENV_FILE}'
+
+def parse_env_file(path):
+    values = {}
+    if not os.path.exists(path):
+        return values
+    with open(path) as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if '=' not in line:
+                continue
+            key, value = line.split('=', 1)
+            key = key.strip()
+            value = value.strip().strip('\"')
+            values[key] = value
+    return values
 
 with open(settings_path) as f:
     s = json.load(f)
@@ -416,10 +574,30 @@ with open(settings_path) as f:
 if 'env' not in s:
     s['env'] = {}
 
-s['env']['NEXUS_DATABASE_PATH'] = db_path
-s['env']['NEXUS_SYNC_POLICY'] = 'auto'
-s['env']['NEXUS_AUTO_INGEST'] = 'true'
-s['env']['NEXUS_EMBEDDINGS_ENABLED'] = 'true'
+env_values = parse_env_file(env_path)
+
+desired = {
+    'NEXUS_DATABASE_PATH': env_values.get('NEXUS_DATABASE_PATH', '${DB_PATH}'),
+    'NEXUS_SYNC_POLICY': env_values.get('NEXUS_SYNC_POLICY', 'auto'),
+    'NEXUS_AUTO_INGEST': env_values.get('NEXUS_AUTO_INGEST', 'true'),
+    'NEXUS_LLM_PROVIDER': env_values.get('NEXUS_LLM_PROVIDER', ''),
+    'NEXUS_LLM_MODEL': env_values.get('NEXUS_LLM_MODEL', ''),
+    'NEXUS_LLM_API_KEY_ENV': env_values.get('NEXUS_LLM_API_KEY_ENV', ''),
+    'NEXUS_EMBEDDINGS_ENABLED': env_values.get('NEXUS_EMBEDDINGS_ENABLED', 'false'),
+    'NEXUS_EMBEDDING_BACKEND': env_values.get('NEXUS_EMBEDDING_BACKEND', ''),
+    'NEXUS_EMBEDDING_PROVIDER': env_values.get('NEXUS_EMBEDDING_PROVIDER', ''),
+    'NEXUS_EMBEDDING_MODEL': env_values.get('NEXUS_EMBEDDING_MODEL', ''),
+    'NEXUS_EMBEDDING_API_KEY_ENV': env_values.get('NEXUS_EMBEDDING_API_KEY_ENV', ''),
+}
+
+for key in ('NEXUS_EMBEDDING_BASE_URL', 'GEMINI_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'GROQ_API_KEY'):
+    value = env_values.get(key, '')
+    if value:
+        desired[key] = value
+
+for key, value in desired.items():
+    if value:
+        s['env'][key] = value
 
 with open(settings_path, 'w') as f:
     json.dump(s, f, indent=2)
@@ -427,7 +605,7 @@ with open(settings_path, 'w') as f:
 " 2>/dev/null
 
     if [[ $? -eq 0 ]]; then
-        ok "Added Nexus env vars to Claude Code settings.json"
+        ok "Updated Claude Code settings.json with Nexus env vars"
     else
         warn "Failed to update Claude Code settings.json"
     fi
@@ -443,8 +621,8 @@ install_hook_shim() {
 
     cat > "${shim_path}" <<'SHIM_EOF'
 #!/usr/bin/env node
-// Thin passthrough shim — forwards raw stdin to nexus ingest-hook-event.
-// Installed by scripts/install.sh. Intelligence lives in Rust, not here.
+// Local hook shim — routes lifecycle and tool events into the Nexus CLI.
+// Installed by scripts/install.sh. Core behavior stays local; no server is required.
 
 const { spawnSync } = require("child_process");
 const { mkdirSync, appendFileSync } = require("fs");
@@ -477,11 +655,72 @@ function logFailure(message) {
   } catch (_) { /* fail open */ }
 }
 
+function parsePayload(rawInput) {
+  if (!rawInput || !rawInput.trim()) {
+    return {};
+  }
+  try {
+    return JSON.parse(rawInput);
+  } catch (_) {
+    return {};
+  }
+}
+
+function getSessionKey(payload) {
+  const explicit = payload.session_id || payload.sessionId || payload.sessionKey || "";
+  if (explicit) {
+    return explicit;
+  }
+
+  const cwd = getCwd(payload) || "unknown-cwd";
+  return `derived-${agent}-${process.ppid}-${cwd}`;
+}
+
+function getCwd(payload) {
+  return payload.cwd || payload.working_directory || payload.workingDirectory || "";
+}
+
+function appendArg(args, flag, value) {
+  if (value) {
+    args.push(flag, String(value));
+  }
+}
+
 (async () => {
   const rawInput = await readStdin();
+  const payload = parsePayload(rawInput);
+  const sessionKey = getSessionKey(payload);
+  const cwd = getCwd(payload);
+
+  let args;
+  switch (eventName) {
+    case "SessionStart":
+      args = ["session", "start", "--agent", agent];
+      appendArg(args, "--session-key", sessionKey);
+      appendArg(args, "--cwd", cwd);
+      break;
+    case "PreCompact":
+    case "SessionCompact":
+    case "Stop":
+      args = ["session", "event", "--agent", agent, "--kind", "compact"];
+      appendArg(args, "--session-key", sessionKey);
+      appendArg(args, "--cwd", cwd);
+      break;
+    case "SessionEnd":
+      args = ["session", "end", "--agent", agent];
+      appendArg(args, "--session-key", sessionKey);
+      appendArg(args, "--cwd", cwd);
+      break;
+    default:
+      args = ["ingest-hook-event", "--agent", agent, "--event", eventName, "--format", agent];
+      appendArg(args, "--session-key", sessionKey);
+      appendArg(args, "--cwd", cwd);
+      break;
+  }
+
   const result = spawnSync(
     "NEXUS_BIN_PATH",
-    ["ingest-hook-event", "--agent", agent, "--event", eventName, "--format", agent],
+    args,
     { input: rawInput, encoding: "utf8", env: process.env },
   );
   if (result.status !== 0) {
@@ -507,7 +746,7 @@ SHIM_EOF
 
 # ── Claude Code hooks ─────────────────────────────────────────────────
 configure_claude_hooks() {
-    step "Configuring Claude Code PostToolUse hook"
+    step "Configuring Claude Code lifecycle hooks"
 
     if ! command -v python3 >/dev/null 2>&1; then
         warn "python3 not found; skipping Claude Code hook configuration"
@@ -522,22 +761,7 @@ configure_claude_hooks() {
         return
     fi
 
-    # Check if nexus hook is already configured
-    if python3 -c "
-import json, sys
-with open('${settings_file}') as f:
-    s = json.load(f)
-hooks = s.get('hooks', {}).get('PostToolUse', [])
-for h in hooks:
-    if 'event-ingest.js' in h.get('command', ''):
-        sys.exit(0)
-sys.exit(1)
-" 2>/dev/null; then
-        ok "Claude Code hook already configured"
-        return
-    fi
-
-    python3 -c "
+python3 -c "
 import json
 
 settings_path = '${settings_file}'
@@ -548,14 +772,100 @@ with open(settings_path) as f:
 
 if 'hooks' not in s:
     s['hooks'] = {}
-if 'PostToolUse' not in s['hooks']:
-    s['hooks']['PostToolUse'] = []
 
-s['hooks']['PostToolUse'].append({
-    'matcher': '',
-    'command': f'node {shim_path} claude-code PostToolUse',
-    'timeout': 30000
-})
+legacy_markers = [
+    'NEXUS_SERVER_URL',
+    'nexus serve',
+    'claude-code PostToolUse',
+    'session start --agent claude-code',
+    'event-ingest.js claude-code',
+]
+
+def normalize_entry(entry):
+    if not isinstance(entry, dict):
+        return None
+    matcher = entry.get('matcher', '')
+    hooks = entry.get('hooks')
+    if isinstance(hooks, list):
+        normalized_hooks = []
+        for hook in hooks:
+            if not isinstance(hook, dict):
+                continue
+            if hook.get('type') != 'command':
+                normalized_hooks.append(hook)
+                continue
+            command = hook.get('command')
+            if not command:
+                continue
+            normalized = {
+                'type': 'command',
+                'command': command,
+            }
+            if 'timeout' in hook:
+                normalized['timeout'] = hook['timeout']
+            normalized_hooks.append(normalized)
+        if normalized_hooks:
+            return {'matcher': matcher, 'hooks': normalized_hooks}
+        return None
+    command = entry.get('command')
+    if command:
+        hook = {'type': 'command', 'command': command}
+        if 'timeout' in entry:
+            hook['timeout'] = entry['timeout']
+        return {'matcher': matcher, 'hooks': [hook]}
+    return None
+
+def entry_commands(entry):
+    commands = []
+    for hook in entry.get('hooks', []):
+        if isinstance(hook, dict):
+            command = hook.get('command')
+            if command:
+                commands.append(command)
+    return commands
+
+for hook_name, entries in list(s['hooks'].items()):
+    if hook_name == 'SessionCompact':
+        del s['hooks'][hook_name]
+        continue
+    if not isinstance(entries, list):
+        s['hooks'][hook_name] = []
+        continue
+    cleaned = []
+    for entry in entries:
+        normalized = normalize_entry(entry)
+        if normalized is None:
+            continue
+        commands = entry_commands(normalized)
+        if any(
+            any(marker in command for marker in legacy_markers)
+            for command in commands
+        ):
+            continue
+        cleaned.append(normalized)
+    s['hooks'][hook_name] = cleaned
+
+required_hooks = {
+    'SessionStart': ('SessionStart', 10000),
+    'PostToolUse': ('PostToolUse', 30000),
+    'PreCompact': ('PreCompact', 5000),
+    'Stop': ('Stop', 30000),
+    'SessionEnd': ('SessionEnd', 30000),
+}
+
+for hook_name, (event_name, timeout) in required_hooks.items():
+    if hook_name not in s['hooks']:
+        s['hooks'][hook_name] = []
+    command = f'node {shim_path} claude-code {event_name}'
+    if not any(command in candidate for entry in s['hooks'][hook_name] for candidate in entry_commands(entry)):
+        s['hooks'][hook_name].append({
+            'matcher': '',
+            'hooks': [{
+                'type': 'command',
+                'command': command,
+                'timeout': timeout,
+            }],
+        })
 
 with open(settings_path, 'w') as f:
     json.dump(s, f, indent=2)
@@ -563,7 +873,7 @@ with open(settings_path, 'w') as f:
 " 2>/dev/null
 
     if [[ $? -eq 0 ]]; then
-        ok "Configured Claude Code PostToolUse hook"
+        ok "Configured Claude Code lifecycle hooks"
     else
         warn "Failed to configure Claude Code hooks"
     fi

@@ -18,13 +18,13 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 
-use crate::base::{AgentHook, BaseHook, SessionEndCallback};
+use crate::base::{AgentHook, BaseHook, LifecycleCapabilities, SessionEndCallback};
 use crate::error::{HookError, Result};
 use crate::monitor::ProcessMonitor;
 use crate::session::{
     FileAction, FileInfo, SessionContext, SubagentExecution, TaskInfo, TaskStatus,
 };
-use crate::types::{AgentType, SessionActivity};
+use crate::types::{AgentType, SessionActivity, SupportTier};
 
 /// Oh-My-Pi hook for extracting memory from OMP session execution.
 ///
@@ -91,12 +91,22 @@ impl OhMyPiHook {
 
     /// Create a new Oh-My-Pi hook
     pub fn new() -> Self {
+        Self::new_with_install(true)
+    }
+
+    /// Create a new Oh-My-Pi hook without mutating user state.
+    pub fn new_readonly() -> Self {
+        Self::new_with_install(false)
+    }
+
+    fn new_with_install(auto_install: bool) -> Self {
         let config_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(Self::CONFIG_DIR_NAME);
 
         let session_dir = config_dir.join(Self::SESSIONS_SUBDIR);
         let skills_dir = config_dir.join(Self::SKILLS_SUBDIR);
+        let skill_installed = Self::skill_file_path(&skills_dir).exists();
 
         let mut hook = Self {
             base: BaseHook::new(Self::AGENT_TYPE),
@@ -104,16 +114,21 @@ impl OhMyPiHook {
             session_dir,
             skills_dir,
             process_monitor: ProcessMonitor::new(),
-            skill_installed: false,
+            skill_installed,
             has_native_engine: Self::detect_native_engine(),
         };
 
-        // Try to install skill
-        if let Err(e) = hook.install_skill() {
-            tracing::warn!("Failed to install oh-my-pi skill: {}", e);
+        if auto_install && !hook.skill_installed {
+            if let Err(e) = hook.install_skill() {
+                tracing::warn!("Failed to install oh-my-pi skill: {}", e);
+            }
         }
 
         hook
+    }
+
+    fn skill_file_path(skills_dir: &std::path::Path) -> PathBuf {
+        skills_dir.join("nexus-memory-extraction").join("SKILL.md")
     }
 
     /// Detect if native Rust engine is available
@@ -154,7 +169,7 @@ impl OhMyPiHook {
             HookError::InstallationFailed(format!("Failed to create skill dir: {}", e))
         })?;
 
-        let skill_md = skill_dir.join("SKILL.md");
+        let skill_md = Self::skill_file_path(&self.skills_dir);
 
         // Oh-my-pi supports TTSR (Time Traveling Streamed Rules)
         let skill_content = r#"---
@@ -347,6 +362,13 @@ impl AgentHook for OhMyPiHook {
     }
 
     async fn install_session_end_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
+        self.base.add_callback(callback);
+        self.base.installed = true;
+
+        Ok(())
+    }
+
+    async fn install_compact_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
         self.base.add_callback(callback);
         self.base.installed = true;
 
@@ -567,11 +589,26 @@ impl AgentHook for OhMyPiHook {
             0.95
         }
     }
+
+    fn lifecycle_capabilities(&self) -> LifecycleCapabilities {
+        LifecycleCapabilities {
+            session_start: false,
+            session_end: true,
+            checkpoint: true,
+            error_hook: true,
+            compact: true,
+        }
+    }
+
+    fn support_tier(&self) -> SupportTier {
+        SupportTier::NativeLifecycle
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn test_oh_my_pi_hook_new() {
@@ -615,5 +652,40 @@ mod tests {
         }
 
         assert!(!hook.has_native_feature("unknown"));
+    }
+
+    #[test]
+    fn test_oh_my_pi_hook_lifecycle_capabilities() {
+        let hook = OhMyPiHook::new();
+        let caps = hook.lifecycle_capabilities();
+
+        assert!(
+            !caps.session_start,
+            "oh-my-pi does not support session_start"
+        );
+        assert!(
+            caps.session_end,
+            "oh-my-pi should support session_end via skills"
+        );
+        assert!(
+            caps.checkpoint,
+            "oh-my-pi should support checkpoint via skills"
+        );
+        assert!(
+            caps.error_hook,
+            "oh-my-pi should support error_hook via skills"
+        );
+        assert!(caps.compact, "oh-my-pi should support compact via skills");
+    }
+
+    #[tokio::test]
+    async fn test_oh_my_pi_hook_install_compact_hook() {
+        let mut hook = OhMyPiHook::new();
+        let cb: SessionEndCallback = Arc::new(|_ctx| ());
+        let result = hook.install_compact_hook(cb).await;
+        assert!(
+            result.is_ok(),
+            "oh-my-pi should accept compact hook via skills"
+        );
     }
 }

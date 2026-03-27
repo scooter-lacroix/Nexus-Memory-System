@@ -1,204 +1,384 @@
 # Nexus Memory System Architecture
 
-This document describes the current public architecture of Nexus Memory System as implemented by the Rust workspace in `crates/`.
+Nexus is a memory runtime for coding agents that is designed to feel less like a log collector and more like a bounded subconscious. This document explains how the shipped system works today: how it captures activity, turns it into memory, dreams over it, and brings back the right context when an agent asks a question.
 
-## System Overview
+![Nexus architecture diagram](docs/images/architecture.png)
 
-Nexus is currently organized as a set of focused Rust crates around one shared domain model and one shared storage layer. This is an implementation detail of the current workspace layout, not a requirement for the public product shape.
+## The System In One View
 
 ```text
-┌─────────────────────────────────────────────────────────────────┐
-│                         External Surfaces                       │
-├─────────────────────────────────────────────────────────────────┤
-│  nexus-cli  │  nexus-hooks  │  nexus-mcp  │  nexus-web        │
-└─────────────────────────────────────────────────────────────────┘
-                 \        |        |        /
-                  \       |        |       /
-                   └──────┴────────┴──────┘
-                              |
-                              v
-                     ┌──────────────────┐
-                     │   nexus-core     │
-                     │ types + config   │
-                     └────────┬─────────┘
-                              |
-          ┌───────────────────┼───────────────────┐
-          v                   v                   v
- ┌────────────────┐  ┌────────────────┐  ┌────────────────────┐
- │ nexus-storage  │  │ nexus-vectors  │  │ nexus-embeddings   │
- │ sqlite + repos │  │ vector search  │  │ embedding pipeline │
- └────────┬───────┘  └────────┬───────┘  └──────────┬─────────┘
-          \                   |                     /
-           \                  |                    /
-            └─────────────────┴───────────────────┘
-                              |
-                              v
-                     ┌────────────────────┐
-                     │ nexus-orchestrator │
-                     │ context + sync     │
-                     └────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                         Agent-Facing Surfaces                        │
+├──────────────────────────────────────────────────────────────────────┤
+│  CLI  │  Hooks  │  Wrappers  │  MCP  │  Web / Dashboard / API      │
+└──────────────────────────────────────────────────────────────────────┘
+                 \        |          |          /
+                  \       |          |         /
+                   └──────┴──────────┴────────┘
+                                |
+                                v
+                    ┌────────────────────────┐
+                    │   Nexus Cognition      │
+                    │ derive • digest •      │
+                    │ dream • represent •    │
+                    │ query • identity       │
+                    └───────────┬────────────┘
+                                |
+            ┌───────────────────┼───────────────────┐
+            v                   v                   v
+   ┌────────────────┐  ┌────────────────┐  ┌────────────────────┐
+   │ nexus-storage  │  │ nexus-vectors  │  │ nexus-embeddings   │
+   │ SQLite + repos │  │ semantic rank  │  │ local + remote     │
+   └────────┬───────┘  └────────┬───────┘  └──────────┬─────────┘
+            \                   |                     /
+             \                  |                    /
+              └─────────────────┴───────────────────┘
+                                |
+                                v
+                     ┌─────────────────────┐
+                     │ nexus-core + llm    │
+                     │ types, config,      │
+                     │ provider clients    │
+                     └─────────────────────┘
 ```
 
-## Workspace Crates
+## What Nexus Is Optimizing For
+
+Nexus is opinionated about a few things:
+
+- memory should be useful before it is clever
+- storage should stay local, inspectable, and operationally sane
+- background cognition should be bounded
+- agent integrations should be honest about what they actually support
+- retrieval should combine semantic ranking with structured memory layers, not rely on a single search trick
+
+That is why the system keeps SQLite as its canonical store, builds cognition in layers, and treats observability as a product feature rather than an afterthought.
+
+## The Core Loop
+
+The shipped cognition loop is:
+
+1. Capture activity from hooks, wrappers, sessions, or explicit writes.
+2. Normalize raw events into a stable internal shape.
+3. Derive explicit observations from raw or low-signal activity.
+4. Build and refresh session digests.
+5. Dream in bounded cycles to reinforce patterns, detect contradictions, and produce higher-order insights.
+6. Assemble a working representation when the system needs to answer a question or build context.
+7. Return answers, lineage, introspection, or operator data through CLI, MCP, or web surfaces.
+
+The important detail is that the system never assumes raw activity is already knowledge. It earns better memory gradually.
+
+## Crate Roles
 
 ### `nexus-core`
 
-Shared domain types, configuration, category definitions, identifiers, and common error handling live here. This crate is the foundation for the rest of the workspace.
+Shared types, config, category definitions, cognitive metadata, support-tier modeling, and other cross-cutting contracts live here.
+
+This crate defines the language the rest of the system speaks:
+
+- categories such as `general`, `facts`, `preferences`, `context`, `specifications`, and `session`
+- cognitive levels such as raw, explicit, derived, digest, and contradiction-oriented memory
+- runtime configuration for generation, embeddings, and bounded cognition behavior
 
 ### `nexus-storage`
 
-The storage layer owns:
+`nexus-storage` owns the canonical SQLite persistence layer.
 
-- SQLite connection management
+It manages:
+
 - schema initialization and migrations
-- repository access for namespaces and memories
-- persistence of task specifications and statistics-related queries
+- namespace and memory repositories
+- cognition job queues
+- digest pointers
+- evidence lineage
+- relation storage
+- processed file tracking
+- retrieval queries and bounded recall filters
 
-`StorageManager` is the main entrypoint for opening and initializing the database.
+This is the source of truth for the system.
 
-### `nexus-vectors`
+### `nexus-llm`
 
-This crate provides vector-oriented indexing and retrieval logic on top of stored memories. It is intended to support semantic and structural lookup patterns over the shared memory corpus.
+The LLM layer handles provider-backed generation for derivation, digesting, reflection, and query synthesis. It supports multiple providers while keeping the rest of the workspace on a stable internal contract.
 
 ### `nexus-embeddings`
 
-Embeddings-related responsibilities live here, including model integration and embedding generation support used by higher-level retrieval workflows.
+The embedding layer generates vectors for semantic recall. It supports:
 
-### `nexus-orchestrator`
+- local ONNX models
+- remote OpenAI-compatible embedding providers
+- local OpenAI-compatible runtimes such as `vLLM`, `LM Studio`, and `llama.cpp`
+- provider inheritance or explicit provider/model selection
 
-The orchestrator crate coordinates higher-level memory workflows such as enriched context construction, event flow, and synchronization behavior across the system.
+Generation and embeddings are separate by design, so operators can mix local and remote choices as needed.
+
+### `nexus-vectors`
+
+This crate provides vector-oriented lookup and ranking support on top of stored embeddings and retrieval candidates.
+
+### `nexus-agent`
+
+This is the cognition engine.
+
+It contains the services that make Nexus feel like a subconscious:
+
+- `DeriveService`
+- `DigestService`
+- `ReflectService`
+- `RepresentationService`
+- `QueryService`
+- runtime and supervisor coordination
+- adaptive dream scheduling
+- introspection, ranking, and identity-aware recall
 
 ### `nexus-hooks`
 
-Hooks are the native integration layer for supported agent tools. This crate contains:
+The hooks layer installs and manages tool-specific lifecycle capture.
 
-- agent-specific hook installers
-- extraction and monitoring support
-- session and signal handling
-- hook factory and shared hook types
+It includes:
 
-### `nexus-mcp`
-
-This crate exposes Nexus through an MCP-compatible surface so MCP clients can read and work with the same backing store as the CLI and web stack.
-
-### `nexus-web`
-
-The web layer is built with Axum and exposes:
-
-- `/api/memories`
-- `/api/memories/search`
-- `/api/namespaces`
-- `/api/stats`
-- `/api/stats/:agent`
-- `/api/health`
-- `/ws`
-
-It depends on `nexus-storage`, `nexus-orchestrator`, and `nexus-vectors`.
+- dedicated integrations where native lifecycle support exists
+- wrapper-aware support for tools that are best handled around the CLI entrypoint
+- monitoring and retry-buffer support
+- normalized ingestion paths for hook payloads
 
 ### `nexus-cli`
 
-The CLI is the main operational surface. Current commands include:
+The CLI is the operator-facing entrypoint for installing, inspecting, recalling, migrating, and serving Nexus.
 
-- `init`
-- `serve`
-- `store`
-- `search`
-- `stats`
-- `hooks`
-- `migrate`
+### `nexus-mcp`
 
-### `nexus-lephase`
+The MCP layer exposes the same memory runtime and cognition surfaces to MCP-capable tools.
 
-This crate provides LePhase integration glue used by the wider workspace.
+### `nexus-web`
 
-## Data Flow
+The web layer exposes the dashboard, API, agent endpoints, and observability routes for the same underlying runtime.
 
-### Store flow
+## The Memory Model
 
-1. A caller invokes `nexus store`, a hook callback, or another surface.
-2. The command or service resolves configuration from `nexus-core`.
-3. `nexus-storage` opens the database and ensures schema availability.
-4. The namespace is resolved or created.
-5. The memory record is persisted with category, labels, and metadata.
+Nexus stores all memory in one shared canonical system rather than splitting “real memories” and “agent-only memories” into separate products.
 
-### Query flow
+![Categorization and memory organization](docs/images/categorization.png)
 
-1. A caller invokes `search`, stats endpoints, MCP tools, or web routes.
-2. The surface uses `nexus-storage` repositories and related retrieval helpers.
-3. `nexus-vectors` and `nexus-embeddings` may participate in semantic lookup flows.
-4. Results are returned through the active interface.
+Each memory can carry:
 
-### Hook flow
+- category
+- labels
+- embeddings
+- lineage metadata
+- cognitive metadata
+- evidence links
+- relation edges where graph-style links are useful
 
-1. `nexus hooks install` writes tool-specific hook assets.
-2. Supported agent runtimes trigger those hooks during their lifecycle.
-3. Hook code extracts relevant session context.
-4. Nexus persists the extracted memory through the shared storage layer.
+### Cognitive layers
 
-## Hybrid Category System
+The shipped system uses layered cognition instead of a flat memory stream:
 
-Nexus uses a hybrid category system built around the core categories defined in `nexus-core`.
+- **Raw activity**: direct captures from hooks, sessions, wrappers, or explicit writes
+- **Explicit observations**: clearer, retrieval-friendly facts derived from raw activity
+- **Derived insights**: reinforced or induced higher-order memory
+- **Digests**: short and long session summaries
+- **Contradictions**: conflict records with evidence lineage
 
-Core categories currently include:
+This layering is what lets the system keep operational signal without forcing retrieval to wade through raw noise.
 
-- `general`
-- `facts`
-- `preferences`
-- `context`
-- `specifications`
-- `session`
+## Capture and Ingestion
 
-Additional metadata and labels can be attached to memories without changing the primary category model. This keeps the storage and retrieval model simple while still allowing richer downstream classification.
+Nexus can ingest memory from several paths:
+
+- direct CLI storage
+- hook-triggered lifecycle capture
+- wrapper-based session start/end capture
+- retry-buffer replay
+- web or MCP initiated ingestion
+
+### Design principle: no manual server required for normal capture
+
+For standard CLI-driven agent usage, Nexus does not require a manually started long-running server just to capture memory. The installer, wrappers, hooks, and runtime controller cooperate so ordinary session capture works in-place.
+
+The web server and dashboard exist for operator and API surfaces, not as a mandatory prerequisite for normal memory capture.
+
+## Dreaming
+
+Nexus uses the term **dreaming** for bounded consolidation and reflection.
+
+Dream cycles are designed to be:
+
+- bounded
+- replay-safe
+- resumable
+- scoped where possible
+- useful under real operator constraints
+
+Current dream behavior includes:
+
+- reinforcement tracking
+- contradiction detection
+- digest refresh
+- derived insight creation
+- evidence lineage preservation
+- bounded shutdown dreaming for the ending session
+
+This is how the system improves memory quality over time without drifting into unbounded background churn.
+
+## Working Representation and Recall
+
+When Nexus answers a memory question, it does not just run a text search and call it intelligence.
+
+It assembles a bounded working representation from a mix of:
+
+- session digests
+- recent explicit memories
+- semantic matches
+- reinforced derived insights
+- contradiction memories
+- related-namespace fallbacks where identity resolution supports them
+
+The result is a more coherent recall context that can be:
+
+- returned directly
+- introspected
+- compressed
+- or passed into answer synthesis
+
+### Query outputs
+
+Depending on the surface, Nexus can return:
+
+- raw recall hits
+- introspection on why a memory surfaced
+- lineage and source evidence
+- synthesis-oriented answers
+- operator metrics about the representation mix
+
+## Agent Support Tiers
+
+Nexus is explicit about support depth. Not every integration is equal, and the system reports that honestly.
+
+| Agent | Tier | Capture Style |
+|---|---|---|
+| Claude Code | `native-lifecycle` | dedicated hook installation + lifecycle coverage |
+| pi-mono | `native-lifecycle` | dedicated skill / hook integration |
+| oh-my-pi | `native-lifecycle` | dedicated skill / hook integration |
+| pi-skills | `native-lifecycle` | dedicated skill / hook integration |
+| Codex | `wrapper-lifecycle` | CLI wrapper with lifecycle boundaries |
+| Amp | `wrapper-lifecycle` | CLI wrapper with lifecycle boundaries |
+| OpenCode | `wrapper-lifecycle` | CLI wrapper with lifecycle boundaries |
+| Droid | `wrapper-lifecycle` | CLI wrapper with lifecycle boundaries |
+| Hermes | `wrapper-lifecycle` | CLI wrapper with lifecycle boundaries |
+| Gemini | `monitor-only` | process-level observation only |
+| Qwen | `monitor-only` | process-level observation only |
+
+### Why this matters
+
+This honesty keeps the product trustworthy. If an integration is wrapper-based or monitor-only, Nexus says so instead of pretending every agent has identical lifecycle fidelity.
+
+## Provider and Embedding Architecture
+
+Nexus treats generation and embeddings as separate but coordinated systems.
+
+That means you can run combinations such as:
+
+- Gemini generation + Gemini embeddings
+- Gemini generation + different Gemini embedding model
+- Gemini generation + local ONNX embeddings
+- Groq generation + Gemini embeddings
+- local `vLLM` generation + local `LM Studio` embeddings
+
+The system supports provider inheritance, explicit override, and local runtime configuration without forcing the operator into one topology.
 
 ## Public Interfaces
 
 ### CLI
 
-Primary path for initialization, storage, stats, search, server startup, and hook management.
+The main operator workflow for:
+
+- install and initialization
+- hook status
+- storage and recall
+- dreaming and digests
+- migration and backfill
+- server startup
+- evaluation and observability
 
 ### Web
 
-HTTP and WebSocket interface for browser and service consumers.
+The web surface exposes:
+
+- API routes for memory and cognition
+- agent status and query endpoints
+- observability endpoints
+- a dashboard-oriented operator surface
 
 ### MCP
 
-Protocol-oriented access for MCP-capable clients and toolchains.
+The MCP surface exposes memory and cognition tools to MCP-capable clients without splitting data into a second store.
 
-### Hooks
+### Hooks and wrappers
 
-Automatic ingestion path for supported agent runtimes.
+The hooks and wrapper layer is what makes the always-on feel possible in day-to-day agent work.
+
+## End-to-End Data Flow
+
+### 1. Capture
+
+An agent session starts, a hook fires, a wrapper opens, or a user explicitly stores memory.
+
+### 2. Normalize
+
+The event is normalized into a stable schema with session, perspective, and source context.
+
+### 3. Persist raw activity
+
+Raw activity is stored with canonical cognitive metadata or placed in the retry path if it should not yet pollute primary memory.
+
+### 4. Derive
+
+Derivation turns useful raw activity into explicit memories with evidence lineage.
+
+### 5. Digest
+
+Short and long session digests are refreshed when needed.
+
+### 6. Dream
+
+Reflection reinforces patterns, detects conflicts, and emits higher-order insight.
+
+### 7. Represent
+
+When a query arrives, Nexus builds a working representation from the right mixture of memory layers.
+
+### 8. Answer or inspect
+
+The system returns memory hits, synthesis, lineage, introspection, or dashboard metrics through the active interface.
+
+## Operational Guardrails
+
+Nexus is designed to stay useful under real constraints.
+
+Key guardrails include:
+
+- bounded job batches
+- bounded lease times
+- bounded session-end dream work
+- raw-memory suppression by default in recall
+- configurable idle shutdown behavior
+- adaptive dream scheduling rather than naive always-maximal processing
+
+This is part of the architecture, not just tuning.
 
 ## Design Notes
 
-- The workspace is Rust-first for all public architecture guidance.
-- `nexus-core` and `nexus-storage` are the backbone of the current implementation.
-- Higher-level surfaces share the same backing store instead of maintaining separate memory silos.
-- The externally visible model is one Nexus system, even if the internal crate boundaries change over time.
+- The product is presented as one system even though the implementation is split across focused crates.
+- SQLite remains the canonical store to keep the system portable and understandable.
+- The cognition engine enriches and ranks memory in layers rather than forcing every feature into a single retrieval pass.
+- Public surfaces share one runtime and one memory layer rather than duplicating state across integrations.
 
-## Always-On Memory Agent
+## Related Documents
 
-Nexus includes an optional always-on memory agent that provides LLM-driven memory processing.
-
-### Agent Crates
-
-- **`nexus-llm`**: Multi-provider LLM abstraction supporting OpenAI, Anthropic, Gemini, OpenRouter, Groq, Z.ai, Minimax, and Mistral.
-- **`nexus-agent`**: Always-on memory agent with three core services:
-  - **IngestService**: Accepts raw text → LLM extracts summary, entities, topics, importance → stores enriched memory
-  - **ConsolidateService**: Runs on timer → finds connections between memories → stores insights as new memories with relations
-  - **QueryService**: Accepts questions → reads memories + insights → LLM synthesizes answer with citations
-
-### Agent Data Flow
-
-The agent stores all data using existing tables:
-- Enriched memories are stored in `memories` with extraction results in the `metadata` JSON field
-- Consolidation insights are stored as `memories` with `generated_by: "consolidate_agent"` in metadata
-- Connections are stored in `memory_relations`
-- Processed inbox files are tracked in `processed_files`
-
-### Agent Endpoints
-
-When the agent is enabled (`NEXUS_AGENT_ENABLED=true` or `nexus serve --agent`):
-- `POST /api/agent/ingest` — Ingest text with LLM enrichment
-- `POST /api/agent/query` — Query memory with LLM synthesis
-- `POST /api/agent/consolidate` — Trigger manual consolidation
-- `GET /api/agent/status` — Agent health and statistics
+- [README.md](README.md)
+- [Installation Guide](INSTALLATION.md)
+- [Hooks](HOOKS.md)
+- [Documentation Index](docs/index.md)
+- [Cognition Rollout Guide](docs/guide/cognition-rollout.md)
+- [CLI Reference](docs/api/cli-reference.md)

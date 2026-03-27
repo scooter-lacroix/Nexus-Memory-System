@@ -96,3 +96,91 @@ pub mod processed_file_status {
     pub const COMPLETED: &str = "completed";
     pub const FAILED: &str = "failed";
 }
+
+// ---------------------------------------------------------------------------
+// Cognition tables (Phase 2)
+// ---------------------------------------------------------------------------
+
+/// Database row for memory_jobs table
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MemoryJobRow {
+    pub id: i64,
+    pub namespace_id: i64,
+    pub job_type: String,
+    pub status: String,
+    pub priority: i64,
+    pub perspective_json: Option<String>,
+    pub payload_json: String,
+    pub lease_owner: Option<String>,
+    pub claim_token: Option<String>,
+    pub lease_expires_at: Option<String>,
+    pub attempts: i64,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Database row for session_digests table
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SessionDigestRow {
+    pub id: i64,
+    pub namespace_id: i64,
+    pub session_key: String,
+    pub digest_kind: String,
+    pub memory_id: i64,
+    pub start_memory_id: Option<i64>,
+    pub end_memory_id: Option<i64>,
+    pub token_count: i64,
+    pub created_at: String,
+}
+
+/// Database row for memory_evidence table
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MemoryEvidenceRow {
+    pub id: i64,
+    pub derived_memory_id: i64,
+    pub source_memory_id: i64,
+    pub evidence_role: String,
+    pub created_at: String,
+}
+
+/// Status values for memory jobs
+pub mod memory_job_status {
+    pub const PENDING: &str = "pending";
+    pub const RUNNING: &str = "running";
+    pub const COMPLETED: &str = "completed";
+    pub const FAILED: &str = "failed";
+}
+
+/// Evidence role constants
+pub mod evidence_role {
+    pub const SOURCE: &str = "source";
+    pub const DERIVED_FROM: &str = "derived_from";
+    pub const CONTRADICTS: &str = "contradicts";
+    pub const SUPPORTS: &str = "supports";
+}
+
+/// A claimed job with deserialized perspective and payload.
+#[derive(Debug, Clone)]
+pub struct ClaimedMemoryJob {
+    pub row: MemoryJobRow,
+    pub perspective: Option<nexus_core::PerspectiveKey>,
+    pub payload: serde_json::Value,
+}
+
+/// Parameters for enqueuing a new memory job.
+pub struct EnqueueJobParams<'a> {
+    pub namespace_id: i64,
+    pub job_type: &'a str,
+    pub priority: i64,
+    pub perspective: Option<&'a serde_json::Value>,
+    pub payload: &'a serde_json::Value,
+}
+
+/// Lineage info for a derived memory.
+#[derive(Debug, Clone)]
+pub struct MemoryLineageEntry {
+    pub derived_memory_id: i64,
+    pub source_memory_id: i64,
+    pub evidence_role: String,
+}

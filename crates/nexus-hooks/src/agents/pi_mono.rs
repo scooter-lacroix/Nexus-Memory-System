@@ -10,13 +10,13 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 
-use crate::base::{AgentHook, BaseHook, SessionEndCallback};
+use crate::base::{AgentHook, BaseHook, LifecycleCapabilities, SessionEndCallback};
 use crate::error::{HookError, Result};
 use crate::monitor::ProcessMonitor;
 use crate::session::{
     FileAction, FileInfo, SessionContext, SubagentExecution, TaskInfo, TaskStatus,
 };
-use crate::types::{AgentType, SessionActivity, SkillMetadata};
+use crate::types::{AgentType, SessionActivity, SkillMetadata, SupportTier};
 
 /// Pi-Mono hook for extracting memory from pi-mono session execution.
 ///
@@ -85,12 +85,22 @@ impl PiMonoHook {
 
     /// Create a new Pi-Mono hook
     pub fn new() -> Self {
+        Self::new_with_install(true)
+    }
+
+    /// Create a new Pi-Mono hook without mutating user state.
+    pub fn new_readonly() -> Self {
+        Self::new_with_install(false)
+    }
+
+    fn new_with_install(auto_install: bool) -> Self {
         let config_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(Self::CONFIG_DIR_NAME);
 
         let session_dir = config_dir.join(Self::SESSIONS_SUBDIR);
         let skills_dir = config_dir.join(Self::SKILLS_SUBDIR);
+        let skill_installed = Self::skill_file_path(&skills_dir).exists();
 
         let mut hook = Self {
             base: BaseHook::new(Self::AGENT_TYPE),
@@ -98,15 +108,20 @@ impl PiMonoHook {
             session_dir,
             skills_dir,
             process_monitor: ProcessMonitor::new(),
-            skill_installed: false,
+            skill_installed,
         };
 
-        // Try to install skill
-        if let Err(e) = hook.install_skill() {
-            tracing::warn!("Failed to install pi-mono skill: {}", e);
+        if auto_install && !hook.skill_installed {
+            if let Err(e) = hook.install_skill() {
+                tracing::warn!("Failed to install pi-mono skill: {}", e);
+            }
         }
 
         hook
+    }
+
+    fn skill_file_path(skills_dir: &std::path::Path) -> PathBuf {
+        skills_dir.join("nexus-memory-extraction").join("SKILL.md")
     }
 
     /// Install the nexus-memory-extraction skill
@@ -120,7 +135,7 @@ impl PiMonoHook {
             HookError::InstallationFailed(format!("Failed to create skill dir: {}", e))
         })?;
 
-        let skill_md = skill_dir.join("SKILL.md");
+        let skill_md = Self::skill_file_path(&self.skills_dir);
 
         let skill_content = r#"---
 name: nexus-memory-extraction
@@ -271,6 +286,13 @@ impl AgentHook for PiMonoHook {
     }
 
     async fn install_session_end_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
+        self.base.add_callback(callback);
+        self.base.installed = true;
+
+        Ok(())
+    }
+
+    async fn install_compact_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
         self.base.add_callback(callback);
         self.base.installed = true;
 
@@ -458,11 +480,26 @@ impl AgentHook for PiMonoHook {
             0.95
         }
     }
+
+    fn lifecycle_capabilities(&self) -> LifecycleCapabilities {
+        LifecycleCapabilities {
+            session_start: false,
+            session_end: true,
+            checkpoint: true,
+            error_hook: false,
+            compact: true,
+        }
+    }
+
+    fn support_tier(&self) -> SupportTier {
+        SupportTier::NativeLifecycle
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn test_pi_mono_hook_new() {
@@ -483,5 +520,37 @@ mod tests {
         assert_eq!(PiMonoHook::AGENT_TYPE, "pi-mono");
         assert_eq!(PiMonoHook::CONFIG_DIR_NAME, ".pi");
         assert_eq!(PiMonoHook::SKILLS_SUBDIR, "agent/skills");
+    }
+
+    #[test]
+    fn test_pi_mono_hook_lifecycle_capabilities() {
+        let hook = PiMonoHook::new();
+        let caps = hook.lifecycle_capabilities();
+
+        assert!(
+            !caps.session_start,
+            "pi-mono does not support session_start"
+        );
+        assert!(
+            caps.session_end,
+            "pi-mono should support session_end via skills"
+        );
+        assert!(
+            caps.checkpoint,
+            "pi-mono should support checkpoint via skills"
+        );
+        assert!(!caps.error_hook, "pi-mono does not support error_hook");
+        assert!(caps.compact, "pi-mono should support compact via skills");
+    }
+
+    #[tokio::test]
+    async fn test_pi_mono_hook_install_compact_hook() {
+        let mut hook = PiMonoHook::new();
+        let cb: SessionEndCallback = Arc::new(|_ctx| ());
+        let result = hook.install_compact_hook(cb).await;
+        assert!(
+            result.is_ok(),
+            "pi-mono should accept compact hook via skills"
+        );
     }
 }

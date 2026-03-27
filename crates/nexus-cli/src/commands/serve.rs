@@ -1,7 +1,12 @@
 //! Serve command implementation
 
-use anyhow::Result;
+use std::net::{IpAddr, SocketAddr};
+
+use anyhow::{Context, Result};
+use nexus_core::Config;
 use nexus_mcp::{McpConfig, McpServer};
+use nexus_orchestrator::Orchestrator;
+use nexus_storage::StorageManager;
 use tracing::info;
 
 /// Execute the serve command
@@ -10,50 +15,55 @@ pub async fn execute(transport: String, port: u16, agent: bool) -> Result<()> {
     info!("Transport: {}", transport);
     info!("Port: {}", port);
 
-    // If --agent flag is set, force-enable the agent regardless of env value.
     if agent {
         std::env::set_var("NEXUS_AGENT_ENABLED", "true");
         info!("Agent mode enabled via --agent flag");
     }
 
-    let config = McpConfig::default()
-        .with_transport(&transport)
-        .with_port(port);
+    let config = Config::from_env().context("failed to load Nexus configuration")?;
 
-    let mut server = McpServer::new(config);
-
-    // Initialize server
-    server.initialize().await?;
-
-    info!("Server initialized");
-
-    // Start server
     match transport.as_str() {
-        "stdio" => {
-            info!("Starting stdio transport (MCP protocol)");
-            tokio::signal::ctrl_c().await?;
-        }
-        "http" => {
-            info!("Starting HTTP server on port {}", port);
-            tokio::signal::ctrl_c().await?;
-        }
-        "web" => {
-            info!("Starting web dashboard on port {}", port);
-            if agent {
+        "stdio" => serve_stdio().await,
+        "http" | "web" => {
+            if transport == "web" && agent {
                 info!("Always-on memory agent ENABLED");
-                // Agent is initialized inside WebDashboard::new when
-                // the agent config has enabled=true
             }
-            tokio::signal::ctrl_c().await?;
+            serve_web_surface(&config, port).await
         }
-        _ => {
-            anyhow::bail!("Unknown transport: {}", transport);
-        }
+        _ => anyhow::bail!("Unknown transport: {}", transport),
     }
+}
 
-    // Shutdown
-    info!("Shutting down server");
-    server.stop().await?;
+async fn serve_stdio() -> Result<()> {
+    let mut server = McpServer::new(McpConfig::stdio());
+    server
+        .start()
+        .await
+        .context("failed to start stdio MCP server")
+}
 
-    Ok(())
+async fn serve_web_surface(config: &Config, port: u16) -> Result<()> {
+    let mut storage = StorageManager::from_url(&config.database_url())
+        .await
+        .context("failed to open storage for web server")?;
+    storage
+        .initialize()
+        .await
+        .context("failed to initialize storage for web server")?;
+
+    let dashboard = nexus_web::create_dashboard(storage, Orchestrator::default())
+        .await
+        .context("failed to initialize web dashboard")?;
+
+    let host: IpAddr = config
+        .server
+        .host
+        .parse()
+        .with_context(|| format!("invalid NEXUS_HOST value: {}", config.server.host))?;
+    let addr = SocketAddr::new(host, port);
+
+    dashboard
+        .serve(addr)
+        .await
+        .context("web server exited with an error")
 }

@@ -3,11 +3,11 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use nexus_core::config::AgentConfig;
+use nexus_core::config::{AgentConfig, CognitionConfig};
+use nexus_core::traits::EmbeddingService;
+use nexus_core::{CognitiveLevel, CognitiveMetadata, Config};
 use nexus_llm::LlmClient;
-use nexus_storage::repository::{
-    MemoryRelationRepository, MemoryRepository, ProcessedFileRepository,
-};
+use nexus_storage::repository::{ListMemoryFilters, MemoryRepository, ProcessedFileRepository};
 use sqlx::SqlitePool;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
@@ -15,13 +15,13 @@ use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
-use crate::consolidate::ConsolidateService;
 use crate::error::AgentError;
 use crate::inbox::InboxScanner;
 use crate::ingest::IngestService;
 use crate::pulse;
 use crate::query::QueryService;
-use crate::types::AgentStatus;
+use crate::runtime::{drain_cognition_jobs, run_dream_cycle, DreamCycleRequest};
+use crate::types::{AgentStatus, QueryIntrospection};
 
 /// How long to wait for tasks to shut down gracefully before force-aborting.
 const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -29,6 +29,7 @@ const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct AgentSupervisor {
     config: AgentConfig,
     llm: Arc<dyn LlmClient>,
+    query_embedder: Option<Arc<dyn EmbeddingService>>,
     pool: SqlitePool,
     namespace_id: i64,
     status: Arc<RwLock<AgentStatus>>,
@@ -58,6 +59,7 @@ impl AgentSupervisor {
         Self {
             config,
             llm,
+            query_embedder: None,
             pool,
             namespace_id,
             status,
@@ -81,6 +83,9 @@ impl AgentSupervisor {
         // Spawn consolidation task
         let consolidation_handle = self.spawn_consolidation_task().await?;
         self.tasks.push(consolidation_handle);
+
+        let cognition_handle = self.spawn_cognition_worker_task().await?;
+        self.tasks.push(cognition_handle);
 
         info!("Agent supervisor started with {} tasks", self.tasks.len());
         Ok(())
@@ -131,6 +136,11 @@ impl AgentSupervisor {
         self.status.read().await.clone()
     }
 
+    pub fn with_query_embedder(mut self, embedder: Arc<dyn EmbeddingService>) -> Self {
+        self.query_embedder = Some(embedder);
+        self
+    }
+
     /// Increment the queries answered counter (for external callers like the web API).
     pub async fn increment_queries_answered(&self) {
         let mut s = self.status.write().await;
@@ -138,20 +148,32 @@ impl AgentSupervisor {
     }
 
     pub fn query_service(&self) -> QueryService {
-        QueryService::new(self.llm.clone(), self.config.clone())
+        if let Some(embedder) = &self.query_embedder {
+            QueryService::with_embedder(self.llm.clone(), self.config.clone(), embedder.clone())
+        } else {
+            QueryService::new(self.llm.clone(), self.config.clone())
+        }
     }
 
     pub fn ingest_service(&self) -> IngestService {
         IngestService::new(self.llm.clone(), self.config.clone())
     }
 
-    pub fn consolidate_service(&self) -> ConsolidateService {
-        ConsolidateService::new(self.llm.clone(), self.config.clone())
-    }
-
     /// Get the agent namespace ID
     pub fn namespace_id(&self) -> i64 {
         self.namespace_id
+    }
+
+    /// Compute query introspection (ranking decisions) without calling the LLM.
+    pub async fn query_introspection(
+        &self,
+        question: &str,
+        namespace_id: i64,
+        memory_repo: &MemoryRepository,
+    ) -> Result<QueryIntrospection, AgentError> {
+        self.query_service()
+            .query_introspection(question, namespace_id, memory_repo)
+            .await
     }
 
     async fn spawn_inbox_scanner(&self) -> Result<JoinHandle<()>, AgentError> {
@@ -215,40 +237,63 @@ impl AgentSupervisor {
         let pool = self.pool.clone();
         let namespace_id = self.namespace_id;
         let status = self.status.clone();
-        let interval_mins = config.consolidation_interval_mins;
+        let base_interval_secs = config.consolidation_interval_mins * 60;
         let cancel = self.cancel_token.clone();
+        let cognition = Config::from_env()
+            .map(|config| config.cognition)
+            .unwrap_or_default();
 
         let handle = tokio::spawn(async move {
-            let service = ConsolidateService::new(llm, config);
-            let mut ticker = interval(Duration::from_secs(interval_mins * 60));
-
             loop {
+                let sleep_duration = if cognition.adaptive_dream_enabled {
+                    compute_adaptive_dream_interval(
+                        pool.clone(),
+                        namespace_id,
+                        base_interval_secs,
+                        &cognition,
+                    )
+                    .await
+                } else {
+                    Duration::from_secs(base_interval_secs)
+                };
+
                 tokio::select! {
-                    _ = ticker.tick() => {}
+                    _ = tokio::time::sleep(sleep_duration) => {}
                     _ = cancel.cancelled() => {
                         info!("Consolidation task received shutdown signal");
                         break;
                     }
                 }
 
-                let memory_repo = MemoryRepository::new(pool.clone());
-                let relation_repo = MemoryRelationRepository::new(&pool);
-
-                match service
-                    .consolidate(namespace_id, &memory_repo, &relation_repo)
-                    .await
+                let lease_owner = format!("supervisor-dream-{}", namespace_id);
+                match run_dream_cycle(
+                    pool.clone(),
+                    &cognition,
+                    &config,
+                    llm.clone(),
+                    None,
+                    DreamCycleRequest {
+                        namespace_id,
+                        lease_owner: &lease_owner,
+                        perspective: None,
+                        session_key: None,
+                        reflect_reason: "namespace_dream",
+                        digest_reason: "dream_digest",
+                    },
+                )
+                .await
                 {
-                    Ok(Some(count)) => {
+                    Ok(processed) if processed > 0 => {
                         let mut s = status.write().await;
                         s.last_consolidation = Some(Utc::now());
-                        s.memories_consolidated += count as u64;
+                        s.memories_consolidated += processed as u64;
                         pulse::write_pulse(
                             "consolidation",
                             s.memories_consolidated,
                             s.files_processed,
                         );
                     }
-                    Ok(None) => {
+                    Ok(_) => {
                         debug!("No memories to consolidate");
                     }
                     Err(e) => {
@@ -265,4 +310,119 @@ impl AgentSupervisor {
 
         Ok(handle)
     }
+
+    async fn spawn_cognition_worker_task(&self) -> Result<JoinHandle<()>, AgentError> {
+        let config = self.config.clone();
+        let pool = self.pool.clone();
+        let namespace_id = self.namespace_id;
+        let status = self.status.clone();
+        let llm = self.llm.clone();
+        let cancel = self.cancel_token.clone();
+        let cognition = nexus_core::Config::from_env()
+            .map(|config| config.cognition)
+            .unwrap_or_default();
+
+        let handle = tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(config.scan_interval_secs.max(1)));
+
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    _ = cancel.cancelled() => {
+                        info!("Cognition worker received shutdown signal");
+                        break;
+                    }
+                }
+
+                match drain_cognition_jobs(
+                    pool.clone(),
+                    namespace_id,
+                    &cognition,
+                    &config,
+                    llm.clone(),
+                    None,
+                    &format!("supervisor-{}", namespace_id),
+                )
+                .await
+                {
+                    Ok(processed) => {
+                        if processed > 0 {
+                            debug!(namespace_id, processed, "Cognition worker drained jobs");
+                            let mut s = status.write().await;
+                            s.last_consolidation = Some(Utc::now());
+                            s.memories_consolidated += processed as u64;
+                            pulse::write_pulse(
+                                "cognition",
+                                s.memories_consolidated,
+                                s.files_processed,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        error!(error = %error, namespace_id, "Cognition worker failed");
+                        let mut s = status.write().await;
+                        s.errors.push(format!("Cognition error: {}", error));
+                        if s.errors.len() > 10 {
+                            s.errors.remove(0);
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(handle)
+    }
+}
+
+/// Compute the next dream-cycle interval based on contradiction density.
+///
+/// When contradictions exist in the namespace, the interval is shortened
+/// proportionally (down to `adaptive_dream_min_interval_secs`). Otherwise
+/// the base interval is used (capped at `adaptive_dream_max_interval_secs`).
+async fn compute_adaptive_dream_interval(
+    pool: SqlitePool,
+    namespace_id: i64,
+    base_interval_secs: u64,
+    cognition: &CognitionConfig,
+) -> Duration {
+    let repo = MemoryRepository::new(pool);
+    let min = cognition.adaptive_dream_min_interval_secs;
+    let max = cognition.adaptive_dream_max_interval_secs;
+    let base = base_interval_secs.clamp(min, max);
+
+    let contradiction_count = match repo
+        .list_filtered(
+            namespace_id,
+            ListMemoryFilters {
+                category: None,
+                since: None,
+                until: None,
+                content_like: None,
+                include_raw: false,
+                limit: 256,
+                offset: 0,
+            },
+        )
+        .await
+    {
+        Ok(memories) => memories
+            .iter()
+            .filter(|m| {
+                CognitiveMetadata::from_metadata(&m.metadata)
+                    .map(|c| c.level == CognitiveLevel::Contradiction)
+                    .unwrap_or(false)
+            })
+            .count(),
+        Err(_) => return Duration::from_secs(base),
+    };
+
+    if contradiction_count == 0 {
+        return Duration::from_secs(base);
+    }
+
+    // Shorten interval proportionally: each contradiction shaves 10% off the base,
+    // down to the minimum.
+    let factor = 1.0 - ((contradiction_count as f32 * 0.10).min(0.9));
+    let adapted = (base as f32 * factor) as u64;
+    Duration::from_secs(adapted.clamp(min, max))
 }

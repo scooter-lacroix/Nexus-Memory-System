@@ -88,6 +88,10 @@ enum Commands {
         /// Maximum results
         #[arg(short, long, default_value = "10")]
         limit: usize,
+
+        /// Include raw operational activity memories
+        #[arg(long)]
+        include_raw: bool,
     },
 
     /// Show statistics
@@ -129,6 +133,14 @@ enum Commands {
         /// Payload format (auto, claude-code)
         #[arg(long, default_value = "auto")]
         format: String,
+
+        /// Effective session key for correlating fallback-scoped events
+        #[arg(long)]
+        session_key: Option<String>,
+
+        /// Working directory associated with the event
+        #[arg(long)]
+        cwd: Option<String>,
     },
 
     /// Configure Nexus (interactive wizard, or use show/set subcommands)
@@ -152,6 +164,186 @@ enum Commands {
         /// Override model (uses current config if omitted)
         #[arg(long)]
         model: Option<String>,
+    },
+
+    /// List memories with filters
+    List {
+        /// Agent/namespace name
+        #[arg(short, long, default_value = "default")]
+        agent: String,
+
+        /// Filter by category (general, facts, preferences, context, specifications, session)
+        #[arg(short = 'g', long)]
+        category: Option<String>,
+
+        /// Show memories since (e.g., 1h, 24h, 7d, 2w, 2026-03-24)
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Show memories until (e.g., 1h, 24h, 7d, 2w, 2026-03-24)
+        #[arg(long)]
+        until: Option<String>,
+
+        /// Maximum results
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+
+        /// Offset for pagination
+        #[arg(short, long, default_value = "0")]
+        offset: usize,
+
+        /// Include raw operational activity memories
+        #[arg(long)]
+        include_raw: bool,
+    },
+
+    /// Prune archived raw activity after it has been distilled and lineaged
+    Clean {
+        /// Agent/namespace name
+        #[arg(short, long, default_value = "default")]
+        agent: String,
+
+        /// Remove memories older than this cutoff (e.g. 7d, 2026-03-20)
+        #[arg(long)]
+        older_than: Option<String>,
+
+        /// Maximum candidates to inspect or delete in one run
+        #[arg(short, long, default_value = "100")]
+        limit: usize,
+
+        /// Apply the deletion. Default mode is dry-run.
+        #[arg(long)]
+        apply: bool,
+    },
+
+    /// Recall relevant memories for agent context
+    Recall {
+        /// Context query to match against
+        #[arg(short, long)]
+        query: String,
+
+        /// Agent/namespace name
+        #[arg(short, long, default_value = "default")]
+        agent: String,
+
+        /// Maximum results
+        #[arg(short, long, default_value = "5")]
+        limit: usize,
+
+        /// Filter by category
+        #[arg(short = 'g', long)]
+        category: Option<String>,
+
+        /// Output format (human, json, compact)
+        #[arg(short, long, default_value = "human")]
+        format: String,
+
+        /// Include raw operational activity memories
+        #[arg(long)]
+        include_raw: bool,
+    },
+
+    /// Consolidate memories (find patterns and relationships)
+    Consolidate {
+        /// Agent/namespace name
+        #[arg(short, long, default_value = "default")]
+        agent: String,
+    },
+
+    /// Distill raw hook events into meaningful session summaries
+    Distill {
+        /// Agent/namespace name
+        #[arg(short, long, default_value = "claude-code")]
+        agent: String,
+
+        /// Max events per session to send to LLM
+        #[arg(long, default_value = "100")]
+        batch_size: usize,
+
+        /// Show what would be distilled without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Inspect or rebuild session digests
+    Digest {
+        /// Agent/namespace name
+        #[arg(short, long, default_value = "default")]
+        agent: String,
+
+        /// Session key to inspect
+        #[arg(long)]
+        session_key: String,
+
+        /// Rebuild digests before showing them
+        #[arg(long)]
+        force: bool,
+
+        /// Output format (human, json)
+        #[arg(short, long, default_value = "human")]
+        format: String,
+    },
+
+    /// Manually run a dream/reflection cycle
+    Dream {
+        /// Agent/namespace name
+        #[arg(short, long, default_value = "default")]
+        agent: String,
+
+        /// Optional session key to scope the dream cycle
+        #[arg(long)]
+        session_key: Option<String>,
+
+        /// Output format (human, json)
+        #[arg(short, long, default_value = "human")]
+        format: String,
+    },
+
+    /// Build and inspect a working representation for a query
+    Represent {
+        /// Agent/namespace name
+        #[arg(short, long, default_value = "default")]
+        agent: String,
+
+        /// Query text to guide semantic search
+        #[arg(short, long)]
+        query: Option<String>,
+
+        /// Perspective observer
+        #[arg(long)]
+        observer: Option<String>,
+
+        /// Perspective subject
+        #[arg(long)]
+        subject: Option<String>,
+
+        /// Session key to scope the perspective
+        #[arg(long)]
+        session_key: Option<String>,
+
+        /// Maximum items across all buckets
+        #[arg(short = 'm', long, default_value = "24")]
+        max_items: usize,
+
+        /// Include raw memories in the recent bucket
+        #[arg(long)]
+        include_raw: bool,
+
+        /// Show ranking introspection (excluded candidates, inclusion reasons, reflections)
+        #[arg(long)]
+        introspect: bool,
+    },
+
+    /// Inspect evidence lineage for a memory
+    Lineage {
+        /// Memory ID whose lineage should be shown
+        memory_id: i64,
+    },
+
+    /// Session lifecycle commands used by hook integrations
+    Session {
+        #[command(subcommand)]
+        command: SessionCommands,
     },
 }
 
@@ -182,6 +374,43 @@ enum LlmCommands {
         /// Override model (e.g., gpt-4o-mini, claude-sonnet-4-20250514)
         #[arg(long)]
         model: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SessionCommands {
+    /// Start or resume session-scoped runtime state
+    Start {
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        session_key: Option<String>,
+        #[arg(long)]
+        cwd: Option<String>,
+        #[arg(long, default_value = "session")]
+        mode: String,
+    },
+    /// Record a non-terminal lifecycle event like compact/checkpoint
+    Event {
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        session_key: Option<String>,
+        #[arg(long)]
+        cwd: Option<String>,
+        #[arg(long)]
+        kind: String,
+    },
+    /// Finalize a session and run bounded shutdown work
+    End {
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        session_key: Option<String>,
+        #[arg(long)]
+        cwd: Option<String>,
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 
@@ -237,8 +466,9 @@ async fn main() -> anyhow::Result<()> {
             query,
             agent,
             limit,
+            include_raw,
         } => {
-            commands::search::execute(query, agent, limit).await?;
+            commands::search::execute(query, agent, limit, include_raw).await?;
         }
         Commands::Stats { agent } => {
             commands::stats::execute(agent).await?;
@@ -256,8 +486,10 @@ async fn main() -> anyhow::Result<()> {
             agent,
             event,
             format,
+            session_key,
+            cwd,
         } => {
-            commands::ingest_hook_event::execute(agent, event, format).await?;
+            commands::ingest_hook_event::execute(agent, event, format, session_key, cwd).await?;
         }
         Commands::Config { command } => match command {
             Some(ConfigCommands::Show) => {
@@ -287,6 +519,112 @@ async fn main() -> anyhow::Result<()> {
         Commands::Eval { provider, model } => {
             commands::eval::execute(provider, model).await?;
         }
+        Commands::List {
+            agent,
+            category,
+            since,
+            until,
+            limit,
+            offset,
+            include_raw,
+        } => {
+            commands::list::execute(agent, category, since, until, limit, offset, include_raw)
+                .await?;
+        }
+        Commands::Clean {
+            agent,
+            older_than,
+            limit,
+            apply,
+        } => {
+            commands::clean::execute(agent, older_than, limit, apply).await?;
+        }
+        Commands::Recall {
+            query,
+            agent,
+            limit,
+            category,
+            format,
+            include_raw,
+        } => {
+            commands::recall::execute(query, agent, limit, category, format, include_raw).await?;
+        }
+        Commands::Consolidate { agent } => {
+            commands::consolidate::execute(agent).await?;
+        }
+        Commands::Distill {
+            agent,
+            batch_size,
+            dry_run,
+        } => {
+            commands::distill::execute(agent, batch_size, dry_run).await?;
+        }
+        Commands::Digest {
+            agent,
+            session_key,
+            force,
+            format,
+        } => {
+            commands::digest::execute(agent, session_key, force, format).await?;
+        }
+        Commands::Dream {
+            agent,
+            session_key,
+            format,
+        } => {
+            commands::dream::execute(agent, session_key, format).await?;
+        }
+        Commands::Represent {
+            agent,
+            query,
+            observer,
+            subject,
+            session_key,
+            max_items,
+            include_raw,
+            introspect,
+        } => {
+            commands::represent::execute(
+                agent,
+                query,
+                observer,
+                subject,
+                session_key,
+                max_items,
+                include_raw,
+                introspect,
+            )
+            .await?;
+        }
+        Commands::Lineage { memory_id } => {
+            commands::lineage::execute(memory_id).await?;
+        }
+        Commands::Session { command } => match command {
+            SessionCommands::Start {
+                agent,
+                session_key,
+                cwd,
+                mode,
+            } => {
+                commands::session::execute_start(agent, session_key, cwd, mode).await?;
+            }
+            SessionCommands::Event {
+                agent,
+                session_key,
+                cwd,
+                kind,
+            } => {
+                commands::session::execute_event(agent, session_key, cwd, kind).await?;
+            }
+            SessionCommands::End {
+                agent,
+                session_key,
+                cwd,
+                reason,
+            } => {
+                commands::session::execute_end(agent, session_key, cwd, reason).await?;
+            }
+        },
     }
 
     Ok(())

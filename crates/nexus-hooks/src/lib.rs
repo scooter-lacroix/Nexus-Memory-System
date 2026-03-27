@@ -3,20 +3,28 @@
 //! This crate provides a four-layer extraction system for capturing
 //! agent session context with 95-100% reliability:
 //!
-//! 1. **Native Hooks** (100%): Claude Skills, Gemini Functions, Qwen Hooks, pi-mono, oh-my-pi
+//! 1. **Native Hooks** (98-100%): Claude Skills, pi-mono, oh-my-pi, pi-skills
 //! 2. **Session Monitor** (95%): Process monitoring via sysinfo
 //! 3. **Inactivity Detector** (90%): Configurable timeout detection
 //! 4. **Persistent Buffer** (99%): Crash recovery from buffer
 //!
 //! # Supported Agents
 //!
-//! - **Claude Code**: Skills-based (SKILL.md format)
-//! - **Gemini**: Function Calling
-//! - **Qwen**: Hooks SubAgent
-//! - **pi-mono**: Skills-based (TypeScript/Bun)
-//! - **oh-my-pi**: Skills-based (TypeScript/Bun + Rust N-API)
-//! - **pi-skills**: Cross-compatible skills
-//! - **CLI Agents**: Amp, Droid, OpenCode, Codex (atexit/signals)
+//! ## Native Lifecycle (dedicated hook implementation + skill installation)
+//!
+//! - **Claude Code**: Skills-based (SKILL.md format) — session start, end, checkpoint, error, compact
+//! - **pi-mono**: Skills-based (TypeScript/Bun) — session end, checkpoint, compact
+//! - **oh-my-pi**: Skills-based (TypeScript/Bun + Rust N-API) — session end, checkpoint, error, compact
+//! - **pi-skills**: Cross-compatible skills — session end, checkpoint, compact
+//!
+//! ## Monitor Only (process detection, no native hooks)
+//!
+//! - **Gemini**: Process monitoring only (function calling not yet wired)
+//! - **Qwen**: Process monitoring only (hooks subagent not yet wired)
+//!
+//! ## Wrapper Lifecycle (generic CLI wrapper, atexit + process detection)
+//!
+//! - **CLI Agents**: Amp, Droid, OpenCode, Codex, Hermes (shared CLIHook implementation)
 //!
 //! # Example
 //!
@@ -61,10 +69,13 @@ pub mod signal;
 pub mod types;
 
 // Re-export main types
-pub use base::{AgentHook, HookResult};
+pub use base::{AgentHook, HookResult, LifecycleCapabilities};
 pub use buffer::PersistentBuffer;
 pub use candidate::{derive_candidates, MemoryCandidate};
-pub use claude_payload::NormalizedHookEvent;
+pub use claude_payload::{
+    flatten_text_value, normalize_claude_payload, normalize_generic_payload, normalize_payload,
+    NormalizedHookEvent,
+};
 pub use detector::InactivityDetector;
 pub use enrichment::{EnrichedMemory, EnrichmentBatchResult, EnrichmentService};
 pub use error::{HookError, Result};
@@ -74,7 +85,7 @@ pub use monitor::{ProcessMonitor, SessionMonitor};
 pub use persistence::{persist_enriched_memories, PersistResult};
 pub use retry_buffer::{RetryArtifact, RetryBuffer};
 pub use session::SessionContext;
-pub use types::*;
+pub use types::{AgentType, DetectionLayer, ExtractionSource, SessionActivity, SupportTier};
 
 // Re-export agent hooks
 pub use agents::{

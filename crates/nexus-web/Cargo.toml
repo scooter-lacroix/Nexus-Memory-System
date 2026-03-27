@@ -16,6 +16,7 @@ nexus-orchestrator = { workspace = true }
 nexus-vectors = { workspace = true }
 nexus-agent = { workspace = true }
 nexus-llm = { workspace = true }
+nexus-embeddings = { workspace = true }
 
 # Web framework
 axum = { workspace = true, features = ["ws"] }

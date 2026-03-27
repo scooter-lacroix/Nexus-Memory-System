@@ -16,11 +16,11 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 
-use crate::base::{AgentHook, BaseHook, SessionEndCallback};
+use crate::base::{AgentHook, BaseHook, LifecycleCapabilities, SessionEndCallback};
 use crate::error::{HookError, Result};
 use crate::monitor::ProcessMonitor;
 use crate::session::{FileAction, FileInfo, SessionContext};
-use crate::types::{AgentType, SessionActivity, SkillMetadata};
+use crate::types::{AgentType, SessionActivity, SkillMetadata, SupportTier};
 
 /// Pi-Skills cross-compatible hook
 ///
@@ -89,13 +89,25 @@ impl PiSkillsHook {
 
     /// Create a new Pi-Skills hook
     pub fn new() -> Self {
+        Self::new_with_install(true)
+    }
+
+    /// Create a new Pi-Skills hook without mutating user state.
+    pub fn new_readonly() -> Self {
+        Self::new_with_install(false)
+    }
+
+    fn new_with_install(auto_install: bool) -> Self {
         let skills_dir = Self::find_skills_dir();
+        let skill_installed = skills_dir
+            .as_ref()
+            .is_some_and(|dir| Self::skill_file_path(dir).exists());
 
         let mut hook = Self {
             base: BaseHook::new(Self::AGENT_TYPE),
             skills_dir: skills_dir.clone(),
             process_monitor: ProcessMonitor::new(),
-            skill_installed: false,
+            skill_installed,
             detected_skills: Vec::new(),
         };
 
@@ -104,14 +116,19 @@ impl PiSkillsHook {
             hook.discover_skills(dir);
         }
 
-        // Try to install nexus skill
-        if let Some(ref dir) = skills_dir {
-            if let Err(e) = hook.install_skill(dir) {
-                tracing::warn!("Failed to install pi-skills skill: {}", e);
+        if auto_install && !hook.skill_installed {
+            if let Some(ref dir) = skills_dir {
+                if let Err(e) = hook.install_skill(dir) {
+                    tracing::warn!("Failed to install pi-skills skill: {}", e);
+                }
             }
         }
 
         hook
+    }
+
+    fn skill_file_path(skills_dir: &std::path::Path) -> PathBuf {
+        skills_dir.join("nexus-memory-extraction").join("SKILL.md")
     }
 
     /// Find skills directory
@@ -278,6 +295,13 @@ impl AgentHook for PiSkillsHook {
         Ok(())
     }
 
+    async fn install_compact_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
+        self.base.add_callback(callback);
+        self.base.installed = true;
+
+        Ok(())
+    }
+
     async fn detect_session_activity(&self) -> Result<SessionActivity> {
         let mut monitor = self.process_monitor.clone();
         let processes = monitor.find_agent_processes(AgentType::PiSkills);
@@ -386,11 +410,26 @@ impl AgentHook for PiSkillsHook {
             0.95
         }
     }
+
+    fn lifecycle_capabilities(&self) -> LifecycleCapabilities {
+        LifecycleCapabilities {
+            session_start: false,
+            session_end: true,
+            checkpoint: true,
+            error_hook: false,
+            compact: true,
+        }
+    }
+
+    fn support_tier(&self) -> SupportTier {
+        SupportTier::NativeLifecycle
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn test_pi_skills_hook_new() {
@@ -422,5 +461,31 @@ mod tests {
 
         // Should not have unknown skill
         assert!(!hook.has_skill("nonexistent-skill"));
+    }
+
+    #[test]
+    fn test_pi_skills_hook_lifecycle_capabilities() {
+        let hook = PiSkillsHook::new();
+        let caps = hook.lifecycle_capabilities();
+
+        assert!(
+            !caps.session_start,
+            "pi-skills does not support session_start"
+        );
+        assert!(caps.session_end, "pi-skills should support session_end");
+        assert!(caps.checkpoint, "pi-skills should support checkpoint");
+        assert!(!caps.error_hook, "pi-skills does not support error_hook");
+        assert!(caps.compact, "pi-skills should support compact via skills");
+    }
+
+    #[tokio::test]
+    async fn test_pi_skills_hook_install_compact_hook() {
+        let mut hook = PiSkillsHook::new();
+        let cb: SessionEndCallback = Arc::new(|_ctx| ());
+        let result = hook.install_compact_hook(cb).await;
+        assert!(
+            result.is_ok(),
+            "pi-skills should accept compact hook via skills"
+        );
     }
 }

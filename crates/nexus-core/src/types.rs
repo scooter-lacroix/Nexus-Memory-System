@@ -214,6 +214,287 @@ impl MemoryLaneType {
 // Type alias for backward compatibility
 pub type Category = MemoryCategory;
 
+/// Cognitive layer for a memory inside the Nexus cognition system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CognitiveLevel {
+    Raw,
+    Explicit,
+    Derived,
+    SummaryShort,
+    SummaryLong,
+    Contradiction,
+}
+
+impl CognitiveLevel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Raw => "raw",
+            Self::Explicit => "explicit",
+            Self::Derived => "derived",
+            Self::SummaryShort => "summary_short",
+            Self::SummaryLong => "summary_long",
+            Self::Contradiction => "contradiction",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "raw" => Some(Self::Raw),
+            "explicit" => Some(Self::Explicit),
+            "derived" => Some(Self::Derived),
+            "summary_short" => Some(Self::SummaryShort),
+            "summary_long" => Some(Self::SummaryLong),
+            "contradiction" => Some(Self::Contradiction),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for CognitiveLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Perspective information for observer-scoped memory retrieval and formation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PerspectiveKey {
+    pub observer: String,
+    pub subject: String,
+    pub session_key: Option<String>,
+}
+
+impl PerspectiveKey {
+    pub fn new(
+        observer: impl Into<String>,
+        subject: impl Into<String>,
+        session_key: Option<String>,
+    ) -> Self {
+        Self {
+            observer: observer.into(),
+            subject: subject.into(),
+            session_key,
+        }
+    }
+}
+
+/// Source stage requesting a perspective default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PerspectiveSource {
+    HookIngest,
+    SessionLifecycle,
+    Digest,
+    Reflection,
+    Query,
+}
+
+pub fn infer_perspective(
+    source: PerspectiveSource,
+    observer: impl Into<String>,
+    subject_hint: Option<String>,
+    session_key: Option<String>,
+) -> PerspectiveKey {
+    let observer = observer.into();
+    let default_subject = match source {
+        PerspectiveSource::HookIngest
+        | PerspectiveSource::SessionLifecycle
+        | PerspectiveSource::Digest
+        | PerspectiveSource::Reflection
+        | PerspectiveSource::Query => observer.clone(),
+    };
+
+    PerspectiveKey {
+        observer,
+        subject: subject_hint
+            .filter(|subject| !subject.trim().is_empty())
+            .unwrap_or(default_subject),
+        session_key: session_key.filter(|key| !key.trim().is_empty()),
+    }
+}
+
+/// Canonical cognitive metadata envelope stored inside `memory.metadata.cognitive`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CognitiveMetadata {
+    pub level: CognitiveLevel,
+    pub observer: String,
+    pub subject: String,
+    pub session_key: Option<String>,
+    #[serde(default)]
+    pub source_memory_ids: Vec<i64>,
+    pub confidence: Option<f32>,
+    #[serde(default)]
+    pub times_reinforced: i64,
+    #[serde(default)]
+    pub times_contradicted: i64,
+    pub derived_at: Option<DateTime<Utc>>,
+    #[serde(default = "default_cognitive_generated_by")]
+    pub generated_by: String,
+    /// Timestamp of the most recent belief revision (contradiction-driven confidence update).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_belief_revision: Option<DateTime<Utc>>,
+    /// Current resolution status: "unresolved", "revised", or "superseded".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution_status: Option<String>,
+}
+
+fn default_cognitive_generated_by() -> String {
+    "legacy".to_string()
+}
+
+impl CognitiveMetadata {
+    pub fn new(
+        level: CognitiveLevel,
+        observer: impl Into<String>,
+        subject: impl Into<String>,
+        session_key: Option<String>,
+        generated_by: impl Into<String>,
+    ) -> Self {
+        Self {
+            level,
+            observer: observer.into(),
+            subject: subject.into(),
+            session_key,
+            source_memory_ids: Vec::new(),
+            confidence: None,
+            times_reinforced: 0,
+            times_contradicted: 0,
+            derived_at: Some(Utc::now()),
+            generated_by: generated_by.into(),
+            last_belief_revision: None,
+            resolution_status: None,
+        }
+    }
+
+    pub fn from_metadata(metadata: &serde_json::Value) -> Option<Self> {
+        metadata
+            .get("cognitive")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+    }
+
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+    }
+
+    pub fn merge_into(&self, metadata: &serde_json::Value) -> serde_json::Value {
+        let mut merged = match metadata {
+            serde_json::Value::Object(map) => serde_json::Value::Object(map.clone()),
+            _ => serde_json::json!({}),
+        };
+
+        if let serde_json::Value::Object(root) = &mut merged {
+            root.insert("cognitive".to_string(), self.to_value());
+        }
+
+        merged
+    }
+
+    pub fn perspective(&self) -> PerspectiveKey {
+        PerspectiveKey {
+            observer: self.observer.clone(),
+            subject: self.subject.clone(),
+            session_key: self.session_key.clone(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-session identity resolution
+// ---------------------------------------------------------------------------
+
+/// Map any agent type alias to its canonical form.
+///
+/// This is a pure function (no I/O) used across the system so that "claude"
+/// and "claude-code" resolve to the same namespace and session key.
+pub fn canonicalize_agent_type(agent_type: &str) -> String {
+    match agent_type.to_lowercase().as_str() {
+        "claude" | "claude-code" | "claudecode" => "claude-code".to_string(),
+        "pi" | "pimono" | "pi-mono" => "pi-mono".to_string(),
+        "oh-my-pi" | "ohmypi" | "omp" => "oh-my-pi".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Normalize a working-directory path for project identity matching.
+///
+/// Pure string operation — strips trailing slashes and collapses redundant
+/// path separators.  No filesystem access so it is safe to call anywhere.
+pub fn normalize_project_path(cwd: &str) -> String {
+    let trimmed = cwd.trim_end_matches('/');
+    let mut result = String::with_capacity(trimmed.len());
+    let mut last_was_sep = false;
+    for ch in trimmed.chars() {
+        if ch == '/' {
+            if !last_was_sep {
+                result.push(ch);
+            }
+            last_was_sep = true;
+        } else {
+            result.push(ch);
+            last_was_sep = false;
+        }
+    }
+    result
+}
+
+pub fn cognitive_level_from_metadata(metadata: &serde_json::Value) -> CognitiveLevel {
+    CognitiveMetadata::from_metadata(metadata)
+        .map(|cognitive| cognitive.level)
+        .unwrap_or(CognitiveLevel::Raw)
+}
+
+pub fn perspective_from_metadata(metadata: &serde_json::Value) -> Option<PerspectiveKey> {
+    CognitiveMetadata::from_metadata(metadata).map(|cognitive| cognitive.perspective())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkingRepresentationRequest {
+    pub namespace_id: i64,
+    pub perspective: Option<PerspectiveKey>,
+    pub query: Option<String>,
+    pub max_items: usize,
+    pub include_raw: bool,
+    pub include_recent: bool,
+    pub include_semantic: bool,
+    pub include_derived: bool,
+    pub include_digests: bool,
+    pub include_contradictions: bool,
+    /// Optional namespace IDs to include cross-namespace digests from.
+    /// When non-empty, the representation builder fetches a bounded number of
+    /// digests from these related namespaces (lower priority than primary).
+    #[serde(default)]
+    pub cross_namespace_ids: Vec<i64>,
+}
+
+impl Default for WorkingRepresentationRequest {
+    fn default() -> Self {
+        Self {
+            namespace_id: 0,
+            perspective: None,
+            query: None,
+            max_items: 24,
+            include_raw: false,
+            include_recent: true,
+            include_semantic: true,
+            include_derived: true,
+            include_digests: true,
+            include_contradictions: true,
+            cross_namespace_ids: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkingRepresentation {
+    pub digests: Vec<Memory>,
+    pub recent: Vec<Memory>,
+    pub semantic: Vec<Memory>,
+    pub derived: Vec<Memory>,
+    pub contradictions: Vec<Memory>,
+}
+
 /// Relation types between memories
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -490,5 +771,212 @@ mod tests {
         // Ensure Category alias works for backward compatibility
         let cat: Category = Category::Facts;
         assert_eq!(cat.to_string(), "facts");
+    }
+
+    #[test]
+    fn test_cognitive_level_parse_and_display() {
+        assert_eq!(CognitiveLevel::parse("raw"), Some(CognitiveLevel::Raw));
+        assert_eq!(
+            CognitiveLevel::parse("summary_long"),
+            Some(CognitiveLevel::SummaryLong)
+        );
+        assert_eq!(CognitiveLevel::Contradiction.to_string(), "contradiction");
+        assert_eq!(CognitiveLevel::parse("unknown"), None);
+    }
+
+    #[test]
+    fn test_cognitive_level_defaults_to_raw_when_missing() {
+        assert_eq!(
+            cognitive_level_from_metadata(&serde_json::json!({"source": {"agent": "claude"}})),
+            CognitiveLevel::Raw
+        );
+    }
+
+    #[test]
+    fn test_cognitive_metadata_merge_and_parse() {
+        let cognitive = CognitiveMetadata {
+            level: CognitiveLevel::Derived,
+            observer: "agent-a".to_string(),
+            subject: "project-x".to_string(),
+            session_key: Some("sess-1".to_string()),
+            source_memory_ids: vec![1, 2, 3],
+            confidence: Some(0.92),
+            times_reinforced: 4,
+            times_contradicted: 1,
+            derived_at: Some(Utc::now()),
+            generated_by: "reflect_service".to_string(),
+            last_belief_revision: None,
+            resolution_status: None,
+        };
+        let merged = cognitive.merge_into(&serde_json::json!({
+            "source": { "agent": "agent-a" }
+        }));
+
+        let parsed = CognitiveMetadata::from_metadata(&merged).expect("cognitive metadata");
+        assert_eq!(parsed.level, CognitiveLevel::Derived);
+        assert_eq!(parsed.observer, "agent-a");
+        assert_eq!(parsed.subject, "project-x");
+        assert_eq!(parsed.source_memory_ids, vec![1, 2, 3]);
+        assert!(merged.get("source").is_some());
+    }
+
+    #[test]
+    fn test_perspective_from_metadata() {
+        let metadata = serde_json::json!({
+            "cognitive": {
+                "level": "explicit",
+                "observer": "agent-a",
+                "subject": "agent-b",
+                "session_key": "sess-2",
+                "source_memory_ids": [],
+                "confidence": 0.7,
+                "times_reinforced": 0,
+                "times_contradicted": 0,
+                "derived_at": null,
+                "generated_by": "derive_service"
+            }
+        });
+
+        let perspective = perspective_from_metadata(&metadata).expect("perspective");
+        assert_eq!(perspective.observer, "agent-a");
+        assert_eq!(perspective.subject, "agent-b");
+        assert_eq!(perspective.session_key.as_deref(), Some("sess-2"));
+    }
+
+    #[test]
+    fn test_cognitive_metadata_from_metadata_defaults_legacy_generated_by() {
+        let metadata = serde_json::json!({
+            "cognitive": {
+                "level": "explicit",
+                "observer": "agent-a",
+                "subject": "agent-b",
+                "session_key": "sess-2",
+                "source_memory_ids": [],
+                "confidence": 0.7,
+                "times_reinforced": 0,
+                "times_contradicted": 0,
+                "derived_at": null
+            }
+        });
+
+        let cognitive = CognitiveMetadata::from_metadata(&metadata).expect("cognitive metadata");
+        assert_eq!(cognitive.level, CognitiveLevel::Explicit);
+        assert_eq!(cognitive.generated_by, "legacy");
+    }
+
+    #[test]
+    fn test_working_representation_request_default() {
+        let request = WorkingRepresentationRequest::default();
+        assert_eq!(request.max_items, 24);
+        assert!(!request.include_raw);
+        assert!(request.include_recent);
+        assert!(request.include_semantic);
+        assert!(request.include_derived);
+        assert!(request.include_digests);
+        assert!(request.include_contradictions);
+    }
+
+    #[test]
+    fn test_infer_perspective_defaults_subject_to_observer() {
+        let perspective = infer_perspective(
+            PerspectiveSource::HookIngest,
+            "agent-a",
+            None,
+            Some("sess-1".to_string()),
+        );
+        assert_eq!(perspective.observer, "agent-a");
+        assert_eq!(perspective.subject, "agent-a");
+        assert_eq!(perspective.session_key.as_deref(), Some("sess-1"));
+    }
+
+    #[test]
+    fn test_infer_perspective_uses_subject_hint_when_present() {
+        let perspective = infer_perspective(
+            PerspectiveSource::Reflection,
+            "agent-a",
+            Some("project-x".to_string()),
+            Some("sess-2".to_string()),
+        );
+        assert_eq!(perspective.observer, "agent-a");
+        assert_eq!(perspective.subject, "project-x");
+        assert_eq!(perspective.session_key.as_deref(), Some("sess-2"));
+    }
+
+    // -- canonicalize_agent_type --------------------------------------------------
+
+    #[test]
+    fn test_canonicalize_agent_type_claude_aliases() {
+        assert_eq!(canonicalize_agent_type("claude"), "claude-code");
+        assert_eq!(canonicalize_agent_type("claude-code"), "claude-code");
+        assert_eq!(canonicalize_agent_type("CLAUDE"), "claude-code");
+        assert_eq!(canonicalize_agent_type("ClaudeCode"), "claude-code");
+        assert_eq!(canonicalize_agent_type("claudecode"), "claude-code");
+    }
+
+    #[test]
+    fn test_canonicalize_agent_type_pi_aliases() {
+        assert_eq!(canonicalize_agent_type("pi"), "pi-mono");
+        assert_eq!(canonicalize_agent_type("pimono"), "pi-mono");
+        assert_eq!(canonicalize_agent_type("pi-mono"), "pi-mono");
+        assert_eq!(canonicalize_agent_type("PI"), "pi-mono");
+    }
+
+    #[test]
+    fn test_canonicalize_agent_type_oh_my_pi_aliases() {
+        assert_eq!(canonicalize_agent_type("oh-my-pi"), "oh-my-pi");
+        assert_eq!(canonicalize_agent_type("ohmypi"), "oh-my-pi");
+        assert_eq!(canonicalize_agent_type("omp"), "oh-my-pi");
+        assert_eq!(canonicalize_agent_type("OH-MY-PI"), "oh-my-pi");
+    }
+
+    #[test]
+    fn test_canonicalize_agent_type_passthrough() {
+        assert_eq!(canonicalize_agent_type("gemini"), "gemini");
+        assert_eq!(canonicalize_agent_type("codex"), "codex");
+        assert_eq!(canonicalize_agent_type("amp"), "amp");
+        assert_eq!(canonicalize_agent_type("unknown-agent"), "unknown-agent");
+    }
+
+    // -- normalize_project_path --------------------------------------------------
+
+    #[test]
+    fn test_normalize_project_path_trailing_slashes() {
+        assert_eq!(
+            normalize_project_path("/home/user/project/"),
+            "/home/user/project"
+        );
+        assert_eq!(
+            normalize_project_path("/home/user/project//"),
+            "/home/user/project"
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_path_redundant_separators() {
+        assert_eq!(
+            normalize_project_path("/home//user///project"),
+            "/home/user/project"
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_path_already_clean() {
+        assert_eq!(
+            normalize_project_path("/home/user/project"),
+            "/home/user/project"
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_path_root() {
+        assert_eq!(normalize_project_path("/"), "");
+    }
+
+    // -- WorkingRepresentationRequest cross-namespace ----------------------------
+
+    #[test]
+    fn test_working_representation_request_cross_namespace_default_empty() {
+        let request = WorkingRepresentationRequest::default();
+        assert!(request.cross_namespace_ids.is_empty());
     }
 }
