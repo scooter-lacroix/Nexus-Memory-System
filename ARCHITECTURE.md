@@ -124,9 +124,10 @@ This crate provides LePhase integration glue used by the wider workspace.
 ### Query flow
 
 1. A caller invokes `search`, stats endpoints, MCP tools, or web routes.
-2. The surface uses `nexus-storage` repositories and related retrieval helpers.
-3. `nexus-vectors` and `nexus-embeddings` may participate in semantic lookup flows.
-4. Results are returned through the active interface.
+2. The surface builds a bounded `WorkingRepresentation` from digests, recent explicit memories, semantic matches, derived insights, and contradictions.
+3. `nexus-vectors` and `nexus-embeddings` participate in vector-first semantic lookup with bounded text fallback.
+4. `nexus-lephase` compresses larger contexts and `nexus-agent` produces lineage-aware answers or introspection output.
+5. Results are returned through the active interface.
 
 ### Hook flow
 
@@ -134,6 +135,30 @@ This crate provides LePhase integration glue used by the wider workspace.
 2. Supported agent runtimes trigger those hooks during their lifecycle.
 3. Hook code extracts relevant session context.
 4. Nexus persists the extracted memory through the shared storage layer.
+
+### Agent Support Tiers
+
+Nexus supports multiple agent integrations with varying depths of lifecycle coverage. Each agent is classified into one of three support tiers:
+
+| Agent | Tier | Lifecycle Events | Detection |
+|-------|------|-----------------|-----------|
+| Claude Code | native-lifecycle | start, end, checkpoint, error, compact | Skill file + process |
+| pi-mono | native-lifecycle | end, checkpoint, compact | Skill file + process |
+| oh-my-pi | native-lifecycle | end, checkpoint, error, compact | Skill file + process |
+| pi-skills | native-lifecycle | end, checkpoint, compact | Skill file + process |
+| Gemini | monitor-only | — | Process monitoring |
+| Qwen | monitor-only | — | Process monitoring |
+| Codex | wrapper-lifecycle | — | CLI wrapper (atexit) |
+| Amp | wrapper-lifecycle | — | CLI wrapper (atexit) |
+| OpenCode | wrapper-lifecycle | — | CLI wrapper (atexit) |
+| Droid | wrapper-lifecycle | — | CLI wrapper (atexit) |
+| Hermes | wrapper-lifecycle | — | CLI wrapper (atexit) |
+
+**Tier definitions:**
+
+- **native-lifecycle**: Dedicated hook implementation with native skill/hook file installation. Multiple lifecycle events are wired (session start/end, checkpoint, error, compact).
+- **wrapper-lifecycle**: Agent uses a shared generic CLI wrapper for process detection and atexit fallback. No dedicated hook implementation exists.
+- **monitor-only**: Process detection only. No native hooks, no session lifecycle events. Memory capture relies on process monitoring and inactivity detection.
 
 ## Hybrid Category System
 
@@ -175,30 +200,36 @@ Automatic ingestion path for supported agent runtimes.
 - Higher-level surfaces share the same backing store instead of maintaining separate memory silos.
 - The externally visible model is one Nexus system, even if the internal crate boundaries change over time.
 
-## Always-On Memory Agent
+## Always-On Cognition Runtime
 
-Nexus includes an optional always-on memory agent that provides LLM-driven memory processing.
+Nexus includes an optional always-on cognition runtime that provides LLM-driven memory processing and background subconscious behavior.
 
-### Agent Crates
+### Cognition Crates
 
 - **`nexus-llm`**: Multi-provider LLM abstraction supporting OpenAI, Anthropic, Gemini, OpenRouter, Groq, Z.ai, Minimax, and Mistral.
-- **`nexus-agent`**: Always-on memory agent with three core services:
-  - **IngestService**: Accepts raw text → LLM extracts summary, entities, topics, importance → stores enriched memory
-  - **ConsolidateService**: Runs on timer → finds connections between memories → stores insights as new memories with relations
-  - **QueryService**: Accepts questions → reads memories + insights → LLM synthesizes answer with citations
+- **`nexus-agent`**: Cognition runtime with native services for:
+  - **IngestService**: Stores raw activity and lifecycle events with canonical cognitive metadata
+  - **DeriveService**: Turns raw or low-signal activity into explicit observations with evidence lineage
+  - **DigestService**: Maintains short and long session digests with bounded rollover
+  - **ReflectService**: Runs bounded dream cycles for reinforcement, contradiction handling, and induced insights
+  - **RepresentationService**: Assembles a working set from digests, semantic matches, recent explicit memories, derived insights, and contradictions
+  - **QueryService**: Produces lineage-aware answers and introspection from the working representation
 
-### Agent Data Flow
+### Cognition Data Flow
 
-The agent stores all data using existing tables:
-- Enriched memories are stored in `memories` with extraction results in the `metadata` JSON field
-- Consolidation insights are stored as `memories` with `generated_by: "consolidate_agent"` in metadata
-- Connections are stored in `memory_relations`
+The runtime stores all data using the shared storage layer:
+- Raw activity, explicit observations, derived insights, contradictions, and digests are stored in `memories` with structured `cognitive` metadata
+- Evidence links for derived outputs are stored in `memory_evidence`
+- Session digest pointers and coverage windows are stored in `session_digests`
+- Bounded background work is stored in `memory_jobs`
+- Relations remain available in `memory_relations` where graph-style links are useful
 - Processed inbox files are tracked in `processed_files`
 
-### Agent Endpoints
+### Cognition Endpoints
 
-When the agent is enabled (`NEXUS_AGENT_ENABLED=true` or `nexus serve --agent`):
-- `POST /api/agent/ingest` — Ingest text with LLM enrichment
-- `POST /api/agent/query` — Query memory with LLM synthesis
-- `POST /api/agent/consolidate` — Trigger manual consolidation
-- `GET /api/agent/status` — Agent health and statistics
+When the cognition runtime is enabled (`NEXUS_AGENT_ENABLED=true` or `nexus serve --agent`):
+- `POST /api/agent/ingest` — Ingest text or hook-derived content into the cognition pipeline
+- `POST /api/agent/query` — Query memory with representation-first recall and answer synthesis
+- `POST /api/agent/consolidate` — Trigger a manual dream/reflection pass
+- `GET /api/agent/status` — Runtime health and statistics
+- `GET /api/cognition/dashboard?namespace=<name>` — Operator view of digests, recall mix, dream throughput, and adaptive state

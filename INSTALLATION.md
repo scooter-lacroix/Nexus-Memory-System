@@ -1,6 +1,6 @@
 # Installation Guide
 
-Nexus Memory System is installed from this Rust workspace.
+Nexus Memory System installs from this Rust workspace as a local CLI, wrapper, and hook-enabled cognition runtime for supported AI coding agents.
 
 ## Requirements
 
@@ -18,10 +18,10 @@ cd Nexus-Memory-System
 cargo build --release -p nexus-memory
 ```
 
-### 2. Install the shared launcher
+### 2. Install or upgrade the shared launcher
 
 ```bash
-./scripts/install.sh
+./scripts/install.sh --binary ./target/release/nexus
 ```
 
 ### 3. Initialize the database
@@ -39,7 +39,7 @@ nexus stats
 
 ## Installer Behavior
 
-The installer writes a user-level setup by default:
+The installer writes a user-level setup by default and refreshes it on repeat runs:
 
 - `~/.local/bin/nexus`
 - `~/.config/nexus-memory-system/nexus.env`
@@ -47,11 +47,12 @@ The installer writes a user-level setup by default:
 
 It also creates helper wrappers such as `nexus-with` and tool-specific `*-nexus` launchers when matching tools are present in `PATH`.
 Those wrappers automatically issue best-effort `nexus session start` / `nexus session end` calls around the wrapped CLI so memory capture and bounded dreaming work without manually running `nexus serve`.
+If `nexus` is already installed, rerunning the installer replaces the installed binary in place so the local command stays up to date.
 
 ## Useful Installer Examples
 
 ```bash
-./scripts/install.sh
+./scripts/install.sh --binary ./target/release/nexus
 ./scripts/install.sh --db-path "$HOME/.nexus/nexus.db"
 ./scripts/install.sh --skip-profile
 ```
@@ -82,6 +83,12 @@ export NEXUS_EMBEDDINGS_ENABLED="true"
 - ensure `~/.local/bin` is on `PATH`
 - restart the shell after installation
 - or run `./target/release/nexus` directly
+
+### The installed `nexus` binary seems out of date
+
+- rebuild with `cargo build --release -p nexus-memory`
+- rerun `./scripts/install.sh --binary ./target/release/nexus`
+- confirm with `nexus --version`
 
 ### The wrong database is being used
 

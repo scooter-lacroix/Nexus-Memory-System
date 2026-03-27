@@ -159,8 +159,8 @@ cargo check --benches -p nexus-memory-agent
 
 - lifecycle breadth is stronger for Claude and wrapper-launched CLI tools than for purely native non-Claude integrations
 - some agents are intentionally monitor-only and should not be presented as native hook installs
-- benchmark scaffolding exists, but representative production tuning and comparative resource reporting still need more work
-- reflection is already useful, but it is not yet the full end-state subconscious described in the long-range implementation bible
+- live-provider token telemetry and very long-horizon on-disk growth studies still benefit from environment-specific follow-up
+- cross-session recall relies on canonical namespace identity, so badly fragmented historical namespace naming should be backfilled first
 
 ## Operator Notes
 

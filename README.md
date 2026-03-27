@@ -1,6 +1,6 @@
 # Nexus Memory System
 
-Nexus Memory System is a Rust memory platform for AI coding agents. It provides a shared SQLite-backed memory store, a CLI for day-to-day operations, native hook installers for supported agent tools, an MCP server, and an Axum-based web surface.
+Nexus Memory System is a Rust-first memory and cognition platform for AI coding agents. It gives tools like Claude Code, Codex, Gemini CLI, Qwen, Amp, OpenCode, Droid, and Hermes a shared SQLite-backed memory runtime with automatic lifecycle capture, semantic recall, bounded dreaming, and practical observability.
 
 ## Brief Description
 
@@ -8,6 +8,8 @@ Nexus gives multiple coding agents one consistent memory layer. It is designed f
 
 - shared memory storage across agent namespaces
 - structured categories such as `general`, `facts`, `preferences`, `context`, `specifications`, and `session`
+- representation-first recall built from explicit observations, session digests, derived insights, and contradictions
+- vector-first semantic search with bounded text fallback
 - agent hook installation and status management
 - search, stats, and migration-oriented operational workflows
 - HTTP, WebSocket, and MCP access patterns on top of the same storage layer
@@ -15,10 +17,14 @@ Nexus gives multiple coding agents one consistent memory layer. It is designed f
 ## Highlights
 
 - Current Rust workspace layout separates core types, storage, vectors, embeddings, orchestration, hooks, web, MCP, and CLI concerns
-- User-level installer that creates a shared `nexus` runtime for local agent tools
+- User-level installer that upgrades the local `nexus` binary in place and refreshes wrappers, hooks, and env files
 - SQLite-based persistence with repository-style access through `nexus-storage`
-- Native hook management for Claude Code, Gemini, Qwen, Codex, OpenCode, Amp, Droid, and Hermes
-- Web dashboard and API routes under the `nexus-web` crate
+- Representation-first cognition with explicit derivation, digest ladders, bounded dreaming, and lineage-aware recall
+- Vector-first semantic retrieval with bounded text fallback when embeddings are enabled
+- Native hook management for Claude Code, pi-mono, oh-my-pi, and pi-skills (native lifecycle)
+- Process monitoring for Gemini and Qwen (monitor-only, no native hooks)
+- CLI wrapper support for Codex, OpenCode, Amp, Droid, and Hermes (wrapper lifecycle)
+- Web dashboard and API routes under the `nexus-web` crate, including cognition observability
 - Optional always-on memory agent with LLM-driven ingest, consolidation, and query (OpenAI, Anthropic, Gemini, and more)
 
 ## Quick Start
@@ -54,6 +60,19 @@ nexus store \
 nexus search --query "release validation" --agent codex --limit 5
 ```
 
+### Build a cognition-aware working set
+
+```bash
+nexus represent --agent claude-code --query "provider rollout timeline" --introspect
+```
+
+### Inspect a session digest or run a dream cycle
+
+```bash
+nexus digest --agent claude-code --session-key <session-key>
+nexus dream --agent claude-code
+```
+
 ### Inspect tool help and schemas
 
 ```bash
@@ -68,9 +87,24 @@ nexus tools schema store_memory
 nexus stats
 ```
 
+### See what the cognition engine is doing
+
+```bash
+nexus recall --agent claude-code --query "provider rollout timeline"
+nexus digest --agent claude-code --session-key <session-key>
+nexus dream --agent claude-code
+```
+
 ## Usage Examples
 
 ### Install hooks for all supported agents
+
+```bash
+nexus hooks install --agent all
+nexus hooks status --verbose
+```
+
+The `hooks status` command shows each agent's support tier (`native-lifecycle`, `wrapper-lifecycle`, or `monitor-only`) alongside its lifecycle capabilities. Agents at `monitor-only` tier rely on process detection and have no native hook installation.
 
 ```bash
 nexus hooks install --agent all
@@ -130,7 +164,7 @@ Agents and Tools
             +-- nexus-agent
 ```
 
-The shared domain model lives in `nexus-core`. Storage and repositories live in `nexus-storage`. Higher-level surfaces such as the CLI, hooks, MCP server, and web dashboard build on that foundation. The optional always-on agent (`nexus-llm` + `nexus-agent`) adds LLM-driven memory enrichment, consolidation, and query synthesis. The product is documented as one system even though the current implementation is organized as multiple crates.
+The shared domain model lives in `nexus-core`. Storage and repositories live in `nexus-storage`. Higher-level surfaces such as the CLI, hooks, MCP server, and web dashboard build on that foundation. The optional cognition runtime (`nexus-llm` + `nexus-agent`) adds derivation, digest ladders, dreaming, representation-first recall, and query synthesis. The product is documented as one system even though the current implementation is organized as multiple crates.
 
 ## Repository Layout
 
@@ -163,6 +197,12 @@ The shared domain model lives in `nexus-core`. Storage and repositories live in 
 - [HOOKS.md](HOOKS.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [docs/index.md](docs/index.md)
+- [docs/guide/cognition-rollout.md](docs/guide/cognition-rollout.md)
+- [docs/guide/cognition-excellence-release-note.md](docs/guide/cognition-excellence-release-note.md)
+
+## Why Nexus
+
+Nexus is built for people who want a serious local memory system for agent workflows without dragging in a heavyweight external stack. The design goal is simple: keep the storage model understandable, keep the runtime bounded, and still make the agent feel like it has a useful subconscious instead of a noisy event log.
 
 ## LLM Provider Evaluation
 
@@ -188,8 +228,9 @@ Recommended validation before opening a pull request:
 
 ```bash
 cargo fmt --all --check
-cargo clippy --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo bench -p nexus-memory-agent --bench cognition
 ```
 
 ## License

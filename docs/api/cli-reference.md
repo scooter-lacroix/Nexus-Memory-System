@@ -8,9 +8,16 @@ The `nexus` binary is published in the `nexus-memory` package and implemented by
 - `serve`
 - `store`
 - `search`
+- `list`
+- `recall`
 - `stats`
 - `hooks`
 - `migrate`
+- `digest`
+- `dream`
+- `represent`
+- `lineage`
+- `session`
 
 ## Examples
 
@@ -31,6 +38,18 @@ nexus store --content "release completed" --agent codex --category session
 
 ```bash
 nexus search --query "release completed" --agent codex --limit 10
+```
+
+### List memories with time filters
+
+```bash
+nexus list --agent claude-code --since 24h --limit 20
+```
+
+### Recall relevant memories for context
+
+```bash
+nexus recall --agent claude-code --query "provider rollout timeline"
 ```
 
 ### Show statistics
@@ -59,6 +78,19 @@ nexus hooks status
 nexus hooks uninstall --agent codex
 ```
 
+### Inspect a digest or run a dream cycle
+
+```bash
+nexus digest --agent claude-code --session-key <session-key>
+nexus dream --agent claude-code
+```
+
+### Inspect a working representation
+
+```bash
+nexus represent --agent claude-code --query "provider rollout timeline" --introspect
+```
+
 ### Inspect tool help and schemas
 
 ```bash
@@ -76,4 +108,5 @@ nexus migrate status
 nexus migrate run
 nexus migrate validate
 nexus migrate rollback
+nexus migrate cognition --dry-run
 ```

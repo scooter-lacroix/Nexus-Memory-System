@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.1.2"
+version = "1.2.0"
 edition = "2021"
 rust-version = "1.75"
 authors = ["Nexus Team"]
@@ -72,17 +72,17 @@ tokio-tungstenite = "0.26"
 # rmcp = "0.1"
 
 # Internal crates (for workspace members to depend on each other)
-nexus-core = { package = "nexus-memory-core", version = "1.1.2", path = "crates/nexus-core" }
-nexus-storage = { package = "nexus-memory-storage", version = "1.1.2", path = "crates/nexus-storage" }
-nexus-vectors = { package = "nexus-memory-vectors", version = "1.1.2", path = "crates/nexus-vectors" }
-nexus-embeddings = { package = "nexus-memory-embeddings", version = "1.1.2", path = "crates/nexus-embeddings" }
-nexus-orchestrator = { package = "nexus-memory-orchestrator", version = "1.1.2", path = "crates/nexus-orchestrator" }
-nexus-lephase = { package = "nexus-memory-lephase", version = "1.1.2", path = "crates/nexus-lephase" }
-nexus-mcp = { package = "nexus-memory-mcp", version = "1.1.2", path = "crates/nexus-mcp" }
-nexus-web = { package = "nexus-memory-web", version = "1.1.2", path = "crates/nexus-web" }
-nexus-hooks = { package = "nexus-memory-hooks", version = "1.1.2", path = "crates/nexus-hooks" }
-nexus-llm = { package = "nexus-memory-llm", version = "1.1.2", path = "crates/nexus-llm" }
-nexus-agent = { package = "nexus-memory-agent", version = "1.1.2", path = "crates/nexus-agent" }
+nexus-core = { package = "nexus-memory-core", version = "1.2.0", path = "crates/nexus-core" }
+nexus-storage = { package = "nexus-memory-storage", version = "1.2.0", path = "crates/nexus-storage" }
+nexus-vectors = { package = "nexus-memory-vectors", version = "1.2.0", path = "crates/nexus-vectors" }
+nexus-embeddings = { package = "nexus-memory-embeddings", version = "1.2.0", path = "crates/nexus-embeddings" }
+nexus-orchestrator = { package = "nexus-memory-orchestrator", version = "1.2.0", path = "crates/nexus-orchestrator" }
+nexus-lephase = { package = "nexus-memory-lephase", version = "1.2.0", path = "crates/nexus-lephase" }
+nexus-mcp = { package = "nexus-memory-mcp", version = "1.2.0", path = "crates/nexus-mcp" }
+nexus-web = { package = "nexus-memory-web", version = "1.2.0", path = "crates/nexus-web" }
+nexus-hooks = { package = "nexus-memory-hooks", version = "1.2.0", path = "crates/nexus-hooks" }
+nexus-llm = { package = "nexus-memory-llm", version = "1.2.0", path = "crates/nexus-llm" }
+nexus-agent = { package = "nexus-memory-agent", version = "1.2.0", path = "crates/nexus-agent" }
 
 # ONNX Runtime and tokenizers
 ort = { version = "2.0.0-rc.11", features = ["load-dynamic"] }

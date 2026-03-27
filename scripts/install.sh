@@ -41,6 +41,7 @@ FISH_ENV_FILE="${CONFIG_DIR}/nexus.fish"
 SKIP_BUILD=0
 SKIP_PROFILE=0
 PROFILE_FILE=""
+EXPLICIT_BINARY_PATH=""
 
 # ── Usage ─────────────────────────────────────────────────────────────
 usage() {
@@ -58,6 +59,7 @@ Usage: $0 [options]
 
 Options:
   --skip-build          Skip cargo build; use existing binary
+  --binary PATH         Install a specific nexus binary (for example ./target/release/nexus)
   --bin-dir DIR         Executable directory (default: ${BIN_DIR})
   --config-dir DIR      Config directory (default: ${CONFIG_DIR})
   --data-dir DIR        Data directory (default: ${DATA_DIR})
@@ -82,6 +84,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-build)   SKIP_BUILD=1; shift ;;
         --skip-profile) SKIP_PROFILE=1; shift ;;
+        --binary)       EXPLICIT_BINARY_PATH="$2"; shift 2 ;;
         --bin-dir)      BIN_DIR="$2"; shift 2 ;;
         --config-dir)
             CONFIG_DIR="$2"
@@ -125,13 +128,20 @@ build_nexus() {
 resolve_binary() {
     local binary=""
 
-    if [[ -x "${REPO_ROOT}/target/release/nexus" ]]; then
+    if [[ -n "${EXPLICIT_BINARY_PATH}" ]]; then
+        binary="${EXPLICIT_BINARY_PATH}"
+    elif [[ -x "${REPO_ROOT}/target/release/nexus" ]]; then
         binary="${REPO_ROOT}/target/release/nexus"
     elif command -v nexus >/dev/null 2>&1; then
         binary="$(command -v nexus)"
     else
         err "Could not find nexus binary. Run without --skip-build or build first:"
         err "  cargo build --release -p nexus-memory"
+        exit 1
+    fi
+
+    if [[ ! -f "${binary}" ]]; then
+        err "Specified binary does not exist: ${binary}"
         exit 1
     fi
 
@@ -268,7 +278,9 @@ exit "\${status}"
 WITH_EOF
     chmod +x "${BIN_DIR}/nexus-with"
 
-    ok "Installed nexus to ${BIN_DIR}/nexus"
+    local installed_version
+    installed_version="$("${BIN_DIR}/nexus" --version 2>/dev/null || echo "unknown")"
+    ok "Installed nexus to ${BIN_DIR}/nexus (${installed_version})"
 }
 
 # ── Tool wrappers ─────────────────────────────────────────────────────
@@ -463,12 +475,15 @@ configure_profiles() {
     esac
 
     # Also update any other detected shells so PATH works everywhere
-    [[ "${shell_name}" != "bash" && -f "${HOME}/.bashrc" ]] && \
+    if [[ "${shell_name}" != "bash" && -f "${HOME}/.bashrc" ]]; then
         upsert_profile_block_posix "${HOME}/.bashrc"
-    [[ "${shell_name}" != "zsh" && -f "${HOME}/.zshrc" ]] && \
+    fi
+    if [[ "${shell_name}" != "zsh" && -f "${HOME}/.zshrc" ]]; then
         upsert_profile_block_posix "${HOME}/.zshrc"
-    [[ "${shell_name}" != "fish" && -d "${HOME}/.config/fish" ]] && \
+    fi
+    if [[ "${shell_name}" != "fish" && -d "${HOME}/.config/fish" ]]; then
         upsert_profile_block_fish "${HOME}/.config/fish/config.fish"
+    fi
 }
 
 # ── Database ──────────────────────────────────────────────────────────

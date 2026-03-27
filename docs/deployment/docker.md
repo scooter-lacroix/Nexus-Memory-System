@@ -1,6 +1,6 @@
 # Docker Deployment
 
-Docker deployment should package the Rust workspace build output and run the `nexus` binary directly.
+Docker deployment should package the Rust workspace build output and run the `nexus` binary directly. Keep the database path on persistent storage if you want memory, digests, and dreaming outputs to survive container restarts.
 
 ## Recommended Pattern
 

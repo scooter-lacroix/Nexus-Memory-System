@@ -17,6 +17,8 @@ This documentation set covers the public Rust workspace for Nexus Memory System.
 ## Guides
 
 - [guide/getting-started.md](guide/getting-started.md)
+- [guide/cognition-rollout.md](guide/cognition-rollout.md)
+- [guide/cognition-excellence-release-note.md](guide/cognition-excellence-release-note.md)
 - [guide/embeddings.md](guide/embeddings.md)
 - [guide/memory-types.md](guide/memory-types.md)
 
