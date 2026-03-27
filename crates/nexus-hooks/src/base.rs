@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::error::Result;
 use crate::session::SessionContext;
-use crate::types::{ExtractionSource, SessionActivity};
+use crate::types::{ExtractionSource, SessionActivity, SupportTier};
 
 /// Callback type for session end events
 pub type SessionEndCallback = Arc<dyn Fn(SessionContext) + Send + Sync>;
@@ -261,6 +261,14 @@ pub trait AgentHook: Send + Sync {
     /// support (e.g. Claude Code's SessionStart hook) should override this.
     fn lifecycle_capabilities(&self) -> LifecycleCapabilities {
         LifecycleCapabilities::end_only()
+    }
+
+    /// Report the support tier for this agent hook.
+    ///
+    /// Default assumes monitor-only. Agents with dedicated hook files
+    /// and skill installation should override this.
+    fn support_tier(&self) -> SupportTier {
+        SupportTier::MonitorOnly
     }
 }
 

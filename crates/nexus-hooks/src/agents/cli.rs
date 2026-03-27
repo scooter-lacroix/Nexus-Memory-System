@@ -9,7 +9,7 @@ use crate::base::{AgentHook, BaseHook, LifecycleCapabilities, SessionEndCallback
 use crate::error::Result;
 use crate::monitor::ProcessMonitor;
 use crate::session::SessionContext;
-use crate::types::{AgentType, SessionActivity};
+use crate::types::{AgentType, SessionActivity, SupportTier};
 
 /// Generic CLI hook using atexit and signal handling
 ///
@@ -201,7 +201,13 @@ impl AgentHook for CLIHook {
     }
 
     fn lifecycle_capabilities(&self) -> LifecycleCapabilities {
-        LifecycleCapabilities::monitor_only()
+        // CLIHook registers an atexit callback in install_session_end_hook,
+        // so session_end is genuinely supported even without native hooks.
+        LifecycleCapabilities::end_only()
+    }
+
+    fn support_tier(&self) -> SupportTier {
+        SupportTier::WrapperLifecycle
     }
 }
 
@@ -235,7 +241,12 @@ mod tests {
             !caps.session_start,
             "CLI agents do not support session_start"
         );
-        assert!(!caps.session_end, "CLI agents are monitor-only");
+        assert!(
+            caps.session_end,
+            "CLI agents support session_end via atexit callback"
+        );
         assert!(!caps.checkpoint, "CLI agents do not support checkpoint");
+        assert!(!caps.compact, "CLI agents do not support compact");
+        assert!(!caps.error_hook, "CLI agents do not support error_hook");
     }
 }

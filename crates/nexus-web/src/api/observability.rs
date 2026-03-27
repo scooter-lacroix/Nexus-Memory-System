@@ -10,8 +10,10 @@ use tokio::sync::RwLock;
 
 use crate::error::{Result, WebError};
 use crate::models::{
-    CognitionOverviewResponse, DigestEntry, DigestListResponse, JobEntry, JobListResponse,
-    JobSummaryResponse, ReflectionSampleEntry, ReflectionStateResponse, RuntimeResponse,
+    AdaptiveDreamState, CognitionOverviewResponse, DashboardResponse, DigestEntry,
+    DigestFreshnessState, DigestListResponse, DreamState, JobEntry, JobListResponse,
+    JobSummaryResponse, QueryIntrospectionResponse, RecallComposition, ReflectionSampleEntry,
+    ReflectionStateResponse, RuntimeResponse,
 };
 use crate::state::AppState;
 use nexus_core::CognitiveLevel;
@@ -243,6 +245,18 @@ pub async fn cognition_overview(
     let digest_count = state.memory_repo.count_digests(namespace.id, None).await?;
 
     let evidence_count = state.memory_repo.count_evidence(namespace.id).await?;
+    let stage_metrics = state
+        .memory_repo
+        .latest_metrics_for_namespace(namespace.id, Some("cognition."), 64)
+        .await?
+        .into_iter()
+        .fold(
+            std::collections::HashMap::new(),
+            |mut acc: std::collections::HashMap<String, f64>, metric| {
+                acc.entry(metric.metric_name).or_insert(metric.metric_value);
+                acc
+            },
+        );
 
     Ok(Json(CognitionOverviewResponse {
         success: true,
@@ -250,6 +264,7 @@ pub async fn cognition_overview(
         jobs_by_status,
         digest_count,
         evidence_count,
+        stage_metrics,
     }))
 }
 
@@ -306,6 +321,255 @@ pub async fn reflection_state(
     }))
 }
 
+// ---- Query Introspection ----
+
+#[derive(Debug, Deserialize, Default)]
+pub struct QueryIntrospectionQueryParams {
+    pub namespace: String,
+    pub question: String,
+}
+
+/// GET /api/cognition/query-introspection — ranking decision introspection.
+///
+/// Purely structural analysis (no LLM calls). Returns included/excluded
+/// memories with per-memory signals, bucket stats, and relevant reflections.
+/// Works without agent supervisor enabled.
+pub async fn query_introspection(
+    State(state): State<Arc<RwLock<AppState>>>,
+    Query(params): Query<QueryIntrospectionQueryParams>,
+) -> Result<Json<QueryIntrospectionResponse>> {
+    if params.namespace.trim().is_empty() {
+        return Err(WebError::InvalidRequest(
+            "namespace query parameter is required".to_string(),
+        ));
+    }
+    if params.question.trim().is_empty() {
+        return Err(WebError::InvalidRequest(
+            "question query parameter is required".to_string(),
+        ));
+    }
+
+    let state = state.read().await;
+
+    let namespace = state
+        .namespace_repo
+        .get_by_name(&params.namespace)
+        .await?
+        .ok_or_else(|| WebError::NotFound(format!("Namespace '{}' not found", params.namespace)))?;
+
+    let query_context_limit = nexus_core::Config::from_env()
+        .map(|config| config.agent.query_context_limit)
+        .unwrap_or_else(|_| nexus_core::config::AgentConfig::default().query_context_limit);
+
+    let request = nexus_core::WorkingRepresentationRequest {
+        namespace_id: namespace.id,
+        perspective: None,
+        query: Some(params.question.clone()),
+        max_items: query_context_limit,
+        include_raw: false,
+        ..nexus_core::WorkingRepresentationRequest::default()
+    };
+
+    let introspection =
+        nexus_agent::introspect_query(&request, &params.question, &state.memory_repo)
+            .await
+            .map_err(|e| WebError::Storage(format!("Introspection failed: {}", e)))?;
+
+    Ok(Json(QueryIntrospectionResponse {
+        success: true,
+        namespace: params.namespace,
+        question: params.question,
+        introspection,
+    }))
+}
+
+// ---- Operator Dashboard ----
+
+#[derive(Debug, Deserialize, Default)]
+pub struct DashboardQueryParams {
+    pub namespace: String,
+}
+
+/// GET /api/cognition/dashboard — at-a-glance operator view of dream, digest, recall, and adaptive state.
+pub async fn dashboard(
+    State(state): State<Arc<RwLock<AppState>>>,
+    Query(params): Query<DashboardQueryParams>,
+) -> Result<Json<DashboardResponse>> {
+    if params.namespace.trim().is_empty() {
+        return Err(WebError::InvalidRequest(
+            "namespace query parameter is required".to_string(),
+        ));
+    }
+
+    let state = state.read().await;
+
+    let namespace = state
+        .namespace_repo
+        .get_by_name(&params.namespace)
+        .await?
+        .ok_or_else(|| WebError::NotFound(format!("Namespace '{}' not found", params.namespace)))?;
+
+    // --- Dream throughput ---
+    let completed_reflections = state
+        .memory_repo
+        .count_jobs(namespace.id, Some("reflect_namespace"), Some("completed"))
+        .await?
+        + state
+            .memory_repo
+            .count_jobs(namespace.id, Some("reflect_perspective"), Some("completed"))
+            .await?;
+    let completed_digests = state
+        .memory_repo
+        .count_jobs(namespace.id, Some("digest_session"), Some("completed"))
+        .await?;
+    let failed_jobs = state
+        .memory_repo
+        .count_jobs(namespace.id, None, Some("failed"))
+        .await?;
+    let pending_jobs = state
+        .memory_repo
+        .count_jobs(namespace.id, None, Some("enqueued"))
+        .await?;
+
+    // Most recent completed dream job (reflection or digest).
+    let last_dream_at = {
+        let reflect_jobs = state
+            .memory_repo
+            .list_jobs(
+                namespace.id,
+                Some("reflect_namespace"),
+                Some("completed"),
+                1,
+                0,
+            )
+            .await
+            .unwrap_or_default();
+        let digest_jobs = state
+            .memory_repo
+            .list_jobs(
+                namespace.id,
+                Some("digest_session"),
+                Some("completed"),
+                1,
+                0,
+            )
+            .await
+            .unwrap_or_default();
+        let most_recent = reflect_jobs
+            .iter()
+            .chain(digest_jobs.iter())
+            .max_by_key(|j| j.updated_at.as_str());
+        most_recent.map(|j| j.updated_at.clone())
+    };
+
+    // --- Digest freshness ---
+    let total_digests = state.memory_repo.count_digests(namespace.id, None).await?;
+    let sessions_with_cognition = state
+        .memory_repo
+        .count_distinct_session_keys_with_cognition(namespace.id)
+        .await?;
+
+    let (latest_digest_at, latest_digest_age_seconds) = {
+        let recent = state
+            .memory_repo
+            .list_digests(namespace.id, None, 1, 0)
+            .await
+            .unwrap_or_default();
+        match recent.into_iter().next() {
+            Some(d) => {
+                let age = chrono::Utc::now()
+                    .signed_duration_since(
+                        chrono::DateTime::parse_from_rfc3339(&d.created_at)
+                            .unwrap_or_else(|_| chrono::Utc::now().into()),
+                    )
+                    .num_seconds();
+                (Some(d.created_at), Some(age.max(0)))
+            }
+            None => (None, None),
+        }
+    };
+
+    // --- Recall composition ---
+    let raw = state
+        .memory_repo
+        .count_by_cognitive_level(namespace.id, CognitiveLevel::Raw)
+        .await?;
+    let explicit = state
+        .memory_repo
+        .count_by_cognitive_level(namespace.id, CognitiveLevel::Explicit)
+        .await?;
+    let derived = state
+        .memory_repo
+        .count_by_cognitive_level(namespace.id, CognitiveLevel::Derived)
+        .await?;
+    let summary_short = state
+        .memory_repo
+        .count_by_cognitive_level(namespace.id, CognitiveLevel::SummaryShort)
+        .await?;
+    let summary_long = state
+        .memory_repo
+        .count_by_cognitive_level(namespace.id, CognitiveLevel::SummaryLong)
+        .await?;
+    let contradiction = state
+        .memory_repo
+        .count_by_cognitive_level(namespace.id, CognitiveLevel::Contradiction)
+        .await?;
+    let total = raw + explicit + derived + summary_short + summary_long + contradiction;
+
+    // --- Adaptive dream state ---
+    let cognition_config = nexus_core::Config::from_env()
+        .map(|c| c.cognition)
+        .unwrap_or_default();
+    let contradiction_density = if total > 0 {
+        contradiction as f64 / total as f64
+    } else {
+        0.0
+    };
+
+    let base_interval = cognition_config.adaptive_dream_min_interval_secs;
+    let factor = 1.0 - ((contradiction as f32 * 0.10).min(0.9));
+    let adapted = (base_interval as f32 * factor) as u64;
+    let current_interval_secs = adapted.clamp(
+        cognition_config.adaptive_dream_min_interval_secs,
+        cognition_config.adaptive_dream_max_interval_secs,
+    );
+
+    Ok(Json(DashboardResponse {
+        success: true,
+        namespace: params.namespace,
+        dream: DreamState {
+            completed_reflections,
+            completed_digests,
+            failed_jobs,
+            pending_jobs,
+            last_dream_at,
+        },
+        digest: DigestFreshnessState {
+            total_digests,
+            sessions_with_cognition,
+            latest_digest_age_seconds,
+            latest_digest_at,
+        },
+        recall: RecallComposition {
+            raw,
+            explicit,
+            derived,
+            summary_short,
+            summary_long,
+            contradiction,
+            total,
+        },
+        adaptive: AdaptiveDreamState {
+            enabled: cognition_config.adaptive_dream_enabled,
+            current_interval_secs,
+            min_interval_secs: cognition_config.adaptive_dream_min_interval_secs,
+            max_interval_secs: cognition_config.adaptive_dream_max_interval_secs,
+            contradiction_count: contradiction,
+            contradiction_density,
+        },
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,6 +612,11 @@ mod tests {
             .route("/api/cognition/overview", get(cognition_overview))
             .route("/api/cognition/reflection", get(reflection_state))
             .route("/api/cognition/runtime", get(runtime_health))
+            .route(
+                "/api/cognition/query-introspection",
+                get(query_introspection),
+            )
+            .route("/api/cognition/dashboard", get(dashboard))
             .with_state(state.clone());
 
         TestApp { app, state }
@@ -392,6 +661,91 @@ mod tests {
         assert!(json["uptime_seconds"].as_u64().is_some());
         assert!(json["db_connected"].is_boolean());
         assert!(json["agent_enabled"].is_boolean());
+    }
+
+    #[tokio::test]
+    async fn test_query_introspection_missing_question_returns_400() {
+        let test = test_app().await;
+        create_namespace_in_test(&test.state, "intro-missing").await;
+
+        let resp = test
+            .app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cognition/query-introspection?namespace=intro-missing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_query_introspection_returns_structured_payload() {
+        let test = test_app().await;
+        create_namespace_in_test(&test.state, "intro-ns").await;
+
+        {
+            let state = test.state.read().await;
+            let namespace = state
+                .namespace_repo
+                .get_by_name("intro-ns")
+                .await
+                .unwrap()
+                .unwrap();
+
+            state
+                .memory_repo
+                .store(nexus_storage::StoreMemoryParams {
+                    namespace_id: namespace.id,
+                    content: "Authentication now uses session cookies with http-only flags.",
+                    category: &nexus_core::MemoryCategory::Facts,
+                    memory_lane_type: None,
+                    labels: &[],
+                    metadata: &serde_json::json!({
+                        "cognitive": {
+                            "level": "explicit",
+                            "observer": "claude-code",
+                            "subject": "claude-code",
+                            "generated_by": "test_fixture",
+                            "confidence": 0.92
+                        }
+                    }),
+                    embedding: None,
+                    embedding_model: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        let resp = test
+            .app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cognition/query-introspection?namespace=intro-ns&question=session%20cookies")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        let json = body_to_json(body);
+
+        assert_eq!(json["success"], true);
+        assert_eq!(json["namespace"], "intro-ns");
+        assert_eq!(json["question"], "session cookies");
+        assert!(json["introspection"]["included"].is_array());
+        assert!(!json["introspection"]["included"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(json["introspection"]["bucket_stats"].is_array());
     }
 
     #[tokio::test]
@@ -510,6 +864,71 @@ mod tests {
             json["recent_contradictions"][0]["content"],
             "contradiction note"
         );
+    }
+
+    #[tokio::test]
+    async fn test_overview_returns_latest_stage_metrics() {
+        let test = test_app().await;
+        create_namespace_in_test(&test.state, "overview-ns").await;
+
+        {
+            let state = test.state.read().await;
+            let namespace = state
+                .namespace_repo
+                .get_by_name("overview-ns")
+                .await
+                .unwrap()
+                .unwrap();
+
+            state
+                .memory_repo
+                .record_metric(
+                    "cognition.query.total_ms",
+                    11.0,
+                    &serde_json::json!({"namespace_id": namespace.id, "stage": "total", "unit": "ms"}),
+                )
+                .await
+                .unwrap();
+            state
+                .memory_repo
+                .record_metric(
+                    "cognition.query.total_ms",
+                    15.5,
+                    &serde_json::json!({"namespace_id": namespace.id, "stage": "total", "unit": "ms"}),
+                )
+                .await
+                .unwrap();
+            state
+                .memory_repo
+                .record_metric(
+                    "cognition.dream.total_ms",
+                    44.0,
+                    &serde_json::json!({"namespace_id": namespace.id, "stage": "total", "unit": "ms"}),
+                )
+                .await
+                .unwrap();
+        }
+
+        let resp = test
+            .app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cognition/overview?namespace=overview-ns")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        let json = body_to_json(body);
+
+        assert_eq!(json["success"], true);
+        assert_eq!(json["stage_metrics"]["cognition.query.total_ms"], 15.5);
+        assert_eq!(json["stage_metrics"]["cognition.dream.total_ms"], 44.0);
     }
 
     #[tokio::test]
@@ -957,5 +1376,210 @@ mod tests {
         assert_eq!(json["success"], true);
         assert_eq!(json["jobs_by_status"]["pending"], 1);
         assert!(json["evidence_count"].as_i64().unwrap() >= 1);
+    }
+
+    // ---- Dashboard tests ----
+
+    #[tokio::test]
+    async fn test_dashboard_missing_namespace_returns_400() {
+        let test = test_app().await;
+        let resp = test
+            .app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cognition/dashboard")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_dashboard_unknown_namespace_returns_404() {
+        let test = test_app().await;
+        let resp = test
+            .app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cognition/dashboard?namespace=nonexistent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_dashboard_returns_all_sections() {
+        let test = test_app().await;
+        create_namespace_in_test(&test.state, "dash-empty-ns").await;
+
+        let resp = test
+            .app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cognition/dashboard?namespace=dash-empty-ns")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        let json = body_to_json(body);
+
+        assert_eq!(json["success"], true);
+        assert_eq!(json["namespace"], "dash-empty-ns");
+
+        // Dream section
+        assert_eq!(json["dream"]["completed_reflections"], 0);
+        assert_eq!(json["dream"]["completed_digests"], 0);
+        assert_eq!(json["dream"]["failed_jobs"], 0);
+        assert_eq!(json["dream"]["pending_jobs"], 0);
+        assert!(json["dream"]["last_dream_at"].is_null());
+
+        // Digest section
+        assert_eq!(json["digest"]["total_digests"], 0);
+        assert_eq!(json["digest"]["sessions_with_cognition"], 0);
+        assert!(json["digest"]["latest_digest_at"].is_null());
+        assert!(json["digest"]["latest_digest_age_seconds"].is_null());
+
+        // Recall section
+        assert_eq!(json["recall"]["raw"], 0);
+        assert_eq!(json["recall"]["explicit"], 0);
+        assert_eq!(json["recall"]["contradiction"], 0);
+        assert_eq!(json["recall"]["total"], 0);
+
+        // Adaptive section
+        assert!(json["adaptive"]["enabled"].is_boolean());
+        assert!(json["adaptive"]["current_interval_secs"].as_u64().is_some());
+        assert!(json["adaptive"]["contradiction_density"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_dashboard_populates_recall_and_dream_from_data() {
+        let test = test_app().await;
+        create_namespace_in_test(&test.state, "dash-data-ns").await;
+
+        {
+            let state = test.state.read().await;
+            let namespace = state
+                .namespace_repo
+                .get_by_name("dash-data-ns")
+                .await
+                .unwrap()
+                .unwrap();
+
+            // Store memories at different cognitive levels.
+            for (content, level) in [
+                ("raw event", CognitiveLevel::Raw),
+                ("explicit fact", CognitiveLevel::Explicit),
+                ("derived insight", CognitiveLevel::Derived),
+                ("contradiction note", CognitiveLevel::Contradiction),
+            ] {
+                state
+                    .memory_repo
+                    .store(nexus_storage::repository::StoreMemoryParams {
+                        namespace_id: namespace.id,
+                        content,
+                        category: &nexus_core::MemoryCategory::Facts,
+                        memory_lane_type: None,
+                        labels: &[],
+                        metadata: &serde_json::json!({
+                            "cognitive": {
+                                "level": level.as_str(),
+                                "observer": "claude-code",
+                                "subject": "claude-code",
+                                "confidence": 0.9,
+                                "generated_by": "test"
+                            }
+                        }),
+                        embedding: None,
+                        embedding_model: None,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let resp = test
+            .app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cognition/dashboard?namespace=dash-data-ns")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        let json = body_to_json(body);
+
+        assert_eq!(json["recall"]["raw"], 1);
+        assert_eq!(json["recall"]["explicit"], 1);
+        assert_eq!(json["recall"]["derived"], 1);
+        assert_eq!(json["recall"]["contradiction"], 1);
+        assert_eq!(json["recall"]["total"], 4);
+        // contradiction_density = 1/4 = 0.25
+        assert!((json["adaptive"]["contradiction_density"].as_f64().unwrap() - 0.25).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_dashboard_response_serialization_roundtrip() {
+        let dash = DashboardResponse {
+            success: true,
+            namespace: "test".to_string(),
+            dream: DreamState {
+                completed_reflections: 5,
+                completed_digests: 3,
+                failed_jobs: 1,
+                pending_jobs: 2,
+                last_dream_at: Some("2026-03-27T12:00:00Z".to_string()),
+            },
+            digest: DigestFreshnessState {
+                total_digests: 10,
+                sessions_with_cognition: 4,
+                latest_digest_age_seconds: Some(3600),
+                latest_digest_at: Some("2026-03-27T11:00:00Z".to_string()),
+            },
+            recall: RecallComposition {
+                raw: 50,
+                explicit: 30,
+                derived: 10,
+                summary_short: 5,
+                summary_long: 3,
+                contradiction: 2,
+                total: 100,
+            },
+            adaptive: AdaptiveDreamState {
+                enabled: true,
+                current_interval_secs: 120,
+                min_interval_secs: 60,
+                max_interval_secs: 600,
+                contradiction_count: 2,
+                contradiction_density: 0.02,
+            },
+        };
+        let json = serde_json::to_value(&dash).unwrap();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["dream"]["completed_reflections"], 5);
+        assert_eq!(json["recall"]["total"], 100);
+        assert_eq!(json["adaptive"]["enabled"], true);
+        assert_eq!(json["adaptive"]["current_interval_secs"], 120);
+
+        // Round-trip
+        let deserialized: DashboardResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized.dream.completed_reflections, 5);
+        assert_eq!(deserialized.recall.total, 100);
     }
 }

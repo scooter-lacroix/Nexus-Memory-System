@@ -46,9 +46,9 @@ pub use state::AppState;
 
 use api::{
     agent_consolidate, agent_ingest, agent_query, agent_status, cognition_overview, create_memory,
-    create_namespace, delete_memory, get_agent_stats, get_memory, get_namespace, get_stats,
-    health_check, job_summary, list_digests, list_jobs, list_memories, list_namespaces,
-    reflection_state, runtime_health, search_memories, update_memory,
+    create_namespace, dashboard, delete_memory, get_agent_stats, get_memory, get_namespace,
+    get_stats, health_check, job_summary, list_digests, list_jobs, list_memories, list_namespaces,
+    query_introspection, reflection_state, runtime_health, search_memories, update_memory,
 };
 use websocket::websocket_handler;
 
@@ -106,7 +106,9 @@ impl WebDashboard {
             .route("/cognition/digests", get(list_digests))
             .route("/cognition/overview", get(cognition_overview))
             .route("/cognition/reflection", get(reflection_state))
-            .route("/cognition/runtime", get(runtime_health));
+            .route("/cognition/runtime", get(runtime_health))
+            .route("/cognition/query-introspection", get(query_introspection))
+            .route("/cognition/dashboard", get(dashboard));
 
         // WebSocket route
         let ws_route = Router::new().route("/ws", get(websocket_handler));
@@ -205,5 +207,36 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_production_router_exposes_cognition_dashboard_route() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect to in-memory db");
+        nexus_storage::migrations::run_migrations(&pool)
+            .await
+            .expect("run migrations");
+
+        let mut storage = nexus_storage::StorageManager::new(pool.clone());
+        storage.initialize().await.expect("initialize storage");
+
+        let dashboard = WebDashboard::new(storage, Orchestrator::default())
+            .await
+            .expect("create dashboard");
+
+        // Dashboard requires a namespace, so this will be 400 (missing namespace).
+        let resp = dashboard
+            .router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cognition/dashboard")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

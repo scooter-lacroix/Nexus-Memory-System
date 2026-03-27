@@ -7,7 +7,7 @@ use crate::agents::{
 };
 use crate::base::AgentHook;
 use crate::error::{HookError, Result};
-use crate::types::AgentType;
+use crate::types::{AgentType, SupportTier};
 
 /// Factory for creating agent-specific hooks
 ///
@@ -142,6 +142,7 @@ impl HookFactory {
         self.supported.get(&normalized).map(|&t| AgentInfo {
             agent_type: t.to_string(),
             detection_layer: t.detection_layer(),
+            support_tier: t.support_tier(),
             process_names: t.process_names().iter().map(|s| s.to_string()).collect(),
             config_dir: t.config_dir().to_string(),
         })
@@ -177,6 +178,7 @@ impl Default for HookFactory {
 pub struct AgentInfo {
     pub agent_type: String,
     pub detection_layer: crate::types::DetectionLayer,
+    pub support_tier: SupportTier,
     pub process_names: Vec<String>,
     pub config_dir: String,
 }

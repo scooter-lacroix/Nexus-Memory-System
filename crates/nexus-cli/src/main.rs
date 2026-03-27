@@ -328,6 +328,10 @@ enum Commands {
         /// Include raw memories in the recent bucket
         #[arg(long)]
         include_raw: bool,
+
+        /// Show ranking introspection (excluded candidates, inclusion reasons, reflections)
+        #[arg(long)]
+        introspect: bool,
     },
 
     /// Inspect evidence lineage for a memory
@@ -578,6 +582,7 @@ async fn main() -> anyhow::Result<()> {
             session_key,
             max_items,
             include_raw,
+            introspect,
         } => {
             commands::represent::execute(
                 agent,
@@ -587,6 +592,7 @@ async fn main() -> anyhow::Result<()> {
                 session_key,
                 max_items,
                 include_raw,
+                introspect,
             )
             .await?;
         }

@@ -1,7 +1,7 @@
 //! Digest command - inspect or rebuild session digests.
 
 use anyhow::Result;
-use nexus_agent::DigestService;
+use nexus_agent::{create_embedding_service, DigestService};
 use nexus_core::config::AgentConfig;
 use nexus_core::Config;
 use nexus_llm::create_client_auto_with_fallback;
@@ -33,11 +33,12 @@ pub async fn execute(
 
     if force {
         let llm = create_client_auto_with_fallback()?;
+        let embeddings = create_embedding_service(&config).await;
         let agent_config = AgentConfig {
             namespace: agent.clone(),
             ..AgentConfig::default()
         };
-        let service = DigestService::new(agent_config, llm);
+        let service = DigestService::new(agent_config, llm, embeddings);
         let result = service
             .digest_session(namespace.id, &session_key, &memory_repo, true)
             .await?;

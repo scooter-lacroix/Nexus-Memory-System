@@ -4,21 +4,52 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Support tier for an agent hook integration.
+///
+/// Describes the *actual* depth of lifecycle integration Nexus has with
+/// a given agent, not the theoretical maximum. Each agent integration
+/// must report its honest tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupportTier {
+    /// Dedicated hook implementation with native skill/hook file installation.
+    /// Multiple lifecycle events are wired (session start/end, checkpoint, error, compact).
+    NativeLifecycle,
+
+    /// Agent uses a shared generic wrapper (CLIHook) for process detection
+    /// and atexit fallback. No dedicated hook implementation exists.
+    WrapperLifecycle,
+
+    /// Process detection only. No native hooks, no session lifecycle events.
+    /// Memory capture relies on process monitoring and inactivity detection.
+    MonitorOnly,
+}
+
+impl std::fmt::Display for SupportTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SupportTier::NativeLifecycle => write!(f, "native-lifecycle"),
+            SupportTier::WrapperLifecycle => write!(f, "wrapper-lifecycle"),
+            SupportTier::MonitorOnly => write!(f, "monitor-only"),
+        }
+    }
+}
+
 /// Supported agent types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentType {
-    // Native hooks
+    // Native lifecycle integrations
     ClaudeCode,
-    Gemini,
-    Qwen,
-
-    // Pi-agent family (MANDATORY)
     PiMono,
     OhMyPi,
     PiSkills,
 
-    // CLI-based agents
+    // Monitor-only (process detection, no native hooks)
+    Gemini,
+    Qwen,
+
+    // CLI wrapper agents
     OpenCode,
     Codex,
     Amp,
@@ -70,12 +101,10 @@ impl AgentType {
     /// Get the detection layer type for this agent
     pub fn detection_layer(&self) -> DetectionLayer {
         match self {
-            AgentType::ClaudeCode
-            | AgentType::Gemini
-            | AgentType::Qwen
-            | AgentType::PiMono
-            | AgentType::OhMyPi
-            | AgentType::PiSkills => DetectionLayer::Native,
+            AgentType::ClaudeCode | AgentType::PiMono | AgentType::OhMyPi | AgentType::PiSkills => {
+                DetectionLayer::Native
+            }
+            AgentType::Gemini | AgentType::Qwen => DetectionLayer::Monitor,
             AgentType::OpenCode
             | AgentType::Codex
             | AgentType::Amp
@@ -129,6 +158,35 @@ impl AgentType {
             AgentType::OhMyPi => "agent/skills",
             AgentType::PiSkills => "skills",
             _ => "skills",
+        }
+    }
+
+    /// Get the honest support tier for this agent type.
+    ///
+    /// This reflects what Nexus *actually* implements, not what the agent
+    /// theoretically supports. Agents with dedicated hook files, skill
+    /// installation, and multiple lifecycle events are `NativeLifecycle`.
+    /// Agents sharing a generic CLI wrapper are `WrapperLifecycle`.
+    /// Agents with process detection only are `MonitorOnly`.
+    pub fn support_tier(&self) -> SupportTier {
+        match self {
+            // Dedicated hook implementations with skill installation + lifecycle events
+            AgentType::ClaudeCode => SupportTier::NativeLifecycle,
+            AgentType::PiMono => SupportTier::NativeLifecycle,
+            AgentType::OhMyPi => SupportTier::NativeLifecycle,
+            AgentType::PiSkills => SupportTier::NativeLifecycle,
+
+            // Process detection only — no native hooks wired
+            AgentType::Gemini => SupportTier::MonitorOnly,
+            AgentType::Qwen => SupportTier::MonitorOnly,
+
+            // Generic CLI wrapper (CLIHook) — atexit + process detection
+            AgentType::OpenCode
+            | AgentType::Codex
+            | AgentType::Amp
+            | AgentType::Droid
+            | AgentType::Hermes
+            | AgentType::Generic => SupportTier::WrapperLifecycle,
         }
     }
 }
@@ -307,6 +365,8 @@ mod tests {
             DetectionLayer::Native
         );
         assert_eq!(AgentType::PiMono.detection_layer(), DetectionLayer::Native);
+        assert_eq!(AgentType::Gemini.detection_layer(), DetectionLayer::Monitor);
+        assert_eq!(AgentType::Qwen.detection_layer(), DetectionLayer::Monitor);
         assert_eq!(AgentType::Amp.detection_layer(), DetectionLayer::CLI);
     }
 
@@ -338,5 +398,103 @@ mod tests {
 
         assert!(activity.is_active);
         assert_eq!(activity.session_id, Some("test-123".to_string()));
+    }
+
+    #[test]
+    fn test_support_tier_display() {
+        assert_eq!(SupportTier::NativeLifecycle.to_string(), "native-lifecycle");
+        assert_eq!(
+            SupportTier::WrapperLifecycle.to_string(),
+            "wrapper-lifecycle"
+        );
+        assert_eq!(SupportTier::MonitorOnly.to_string(), "monitor-only");
+    }
+
+    #[test]
+    fn test_agent_support_tier_honest_mapping() {
+        // Native lifecycle — dedicated hook + skill installation
+        assert_eq!(
+            AgentType::ClaudeCode.support_tier(),
+            SupportTier::NativeLifecycle
+        );
+        assert_eq!(
+            AgentType::PiMono.support_tier(),
+            SupportTier::NativeLifecycle
+        );
+        assert_eq!(
+            AgentType::OhMyPi.support_tier(),
+            SupportTier::NativeLifecycle
+        );
+        assert_eq!(
+            AgentType::PiSkills.support_tier(),
+            SupportTier::NativeLifecycle
+        );
+
+        // Monitor-only — process detection, no native hooks
+        assert_eq!(AgentType::Gemini.support_tier(), SupportTier::MonitorOnly);
+        assert_eq!(AgentType::Qwen.support_tier(), SupportTier::MonitorOnly);
+
+        // Wrapper lifecycle — generic CLIHook
+        assert_eq!(
+            AgentType::Codex.support_tier(),
+            SupportTier::WrapperLifecycle
+        );
+        assert_eq!(AgentType::Amp.support_tier(), SupportTier::WrapperLifecycle);
+        assert_eq!(
+            AgentType::Generic.support_tier(),
+            SupportTier::WrapperLifecycle
+        );
+    }
+
+    #[test]
+    fn test_all_agents_have_valid_detection_layer() {
+        // Every agent type should have a non-empty process_names() or a
+        // non-empty skills_dir() — this ensures factory hooks can actually
+        // detect the agent.
+        for agent_type in &[
+            AgentType::ClaudeCode,
+            AgentType::Gemini,
+            AgentType::Qwen,
+            AgentType::PiMono,
+            AgentType::OhMyPi,
+            AgentType::PiSkills,
+            AgentType::OpenCode,
+            AgentType::Codex,
+            AgentType::Amp,
+            AgentType::Droid,
+            AgentType::Hermes,
+        ] {
+            assert!(
+                !agent_type.config_dir().is_empty(),
+                "{} must have a config_dir",
+                agent_type
+            );
+            assert!(
+                !agent_type.to_string().is_empty(),
+                "{} must have a display name",
+                agent_type
+            );
+        }
+    }
+
+    #[test]
+    fn test_wrapper_agents_have_session_end_capability() {
+        // WrapperLifecycle agents should report session_end capability
+        // since CLIHook registers an atexit callback.
+        let wrapper_agents = [
+            AgentType::OpenCode,
+            AgentType::Codex,
+            AgentType::Amp,
+            AgentType::Droid,
+            AgentType::Hermes,
+        ];
+        for agent in &wrapper_agents {
+            assert_eq!(
+                agent.support_tier(),
+                SupportTier::WrapperLifecycle,
+                "{} should be WrapperLifecycle",
+                agent
+            );
+        }
     }
 }

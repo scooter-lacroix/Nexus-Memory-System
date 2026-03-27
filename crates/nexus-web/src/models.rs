@@ -527,4 +527,71 @@ pub struct CognitionOverviewResponse {
     pub jobs_by_status: std::collections::HashMap<String, i64>,
     pub digest_count: i64,
     pub evidence_count: i64,
+    pub stage_metrics: std::collections::HashMap<String, f64>,
+}
+
+/// Response for query introspection (ranking decisions without LLM calls).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryIntrospectionResponse {
+    pub success: bool,
+    pub namespace: String,
+    pub question: String,
+    pub introspection: nexus_agent::QueryIntrospection,
+}
+
+// =============================================================================
+// Operator Dashboard Response Models
+// =============================================================================
+
+/// Dream throughput and job lifecycle counters.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DreamState {
+    pub completed_reflections: i64,
+    pub completed_digests: i64,
+    pub failed_jobs: i64,
+    pub pending_jobs: i64,
+    pub last_dream_at: Option<String>,
+}
+
+/// Digest freshness and session coverage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DigestFreshnessState {
+    pub total_digests: i64,
+    pub sessions_with_cognition: i64,
+    pub latest_digest_age_seconds: Option<i64>,
+    pub latest_digest_at: Option<String>,
+}
+
+/// Breakdown of memories by cognitive level for recall composition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecallComposition {
+    pub raw: i64,
+    pub explicit: i64,
+    pub derived: i64,
+    pub summary_short: i64,
+    pub summary_long: i64,
+    pub contradiction: i64,
+    pub total: i64,
+}
+
+/// Adaptive dream scheduling state and configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdaptiveDreamState {
+    pub enabled: bool,
+    pub current_interval_secs: u64,
+    pub min_interval_secs: u64,
+    pub max_interval_secs: u64,
+    pub contradiction_count: i64,
+    pub contradiction_density: f64,
+}
+
+/// Operator dashboard response — at-a-glance cognition health.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DashboardResponse {
+    pub success: bool,
+    pub namespace: String,
+    pub dream: DreamState,
+    pub digest: DigestFreshnessState,
+    pub recall: RecallComposition,
+    pub adaptive: AdaptiveDreamState,
 }

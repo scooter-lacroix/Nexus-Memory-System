@@ -24,7 +24,7 @@ use crate::monitor::ProcessMonitor;
 use crate::session::{
     FileAction, FileInfo, SessionContext, SubagentExecution, TaskInfo, TaskStatus,
 };
-use crate::types::{AgentType, SessionActivity};
+use crate::types::{AgentType, SessionActivity, SupportTier};
 
 /// Oh-My-Pi hook for extracting memory from OMP session execution.
 ///
@@ -598,6 +598,10 @@ impl AgentHook for OhMyPiHook {
             error_hook: true,
             compact: true,
         }
+    }
+
+    fn support_tier(&self) -> SupportTier {
+        SupportTier::NativeLifecycle
     }
 }
 

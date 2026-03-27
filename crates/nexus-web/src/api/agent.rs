@@ -124,6 +124,7 @@ pub async fn agent_consolidate(
     let config = nexus_core::Config::from_env().map_err(|e| WebError::Config(e.to_string()))?;
 
     let lease_owner = format!("web-agent-consolidate-{}", namespace_id);
+    let embeddings = nexus_agent::create_embedding_service(&config).await;
     match nexus_agent::runtime::run_dream_cycle(
         state.pool().clone(),
         &config.cognition,
@@ -133,6 +134,7 @@ pub async fn agent_consolidate(
         },
         nexus_llm::create_client_auto_with_fallback()
             .map_err(|e| WebError::Config(format!("Failed to create LLM client: {}", e)))?,
+        embeddings,
         nexus_agent::runtime::DreamCycleRequest {
             namespace_id,
             lease_owner: &lease_owner,

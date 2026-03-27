@@ -3,7 +3,10 @@
 use crate::commands::ingest_hook_event::{process_normalized_event, IngestOutcome};
 use anyhow::Result;
 use chrono::Utc;
-use nexus_agent::{derive_session_key, RuntimeController, RuntimeMode, RuntimeShutdownReason};
+use nexus_agent::{
+    create_embedding_service, derive_session_key, RuntimeController, RuntimeMode,
+    RuntimeShutdownReason,
+};
 use nexus_core::{CognitiveLevel, CognitiveMetadata, Config, MemoryCategory};
 use nexus_hooks::retry_buffer::RetryBuffer;
 use nexus_storage::repository::{MemoryRepository, NamespaceRepository, StoreMemoryParams};
@@ -25,7 +28,9 @@ pub async fn execute_start(
     mode: String,
 ) -> Result<()> {
     let config = Config::from_env()?;
-    let controller = RuntimeController::new(config.cognition.clone(), config.agent.clone());
+    let embeddings = create_embedding_service(&config).await;
+    let controller =
+        RuntimeController::new(config.cognition.clone(), config.agent.clone(), embeddings);
     controller
         .ensure_started(
             &agent,
@@ -65,7 +70,9 @@ pub async fn execute_event(
     let config = Config::from_env()?;
     let should_record = !matches!(kind.as_str(), "compact" | "checkpoint" | "completion")
         || config.cognition.checkpoint_flush_enabled;
-    let controller = RuntimeController::new(config.cognition.clone(), config.agent.clone());
+    let embeddings = create_embedding_service(&config).await;
+    let controller =
+        RuntimeController::new(config.cognition.clone(), config.agent.clone(), embeddings);
     controller
         .ensure_started(
             &agent,
@@ -130,7 +137,11 @@ pub async fn execute_end(
     )
     .await?;
 
-    let controller = RuntimeController::new(config.cognition.clone(), config.agent.clone());
+    let controller = RuntimeController::new(
+        config.cognition.clone(),
+        config.agent.clone(),
+        create_embedding_service(&config).await,
+    );
     controller
         .flush_and_shutdown(
             &agent,

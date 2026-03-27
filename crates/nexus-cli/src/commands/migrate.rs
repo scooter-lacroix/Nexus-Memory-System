@@ -109,6 +109,10 @@ pub enum MigrateCommands {
         /// Skip enqueueing a namespace reflection job after backfill
         #[arg(long)]
         skip_reflect: bool,
+
+        /// Optional path to write a JSON verification report (`-` for stdout)
+        #[arg(long)]
+        report_json: Option<String>,
     },
 }
 
@@ -149,6 +153,7 @@ pub async fn execute(cmd: MigrateCommands) -> Result<()> {
             dry_run,
             skip_digests,
             skip_reflect,
+            report_json,
         } => {
             backfill_cognition(
                 agent.as_deref(),
@@ -156,13 +161,14 @@ pub async fn execute(cmd: MigrateCommands) -> Result<()> {
                 dry_run,
                 !skip_digests,
                 !skip_reflect,
+                report_json.as_deref(),
             )
             .await
         }
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct CognitionBackfillReport {
     namespaces: usize,
     memories_examined: usize,
@@ -172,12 +178,49 @@ struct CognitionBackfillReport {
     reflect_jobs_enqueued: usize,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+struct CognitionCoverageSnapshot {
+    active_memories: i64,
+    archived_memories: i64,
+    missing_cognitive_metadata: i64,
+    session_keys_with_cognition: i64,
+    session_keys_missing_digests: i64,
+    digest_count: i64,
+    raw_count: i64,
+    explicit_count: i64,
+    derived_count: i64,
+    contradiction_count: i64,
+    summary_short_count: i64,
+    summary_long_count: i64,
+    pending_derive_jobs: i64,
+    pending_digest_jobs: i64,
+    pending_reflect_jobs: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CognitionNamespaceVerificationReport {
+    namespace: String,
+    dry_run: bool,
+    backfill: CognitionBackfillReport,
+    before: CognitionCoverageSnapshot,
+    after: CognitionCoverageSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CognitionVerificationReport {
+    dry_run: bool,
+    report_generated_at: String,
+    namespaces: Vec<CognitionNamespaceVerificationReport>,
+    totals: CognitionBackfillReport,
+}
+
 async fn backfill_cognition(
     agent: Option<&str>,
     limit: usize,
     dry_run: bool,
     enqueue_digests: bool,
     enqueue_reflect: bool,
+    report_json: Option<&str>,
 ) -> Result<()> {
     let config = Config::from_env()?;
     let mut storage = StorageManager::from_url(&config.database_url()).await?;
@@ -203,7 +246,9 @@ async fn backfill_cognition(
     }
 
     let mut report = CognitionBackfillReport::default();
+    let mut namespace_reports = Vec::new();
     for namespace in namespaces {
+        let before = capture_cognition_coverage(&memory_repo, namespace.id, limit).await?;
         report.namespaces += 1;
         let namespace_report = backfill_namespace_cognition(
             &memory_repo,
@@ -221,6 +266,22 @@ async fn backfill_cognition(
         report.derive_jobs_enqueued += namespace_report.derive_jobs_enqueued;
         report.digest_jobs_enqueued += namespace_report.digest_jobs_enqueued;
         report.reflect_jobs_enqueued += namespace_report.reflect_jobs_enqueued;
+
+        let after = capture_cognition_coverage(&memory_repo, namespace.id, limit).await?;
+        print_cognition_verification_summary(
+            &namespace.name,
+            dry_run,
+            &namespace_report,
+            &before,
+            &after,
+        );
+        namespace_reports.push(CognitionNamespaceVerificationReport {
+            namespace: namespace.name,
+            dry_run,
+            backfill: namespace_report,
+            before,
+            after,
+        });
     }
 
     println!(
@@ -234,6 +295,111 @@ async fn backfill_cognition(
         report.reflect_jobs_enqueued,
     );
 
+    if let Some(path) = report_json {
+        let report_doc = CognitionVerificationReport {
+            dry_run,
+            report_generated_at: chrono::Utc::now().to_rfc3339(),
+            namespaces: namespace_reports,
+            totals: report,
+        };
+        write_cognition_report(path, &report_doc)?;
+    }
+
+    Ok(())
+}
+
+async fn capture_cognition_coverage(
+    repo: &MemoryRepository,
+    namespace_id: i64,
+    limit: usize,
+) -> Result<CognitionCoverageSnapshot> {
+    let session_keys_missing_digests = repo
+        .list_session_keys_without_digests(namespace_id, limit.max(1) as i64)
+        .await?;
+    Ok(CognitionCoverageSnapshot {
+        active_memories: repo.count_by_namespace(namespace_id).await?,
+        archived_memories: repo.count_archived_by_namespace(namespace_id).await?,
+        missing_cognitive_metadata: repo.count_missing_cognitive_metadata(namespace_id).await?,
+        session_keys_with_cognition: repo
+            .count_distinct_session_keys_with_cognition(namespace_id)
+            .await?,
+        session_keys_missing_digests: session_keys_missing_digests.len() as i64,
+        digest_count: repo.count_digests(namespace_id, None).await?,
+        raw_count: repo
+            .count_by_cognitive_level(namespace_id, CognitiveLevel::Raw)
+            .await?,
+        explicit_count: repo
+            .count_by_cognitive_level(namespace_id, CognitiveLevel::Explicit)
+            .await?,
+        derived_count: repo
+            .count_by_cognitive_level(namespace_id, CognitiveLevel::Derived)
+            .await?,
+        contradiction_count: repo
+            .count_by_cognitive_level(namespace_id, CognitiveLevel::Contradiction)
+            .await?,
+        summary_short_count: repo
+            .count_by_cognitive_level(namespace_id, CognitiveLevel::SummaryShort)
+            .await?,
+        summary_long_count: repo
+            .count_by_cognitive_level(namespace_id, CognitiveLevel::SummaryLong)
+            .await?,
+        pending_derive_jobs: repo
+            .count_jobs(namespace_id, Some("derive_memory"), Some("pending"))
+            .await?,
+        pending_digest_jobs: repo
+            .count_jobs(namespace_id, Some("digest_session"), Some("pending"))
+            .await?,
+        pending_reflect_jobs: repo
+            .count_jobs(namespace_id, Some("reflect_namespace"), Some("pending"))
+            .await?,
+    })
+}
+
+fn print_cognition_verification_summary(
+    namespace_name: &str,
+    dry_run: bool,
+    report: &CognitionBackfillReport,
+    before: &CognitionCoverageSnapshot,
+    after: &CognitionCoverageSnapshot,
+) {
+    println!(
+        "[{}] {} verification: missing metadata {} -> {}, session digests missing {} -> {}, derive jobs {} -> {}, digest jobs {} -> {}, reflect jobs {} -> {}",
+        namespace_name,
+        if dry_run { "dry-run" } else { "post-run" },
+        before.missing_cognitive_metadata,
+        after.missing_cognitive_metadata,
+        before.session_keys_missing_digests,
+        after.session_keys_missing_digests,
+        before.pending_derive_jobs,
+        after.pending_derive_jobs,
+        before.pending_digest_jobs,
+        after.pending_digest_jobs,
+        before.pending_reflect_jobs,
+        after.pending_reflect_jobs,
+    );
+    println!(
+        "[{}] coverage: raw={}, explicit={}, derived={}, contradictions={}, summaries(short={}, long={}); examined={}, metadata updates={}",
+        namespace_name,
+        after.raw_count,
+        after.explicit_count,
+        after.derived_count,
+        after.contradiction_count,
+        after.summary_short_count,
+        after.summary_long_count,
+        report.memories_examined,
+        report.metadata_backfilled,
+    );
+}
+
+fn write_cognition_report(path: &str, report: &CognitionVerificationReport) -> Result<()> {
+    let json = serde_json::to_string_pretty(report)?;
+    if path == "-" {
+        println!("{json}");
+        return Ok(());
+    }
+    std::fs::write(path, json)
+        .with_context(|| format!("Failed to write cognition verification report to {path}"))?;
+    println!("Wrote cognition verification report to {path}");
     Ok(())
 }
 
@@ -2129,5 +2295,84 @@ mod tests {
         assert_eq!(report.derive_jobs_enqueued, 1);
         assert_eq!(report.digest_jobs_enqueued, 0);
         assert_eq!(report.reflect_jobs_enqueued, 0);
+    }
+
+    #[tokio::test]
+    async fn test_capture_cognition_coverage_and_report_output() {
+        let (repo, namespace_id) = setup_cognition_repo().await;
+
+        repo.store(StoreMemoryParams {
+            namespace_id,
+            content: "{\"event\":\"tool\",\"tool\":\"cargo test\"}",
+            category: &MemoryCategory::Session,
+            memory_lane_type: None,
+            labels: &["raw-activity".to_string()],
+            metadata: &serde_json::json!({
+                "raw_activity": { "derived_session_key": "session-report" }
+            }),
+            embedding: None,
+            embedding_model: None,
+        })
+        .await
+        .unwrap();
+
+        let before = capture_cognition_coverage(&repo, namespace_id, 50)
+            .await
+            .unwrap();
+        assert_eq!(before.missing_cognitive_metadata, 1);
+        assert_eq!(before.session_keys_with_cognition, 0);
+        assert_eq!(before.session_keys_missing_digests, 0);
+
+        let backfill = backfill_namespace_cognition(
+            &repo,
+            "backfill-test",
+            namespace_id,
+            50,
+            false,
+            true,
+            true,
+        )
+        .await
+        .unwrap();
+        let after = capture_cognition_coverage(&repo, namespace_id, 50)
+            .await
+            .unwrap();
+
+        assert_eq!(after.missing_cognitive_metadata, 0);
+        assert_eq!(after.session_keys_with_cognition, 1);
+        assert_eq!(after.session_keys_missing_digests, 1);
+        assert_eq!(after.raw_count, 1);
+        assert_eq!(after.pending_derive_jobs, 1);
+        assert_eq!(after.pending_digest_jobs, 1);
+        assert_eq!(after.pending_reflect_jobs, 1);
+
+        let report = CognitionVerificationReport {
+            dry_run: false,
+            report_generated_at: Utc::now().to_rfc3339(),
+            namespaces: vec![CognitionNamespaceVerificationReport {
+                namespace: "backfill-test".to_string(),
+                dry_run: false,
+                backfill,
+                before,
+                after,
+            }],
+            totals: CognitionBackfillReport {
+                namespaces: 1,
+                memories_examined: 1,
+                metadata_backfilled: 1,
+                derive_jobs_enqueued: 1,
+                digest_jobs_enqueued: 1,
+                reflect_jobs_enqueued: 1,
+            },
+        };
+
+        let temp_dir = TempDir::new().unwrap();
+        let report_path = temp_dir.path().join("cognition-report.json");
+        write_cognition_report(report_path.to_str().unwrap(), &report).unwrap();
+
+        let written = std::fs::read_to_string(report_path).unwrap();
+        assert!(written.contains("\"session_keys_missing_digests\": 1"));
+        assert!(written.contains("\"derive_jobs_enqueued\": 1"));
+        assert!(written.contains("\"namespace\": \"backfill-test\""));
     }
 }

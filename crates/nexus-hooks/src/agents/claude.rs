@@ -9,7 +9,7 @@ use crate::base::{AgentHook, BaseHook, LifecycleCapabilities, SessionEndCallback
 use crate::error::{HookError, Result};
 use crate::monitor::ProcessMonitor;
 use crate::session::SessionContext;
-use crate::types::{AgentType, SessionActivity};
+use crate::types::{AgentType, SessionActivity, SupportTier};
 
 /// Claude Code hook using Skills lifecycle
 ///
@@ -606,6 +606,10 @@ impl AgentHook for ClaudeCodeHook {
             error_hook: true,
             compact: true,
         }
+    }
+
+    fn support_tier(&self) -> SupportTier {
+        SupportTier::NativeLifecycle
     }
 }
 

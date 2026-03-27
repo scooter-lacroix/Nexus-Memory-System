@@ -32,11 +32,14 @@ pub async fn execute(agent: String, session_key: Option<String>, format: String)
     });
 
     let lease_owner = format!("cli-dream-{}", namespace.id);
+    let llm = nexus_llm::create_client_auto_with_fallback()?;
+    let embeddings = nexus_agent::create_embedding_service(&config).await;
     let processed = run_dream_cycle(
         storage.pool().clone(),
         &config.cognition,
         &agent_config,
-        nexus_llm::create_client_auto_with_fallback()?,
+        llm,
+        embeddings,
         DreamCycleRequest {
             namespace_id: namespace.id,
             lease_owner: &lease_owner,

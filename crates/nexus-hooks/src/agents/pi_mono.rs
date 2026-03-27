@@ -16,7 +16,7 @@ use crate::monitor::ProcessMonitor;
 use crate::session::{
     FileAction, FileInfo, SessionContext, SubagentExecution, TaskInfo, TaskStatus,
 };
-use crate::types::{AgentType, SessionActivity, SkillMetadata};
+use crate::types::{AgentType, SessionActivity, SkillMetadata, SupportTier};
 
 /// Pi-Mono hook for extracting memory from pi-mono session execution.
 ///
@@ -489,6 +489,10 @@ impl AgentHook for PiMonoHook {
             error_hook: false,
             compact: true,
         }
+    }
+
+    fn support_tier(&self) -> SupportTier {
+        SupportTier::NativeLifecycle
     }
 }
 

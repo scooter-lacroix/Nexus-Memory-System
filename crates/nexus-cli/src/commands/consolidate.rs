@@ -23,6 +23,7 @@ pub async fn execute(agent: String) -> Result<()> {
     };
 
     let llm = create_client_auto_with_fallback()?;
+    let embeddings = nexus_agent::create_embedding_service(&config).await;
     let agent_config = AgentConfig::default();
 
     println!("Running a queued dream cycle for agent '{}'...", agent);
@@ -33,6 +34,7 @@ pub async fn execute(agent: String) -> Result<()> {
         &config.cognition,
         &agent_config,
         llm,
+        embeddings,
         DreamCycleRequest {
             namespace_id: namespace.id,
             lease_owner: &lease_owner,

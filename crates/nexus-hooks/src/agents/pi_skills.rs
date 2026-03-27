@@ -20,7 +20,7 @@ use crate::base::{AgentHook, BaseHook, LifecycleCapabilities, SessionEndCallback
 use crate::error::{HookError, Result};
 use crate::monitor::ProcessMonitor;
 use crate::session::{FileAction, FileInfo, SessionContext};
-use crate::types::{AgentType, SessionActivity, SkillMetadata};
+use crate::types::{AgentType, SessionActivity, SkillMetadata, SupportTier};
 
 /// Pi-Skills cross-compatible hook
 ///
@@ -419,6 +419,10 @@ impl AgentHook for PiSkillsHook {
             error_hook: false,
             compact: true,
         }
+    }
+
+    fn support_tier(&self) -> SupportTier {
+        SupportTier::NativeLifecycle
     }
 }
 

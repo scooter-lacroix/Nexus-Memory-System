@@ -14,7 +14,7 @@
 use crate::protocol::{CallToolResult, Tool};
 use chrono::{DateTime, Utc};
 use nexus_agent::{ReflectService, RepresentationService};
-use nexus_core::config::AgentConfig;
+use nexus_core::config::{AgentConfig, CognitionConfig};
 use nexus_core::{AgentNamespace, Memory, MemoryCategory, MemoryLaneType};
 use nexus_core::{PerspectiveKey, WorkingRepresentationRequest};
 use nexus_storage::repository::StoreMemoryParams;
@@ -946,7 +946,7 @@ impl ToolHandler {
             namespace: agent_type.clone(),
             ..AgentConfig::default()
         };
-        let service = ReflectService::new(agent_config);
+        let service = ReflectService::new(agent_config, CognitionConfig::default(), None);
 
         let result = match session_key {
             Some(session_key) => {
@@ -1102,6 +1102,7 @@ impl ToolHandler {
             include_derived,
             include_digests,
             include_contradictions,
+            ..WorkingRepresentationRequest::default()
         };
 
         let service = RepresentationService::new();

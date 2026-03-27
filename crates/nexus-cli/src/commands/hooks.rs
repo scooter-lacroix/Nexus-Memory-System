@@ -163,12 +163,14 @@ pub async fn execute(command: HooksCommands) -> Result<()> {
                 };
 
                 let lifecycle = format_lifecycle_label(&caps);
+                let tier = hook.support_tier();
 
                 println!(
-                    "  {}: {} [{}]",
+                    "  {}: {} [{}] ({})",
                     hook.agent_type(),
                     install_status,
                     lifecycle,
+                    tier,
                 );
 
                 if start_installed {
@@ -212,10 +214,17 @@ pub async fn execute(command: HooksCommands) -> Result<()> {
                 let caps = hook.lifecycle_capabilities();
                 let installed = hook.is_hook_installed();
                 let lifecycle = format_lifecycle_label(&caps);
+                let tier = hook.support_tier();
 
                 let status_label = if installed { "installed" } else { "available" };
 
-                println!("  {}: {} [{}]", hook.agent_type(), status_label, lifecycle);
+                println!(
+                    "  {}: {} [{}] ({})",
+                    hook.agent_type(),
+                    status_label,
+                    lifecycle,
+                    tier,
+                );
 
                 if verbose {
                     println!("    reliability: {:.2}", hook.reliability_score());
@@ -271,6 +280,7 @@ pub async fn execute(command: HooksCommands) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexus_hooks::SupportTier;
     use std::sync::{Mutex, OnceLock};
 
     fn home_lock() -> &'static Mutex<()> {
@@ -299,6 +309,7 @@ mod tests {
         let factory = HookFactory::new();
         let summary = collect_lifecycle_support(&factory).unwrap();
 
+        // Claude has native lifecycle — start, end, compact, checkpoint
         assert!(summary
             .start_agents
             .iter()
@@ -307,12 +318,54 @@ mod tests {
             .compact_agents
             .iter()
             .any(|agent| agent == "claude-code"));
-        assert!(summary.monitor_agents.iter().any(|agent| agent == "codex"));
-        assert!(summary
-            .monitor_agents
-            .iter()
-            .any(|agent| agent == "opencode"));
         assert!(summary.end_agents.iter().any(|agent| agent == "pi-mono"));
+
+        // Wrapper-lifecycle agents (Codex, OpenCode, etc.) report session_end
+        // via atexit callback, so they appear in end_agents, not monitor_agents.
+        assert!(summary.end_agents.iter().any(|agent| agent == "codex"));
+        assert!(summary.end_agents.iter().any(|agent| agent == "opencode"));
+
+        // Monitor-only agents (Gemini, Qwen) have no lifecycle capabilities
+        assert!(summary.monitor_agents.iter().any(|agent| agent == "gemini"));
+        assert!(summary.monitor_agents.iter().any(|agent| agent == "qwen"));
+    }
+
+    #[test]
+    fn test_support_tier_honesty_via_factory() {
+        let factory = HookFactory::new();
+
+        // Native lifecycle agents
+        for native in &["claude-code", "pi-mono", "oh-my-pi", "pi-skills"] {
+            let hook = factory.create_hook_readonly(native).unwrap();
+            assert_eq!(
+                hook.support_tier(),
+                SupportTier::NativeLifecycle,
+                "{} should be native-lifecycle",
+                native
+            );
+        }
+
+        // Monitor-only agents
+        for monitor in &["gemini", "qwen"] {
+            let hook = factory.create_hook_readonly(monitor).unwrap();
+            assert_eq!(
+                hook.support_tier(),
+                SupportTier::MonitorOnly,
+                "{} should be monitor-only",
+                monitor
+            );
+        }
+
+        // Wrapper lifecycle agents
+        for wrapper in &["codex", "amp", "opencode", "droid", "hermes"] {
+            let hook = factory.create_hook_readonly(wrapper).unwrap();
+            assert_eq!(
+                hook.support_tier(),
+                SupportTier::WrapperLifecycle,
+                "{} should be wrapper-lifecycle",
+                wrapper
+            );
+        }
     }
 
     #[test]

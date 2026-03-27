@@ -66,34 +66,57 @@ pub fn flatten_text_value(value: &Value) -> Option<String> {
 /// Tries common field names across different agent formats (Gemini, Qwen,
 /// Codex, Amp, Droid, etc.) for tool_name, tool_input, session_id, cwd,
 /// and message content.
+///
+/// Field coverage:
+/// - **Gemini**: `functionCall.name`, `functionCall.args`, `functionResponse.response`
+/// - **Codex/Amp**: `function.name`, `arguments`, `choices[0].message.content`
+/// - **Qwen/Droid/Hermes**: `name`, `input`, `output`, `sessionKey`
 pub fn normalize_generic_payload(agent: &str, event: &str, raw: &Value) -> NormalizedHookEvent {
     let obj = raw.as_object().cloned().unwrap_or_default();
 
+    // tool_name: handles Gemini functionCall, Codex/Amp function, generic name
     let tool_name = obj
         .get("tool_name")
         .or_else(|| obj.get("toolName"))
         .or_else(|| obj.get("name"))
+        .or_else(|| obj.get("functionCall").and_then(|fc| fc.get("name")))
+        .or_else(|| obj.get("function").and_then(|f| f.get("name")))
         .cloned();
 
+    // tool_input: handles Gemini functionCall.args, Codex/Amp arguments/input
     let tool_input = obj
         .get("tool_input")
         .or_else(|| obj.get("toolInput"))
         .or_else(|| obj.get("input"))
         .or_else(|| obj.get("arguments"))
+        .or_else(|| obj.get("functionCall").and_then(|fc| fc.get("args")))
+        .or_else(|| obj.get("function").and_then(|f| f.get("arguments")))
         .cloned();
 
+    // tool_response: handles Gemini functionResponse, generic output/result
     let tool_response_text = obj
         .get("tool_response_text")
         .or_else(|| obj.get("toolResponseText"))
         .or_else(|| obj.get("output"))
         .or_else(|| obj.get("result"))
+        .or_else(|| {
+            obj.get("functionResponse")
+                .and_then(|fr| fr.get("response"))
+        })
         .and_then(flatten_text_value);
 
+    // assistant_message: handles Codex/Amp choices[0].message.content, generic response
     let assistant_message_text = obj
         .get("assistant_message_text")
         .or_else(|| obj.get("assistantMessageText"))
         .or_else(|| obj.get("assistant_message"))
         .or_else(|| obj.get("response"))
+        .or_else(|| {
+            obj.get("choices")
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.get("message"))
+                .and_then(|m| m.get("content"))
+        })
         .and_then(flatten_text_value);
 
     let user_message_text = obj
@@ -103,10 +126,12 @@ pub fn normalize_generic_payload(agent: &str, event: &str, raw: &Value) -> Norma
         .or_else(|| obj.get("prompt"))
         .and_then(flatten_text_value);
 
+    // session_id: handles Gemini sessionId, Qwen sessionKey, generic variants
     let session_id = obj
         .get("session_id")
         .or_else(|| obj.get("sessionId"))
         .or_else(|| obj.get("sessionKey"))
+        .or_else(|| obj.get("thread_id"))
         .and_then(|v| v.as_str().map(String::from));
 
     let turn_id = obj
@@ -114,10 +139,12 @@ pub fn normalize_generic_payload(agent: &str, event: &str, raw: &Value) -> Norma
         .or_else(|| obj.get("turnId"))
         .and_then(|v| v.as_str().map(String::from));
 
+    // cwd: handles generic cwd, workingDirectory, Gemini sandbox/workingDir
     let cwd = obj
         .get("cwd")
         .or_else(|| obj.get("working_directory"))
         .or_else(|| obj.get("workingDirectory"))
+        .or_else(|| obj.get("workingDir"))
         .and_then(|v| v.as_str().map(String::from));
 
     NormalizedHookEvent {
@@ -707,5 +734,103 @@ mod tests {
                 agent
             );
         }
+    }
+
+    // ── Agent-specific field format tests ────────────────────────────
+
+    #[test]
+    fn test_normalize_gemini_function_call() {
+        let raw = json!({
+            "functionCall": {
+                "name": "run_command",
+                "args": {"command": "npm test"}
+            },
+            "sessionId": "gem-fc-1",
+            "workingDir": "/home/user/project"
+        });
+
+        let normalized = normalize_generic_payload("gemini", "function-call", &raw);
+
+        assert_eq!(normalized.agent, "gemini");
+        assert_eq!(normalized.tool_name, Some("run_command".to_string()));
+        assert!(normalized.tool_input.is_some());
+        assert_eq!(normalized.session_id, Some("gem-fc-1".to_string()));
+        assert_eq!(normalized.cwd, Some("/home/user/project".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_gemini_function_response() {
+        let raw = json!({
+            "functionResponse": {
+                "response": "All 24 tests passed successfully"
+            },
+            "sessionId": "gem-fr-1"
+        });
+
+        let normalized = normalize_generic_payload("gemini", "function-response", &raw);
+
+        assert_eq!(
+            normalized.tool_response_text,
+            Some("All 24 tests passed successfully".to_string())
+        );
+        assert_eq!(normalized.session_id, Some("gem-fr-1".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_codex_openai_function_format() {
+        let raw = json!({
+            "function": {
+                "name": "shell",
+                "arguments": "{\"command\": \"go build\"}"
+            },
+            "sessionId": "cx-fn-1",
+            "turnId": "cx-turn-1",
+            "workingDirectory": "/repo"
+        });
+
+        let normalized = normalize_generic_payload("codex", "tool-call", &raw);
+
+        assert_eq!(normalized.tool_name, Some("shell".to_string()));
+        assert!(normalized.tool_input.is_some());
+        assert_eq!(normalized.session_id, Some("cx-fn-1".to_string()));
+        assert_eq!(normalized.turn_id, Some("cx-turn-1".to_string()));
+        assert_eq!(normalized.cwd, Some("/repo".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_codex_choices_message_content() {
+        let raw = json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": "I've implemented the feature"
+                    }
+                }
+            ]
+        });
+
+        let normalized = normalize_generic_payload("codex", "response", &raw);
+
+        assert_eq!(
+            normalized.assistant_message_text,
+            Some("I've implemented the feature".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_amp_function_format() {
+        let raw = json!({
+            "function": {
+                "name": "edit_file",
+                "arguments": "{\"path\": \"src/main.rs\", \"content\": \"...\"}"
+            },
+            "sessionKey": "amp-fn-1"
+        });
+
+        let normalized = normalize_generic_payload("amp", "function-call", &raw);
+
+        assert_eq!(normalized.tool_name, Some("edit_file".to_string()));
+        assert!(normalized.tool_input.is_some());
+        assert_eq!(normalized.session_id, Some("amp-fn-1".to_string()));
     }
 }

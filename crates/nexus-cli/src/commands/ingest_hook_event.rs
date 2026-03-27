@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::io::Read;
 
 use anyhow::{Context, Result};
-use nexus_agent::{RuntimeController, RuntimeMode};
+use nexus_agent::{create_embedding_service, RuntimeController, RuntimeMode};
 use nexus_core::{
     infer_perspective, CognitiveLevel, CognitiveMetadata, Config, MemoryCategory, PerspectiveSource,
 };
@@ -75,7 +75,8 @@ pub async fn execute(
 
     if candidates.is_empty() {
         store_raw_activity_memory(namespace.id, &memory_repo, &normalized, &config).await?;
-        RuntimeController::new(config.cognition.clone(), config.agent.clone())
+        let embeddings = create_embedding_service(&config).await;
+        RuntimeController::new(config.cognition.clone(), config.agent.clone(), embeddings)
             .ensure_started(
                 &agent,
                 normalized.session_id.as_deref(),
@@ -116,14 +117,18 @@ pub async fn execute(
         IngestOutcome::RawActivityOnly => unreachable!("candidate path cannot return raw-only"),
     }
 
-    RuntimeController::new(config.cognition.clone(), config.agent.clone())
-        .ensure_started(
-            &agent,
-            normalized.session_id.as_deref(),
-            normalized.cwd.as_deref(),
-            RuntimeMode::SessionScoped,
-        )
-        .await?;
+    RuntimeController::new(
+        config.cognition.clone(),
+        config.agent.clone(),
+        create_embedding_service(&config).await,
+    )
+    .ensure_started(
+        &agent,
+        normalized.session_id.as_deref(),
+        normalized.cwd.as_deref(),
+        RuntimeMode::SessionScoped,
+    )
+    .await?;
 
     Ok(())
 }
