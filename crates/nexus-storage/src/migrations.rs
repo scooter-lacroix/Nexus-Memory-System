@@ -10,6 +10,10 @@ pub async fn run_migrations(pool: &SqlitePool) -> crate::Result<()> {
     create_task_specifications_table(pool).await?;
     create_memory_relations_table(pool).await?;
     create_system_metrics_table(pool).await?;
+    create_memory_jobs_table(pool).await?;
+    create_session_digests_table(pool).await?;
+    create_memory_evidence_table(pool).await?;
+    create_cognitive_indexes(pool).await?;
     create_processed_files_table(pool).await?;
     Ok(())
 }
@@ -145,6 +149,152 @@ async fn create_system_metrics_table(pool: &SqlitePool) -> crate::Result<()> {
     .await
     .map_err(db_error)?;
     Ok(())
+}
+
+/// Create the memory_jobs table for bounded cognitive job queue
+async fn create_memory_jobs_table(pool: &SqlitePool) -> crate::Result<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS memory_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            namespace_id INTEGER NOT NULL,
+            job_type TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            priority INTEGER NOT NULL DEFAULT 100,
+            perspective_json TEXT,
+            payload_json TEXT NOT NULL,
+            lease_owner TEXT,
+            claim_token TEXT,
+            lease_expires_at TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_jobs_ready
+            ON memory_jobs(status, priority, created_at);
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(db_error)?;
+
+    ensure_column_exists(pool, "memory_jobs", "claim_token", "TEXT").await?;
+
+    Ok(())
+}
+
+/// Create the session_digests table for rolling session summaries
+async fn create_session_digests_table(pool: &SqlitePool) -> crate::Result<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS session_digests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            namespace_id INTEGER NOT NULL,
+            session_key TEXT NOT NULL,
+            digest_kind TEXT NOT NULL,
+            memory_id INTEGER NOT NULL,
+            start_memory_id INTEGER,
+            end_memory_id INTEGER,
+            token_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_session_digests_unique
+            ON session_digests(namespace_id, session_key, digest_kind, end_memory_id);
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(db_error)?;
+
+    Ok(())
+}
+
+/// Create the memory_evidence table for derivation lineage
+async fn create_memory_evidence_table(pool: &SqlitePool) -> crate::Result<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS memory_evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            derived_memory_id INTEGER NOT NULL,
+            source_memory_id INTEGER NOT NULL,
+            evidence_role TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_evidence_unique
+            ON memory_evidence(derived_memory_id, source_memory_id, evidence_role);
+        CREATE INDEX IF NOT EXISTS idx_memory_evidence_derived
+            ON memory_evidence(derived_memory_id);
+        CREATE INDEX IF NOT EXISTS idx_memory_evidence_source
+            ON memory_evidence(source_memory_id);
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(db_error)?;
+
+    Ok(())
+}
+
+/// Create expression indexes over memories.metadata cognitive JSON fields
+async fn create_cognitive_indexes(pool: &SqlitePool) -> crate::Result<()> {
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_memories_cognitive_level ON memories(json_extract(metadata, '$.cognitive.level'))"
+    )
+    .execute(pool)
+    .await
+    .map_err(db_error)?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_memories_cognitive_perspective
+            ON memories(
+                namespace_id,
+                json_extract(metadata, '$.cognitive.observer'),
+                json_extract(metadata, '$.cognitive.subject'),
+                json_extract(metadata, '$.cognitive.session_key')
+            )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(db_error)?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_memories_cognitive_reinforcement
+            ON memories(
+                namespace_id,
+                json_extract(metadata, '$.cognitive.level'),
+                json_extract(metadata, '$.cognitive.times_reinforced')
+            )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(db_error)?;
+
+    Ok(())
+}
+
+async fn ensure_column_exists(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> crate::Result<()> {
+    let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {definition}");
+    match sqlx::query(&sql).execute(pool).await {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            let message = error.to_string().to_lowercase();
+            if message.contains("duplicate column name") {
+                Ok(())
+            } else {
+                Err(db_error(error))
+            }
+        }
+    }
 }
 
 /// Create the processed_files table for inbox file tracking

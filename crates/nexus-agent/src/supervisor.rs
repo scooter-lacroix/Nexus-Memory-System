@@ -4,10 +4,9 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use nexus_core::config::AgentConfig;
+use nexus_core::Config;
 use nexus_llm::LlmClient;
-use nexus_storage::repository::{
-    MemoryRelationRepository, MemoryRepository, ProcessedFileRepository,
-};
+use nexus_storage::repository::{MemoryRepository, ProcessedFileRepository};
 use sqlx::SqlitePool;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
@@ -15,12 +14,12 @@ use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
-use crate::consolidate::ConsolidateService;
 use crate::error::AgentError;
 use crate::inbox::InboxScanner;
 use crate::ingest::IngestService;
 use crate::pulse;
 use crate::query::QueryService;
+use crate::runtime::{drain_cognition_jobs, run_dream_cycle, DreamCycleRequest};
 use crate::types::AgentStatus;
 
 /// How long to wait for tasks to shut down gracefully before force-aborting.
@@ -81,6 +80,9 @@ impl AgentSupervisor {
         // Spawn consolidation task
         let consolidation_handle = self.spawn_consolidation_task().await?;
         self.tasks.push(consolidation_handle);
+
+        let cognition_handle = self.spawn_cognition_worker_task().await?;
+        self.tasks.push(cognition_handle);
 
         info!("Agent supervisor started with {} tasks", self.tasks.len());
         Ok(())
@@ -143,10 +145,6 @@ impl AgentSupervisor {
 
     pub fn ingest_service(&self) -> IngestService {
         IngestService::new(self.llm.clone(), self.config.clone())
-    }
-
-    pub fn consolidate_service(&self) -> ConsolidateService {
-        ConsolidateService::new(self.llm.clone(), self.config.clone())
     }
 
     /// Get the agent namespace ID
@@ -217,9 +215,11 @@ impl AgentSupervisor {
         let status = self.status.clone();
         let interval_mins = config.consolidation_interval_mins;
         let cancel = self.cancel_token.clone();
+        let cognition = Config::from_env()
+            .map(|config| config.cognition)
+            .unwrap_or_default();
 
         let handle = tokio::spawn(async move {
-            let service = ConsolidateService::new(llm, config);
             let mut ticker = interval(Duration::from_secs(interval_mins * 60));
 
             loop {
@@ -231,30 +231,101 @@ impl AgentSupervisor {
                     }
                 }
 
-                let memory_repo = MemoryRepository::new(pool.clone());
-                let relation_repo = MemoryRelationRepository::new(&pool);
-
-                match service
-                    .consolidate(namespace_id, &memory_repo, &relation_repo)
-                    .await
+                let lease_owner = format!("supervisor-dream-{}", namespace_id);
+                match run_dream_cycle(
+                    pool.clone(),
+                    &cognition,
+                    &config,
+                    llm.clone(),
+                    DreamCycleRequest {
+                        namespace_id,
+                        lease_owner: &lease_owner,
+                        perspective: None,
+                        session_key: None,
+                        reflect_reason: "namespace_dream",
+                        digest_reason: "dream_digest",
+                    },
+                )
+                .await
                 {
-                    Ok(Some(count)) => {
+                    Ok(processed) if processed > 0 => {
                         let mut s = status.write().await;
                         s.last_consolidation = Some(Utc::now());
-                        s.memories_consolidated += count as u64;
+                        s.memories_consolidated += processed as u64;
                         pulse::write_pulse(
                             "consolidation",
                             s.memories_consolidated,
                             s.files_processed,
                         );
                     }
-                    Ok(None) => {
+                    Ok(_) => {
                         debug!("No memories to consolidate");
                     }
                     Err(e) => {
                         error!(error = %e, namespace_id, "Consolidation failed");
                         let mut s = status.write().await;
                         s.errors.push(format!("Consolidation error: {}", e));
+                        if s.errors.len() > 10 {
+                            s.errors.remove(0);
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(handle)
+    }
+
+    async fn spawn_cognition_worker_task(&self) -> Result<JoinHandle<()>, AgentError> {
+        let config = self.config.clone();
+        let pool = self.pool.clone();
+        let namespace_id = self.namespace_id;
+        let status = self.status.clone();
+        let llm = self.llm.clone();
+        let cancel = self.cancel_token.clone();
+        let cognition = nexus_core::Config::from_env()
+            .map(|config| config.cognition)
+            .unwrap_or_default();
+
+        let handle = tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(config.scan_interval_secs.max(1)));
+
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    _ = cancel.cancelled() => {
+                        info!("Cognition worker received shutdown signal");
+                        break;
+                    }
+                }
+
+                match drain_cognition_jobs(
+                    pool.clone(),
+                    namespace_id,
+                    &cognition,
+                    &config,
+                    llm.clone(),
+                    &format!("supervisor-{}", namespace_id),
+                )
+                .await
+                {
+                    Ok(processed) => {
+                        if processed > 0 {
+                            debug!(namespace_id, processed, "Cognition worker drained jobs");
+                            let mut s = status.write().await;
+                            s.last_consolidation = Some(Utc::now());
+                            s.memories_consolidated += processed as u64;
+                            pulse::write_pulse(
+                                "cognition",
+                                s.memories_consolidated,
+                                s.files_processed,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        error!(error = %error, namespace_id, "Cognition worker failed");
+                        let mut s = status.write().await;
+                        s.errors.push(format!("Cognition error: {}", error));
                         if s.errors.len() > 10 {
                             s.errors.remove(0);
                         }

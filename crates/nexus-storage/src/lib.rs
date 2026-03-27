@@ -9,9 +9,12 @@ pub mod repository;
 pub use migrations::create_processed_files_table;
 pub use models::*;
 pub use repository::{
-    MemoryRelationRepository, MemoryRepository, NamespaceRepository, ProcessedFileRepository,
+    ListMemoryFilters, MemoryRelationRepository, MemoryRepository, NamespaceRepository,
+    ProcessedFileRepository, StoreDigestParams, StoreMemoryParams, StoreMemoryWithLineageParams,
+    WorkingSetParams,
 };
 
+use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
 
 /// Convert sqlx::Error to NexusError
@@ -36,7 +39,11 @@ impl StorageManager {
 
     /// Create a new storage manager from database URL
     pub async fn from_url(url: &str) -> crate::Result<Self> {
-        let pool = SqlitePool::connect(url).await.map_err(db_error)?;
+        let options = url
+            .parse::<SqliteConnectOptions>()
+            .map_err(|err| nexus_core::NexusError::Database(err.to_string()))?
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(options).await.map_err(db_error)?;
         Ok(Self::new(pool))
     }
 

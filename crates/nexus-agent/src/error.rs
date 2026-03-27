@@ -27,6 +27,15 @@ pub enum AgentError {
 
     #[error("Supervisor error: {0}")]
     Supervisor(String),
+
+    #[error("Derivation error: {0}")]
+    Derivation(String),
+
+    #[error("Digest error: {0}")]
+    Digest(String),
+
+    #[error("Reflection error: {0}")]
+    Reflection(String),
 }
 
 pub type Result<T> = std::result::Result<T, AgentError>;

@@ -34,12 +34,45 @@ fn default_strength() -> f32 {
     0.5
 }
 
-/// Answer to a user query with citations
+/// Which representation bucket a memory was sourced from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemoryBucket {
+    Digests,
+    Recent,
+    Semantic,
+    Derived,
+    Contradictions,
+}
+
+impl std::fmt::Display for MemoryBucket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MemoryBucket::Digests => write!(f, "digests"),
+            MemoryBucket::Recent => write!(f, "recent"),
+            MemoryBucket::Semantic => write!(f, "semantic"),
+            MemoryBucket::Derived => write!(f, "derived"),
+            MemoryBucket::Contradictions => write!(f, "contradictions"),
+        }
+    }
+}
+
+/// Explains why a memory appeared in query context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryLineage {
+    pub memory_id: i64,
+    pub bucket: MemoryBucket,
+    pub phase: String,
+    pub relevance_score: Option<f32>,
+}
+
+/// Answer to a user query with citations and lineage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryAnswer {
     pub answer: String,
     pub citations: Vec<MemoryCitation>,
     pub confidence: f32,
+    #[serde(default)]
+    pub lineages: Vec<MemoryLineage>,
 }
 
 /// Citation to a memory in a query answer
