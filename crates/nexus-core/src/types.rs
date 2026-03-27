@@ -329,7 +329,18 @@ pub struct CognitiveMetadata {
     #[serde(default)]
     pub times_contradicted: i64,
     pub derived_at: Option<DateTime<Utc>>,
+    #[serde(default = "default_cognitive_generated_by")]
     pub generated_by: String,
+    /// Timestamp of the most recent belief revision (contradiction-driven confidence update).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_belief_revision: Option<DateTime<Utc>>,
+    /// Current resolution status: "unresolved", "revised", or "superseded".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution_status: Option<String>,
+}
+
+fn default_cognitive_generated_by() -> String {
+    "legacy".to_string()
 }
 
 impl CognitiveMetadata {
@@ -351,6 +362,8 @@ impl CognitiveMetadata {
             times_contradicted: 0,
             derived_at: Some(Utc::now()),
             generated_by: generated_by.into(),
+            last_belief_revision: None,
+            resolution_status: None,
         }
     }
 
@@ -387,6 +400,45 @@ impl CognitiveMetadata {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cross-session identity resolution
+// ---------------------------------------------------------------------------
+
+/// Map any agent type alias to its canonical form.
+///
+/// This is a pure function (no I/O) used across the system so that "claude"
+/// and "claude-code" resolve to the same namespace and session key.
+pub fn canonicalize_agent_type(agent_type: &str) -> String {
+    match agent_type.to_lowercase().as_str() {
+        "claude" | "claude-code" | "claudecode" => "claude-code".to_string(),
+        "pi" | "pimono" | "pi-mono" => "pi-mono".to_string(),
+        "oh-my-pi" | "ohmypi" | "omp" => "oh-my-pi".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Normalize a working-directory path for project identity matching.
+///
+/// Pure string operation — strips trailing slashes and collapses redundant
+/// path separators.  No filesystem access so it is safe to call anywhere.
+pub fn normalize_project_path(cwd: &str) -> String {
+    let trimmed = cwd.trim_end_matches('/');
+    let mut result = String::with_capacity(trimmed.len());
+    let mut last_was_sep = false;
+    for ch in trimmed.chars() {
+        if ch == '/' {
+            if !last_was_sep {
+                result.push(ch);
+            }
+            last_was_sep = true;
+        } else {
+            result.push(ch);
+            last_was_sep = false;
+        }
+    }
+    result
+}
+
 pub fn cognitive_level_from_metadata(metadata: &serde_json::Value) -> CognitiveLevel {
     CognitiveMetadata::from_metadata(metadata)
         .map(|cognitive| cognitive.level)
@@ -409,6 +461,11 @@ pub struct WorkingRepresentationRequest {
     pub include_derived: bool,
     pub include_digests: bool,
     pub include_contradictions: bool,
+    /// Optional namespace IDs to include cross-namespace digests from.
+    /// When non-empty, the representation builder fetches a bounded number of
+    /// digests from these related namespaces (lower priority than primary).
+    #[serde(default)]
+    pub cross_namespace_ids: Vec<i64>,
 }
 
 impl Default for WorkingRepresentationRequest {
@@ -424,6 +481,7 @@ impl Default for WorkingRepresentationRequest {
             include_derived: true,
             include_digests: true,
             include_contradictions: true,
+            cross_namespace_ids: Vec::new(),
         }
     }
 }
@@ -747,6 +805,8 @@ mod tests {
             times_contradicted: 1,
             derived_at: Some(Utc::now()),
             generated_by: "reflect_service".to_string(),
+            last_belief_revision: None,
+            resolution_status: None,
         };
         let merged = cognitive.merge_into(&serde_json::json!({
             "source": { "agent": "agent-a" }
@@ -781,6 +841,27 @@ mod tests {
         assert_eq!(perspective.observer, "agent-a");
         assert_eq!(perspective.subject, "agent-b");
         assert_eq!(perspective.session_key.as_deref(), Some("sess-2"));
+    }
+
+    #[test]
+    fn test_cognitive_metadata_from_metadata_defaults_legacy_generated_by() {
+        let metadata = serde_json::json!({
+            "cognitive": {
+                "level": "explicit",
+                "observer": "agent-a",
+                "subject": "agent-b",
+                "session_key": "sess-2",
+                "source_memory_ids": [],
+                "confidence": 0.7,
+                "times_reinforced": 0,
+                "times_contradicted": 0,
+                "derived_at": null
+            }
+        });
+
+        let cognitive = CognitiveMetadata::from_metadata(&metadata).expect("cognitive metadata");
+        assert_eq!(cognitive.level, CognitiveLevel::Explicit);
+        assert_eq!(cognitive.generated_by, "legacy");
     }
 
     #[test]
@@ -819,5 +900,83 @@ mod tests {
         assert_eq!(perspective.observer, "agent-a");
         assert_eq!(perspective.subject, "project-x");
         assert_eq!(perspective.session_key.as_deref(), Some("sess-2"));
+    }
+
+    // -- canonicalize_agent_type --------------------------------------------------
+
+    #[test]
+    fn test_canonicalize_agent_type_claude_aliases() {
+        assert_eq!(canonicalize_agent_type("claude"), "claude-code");
+        assert_eq!(canonicalize_agent_type("claude-code"), "claude-code");
+        assert_eq!(canonicalize_agent_type("CLAUDE"), "claude-code");
+        assert_eq!(canonicalize_agent_type("ClaudeCode"), "claude-code");
+        assert_eq!(canonicalize_agent_type("claudecode"), "claude-code");
+    }
+
+    #[test]
+    fn test_canonicalize_agent_type_pi_aliases() {
+        assert_eq!(canonicalize_agent_type("pi"), "pi-mono");
+        assert_eq!(canonicalize_agent_type("pimono"), "pi-mono");
+        assert_eq!(canonicalize_agent_type("pi-mono"), "pi-mono");
+        assert_eq!(canonicalize_agent_type("PI"), "pi-mono");
+    }
+
+    #[test]
+    fn test_canonicalize_agent_type_oh_my_pi_aliases() {
+        assert_eq!(canonicalize_agent_type("oh-my-pi"), "oh-my-pi");
+        assert_eq!(canonicalize_agent_type("ohmypi"), "oh-my-pi");
+        assert_eq!(canonicalize_agent_type("omp"), "oh-my-pi");
+        assert_eq!(canonicalize_agent_type("OH-MY-PI"), "oh-my-pi");
+    }
+
+    #[test]
+    fn test_canonicalize_agent_type_passthrough() {
+        assert_eq!(canonicalize_agent_type("gemini"), "gemini");
+        assert_eq!(canonicalize_agent_type("codex"), "codex");
+        assert_eq!(canonicalize_agent_type("amp"), "amp");
+        assert_eq!(canonicalize_agent_type("unknown-agent"), "unknown-agent");
+    }
+
+    // -- normalize_project_path --------------------------------------------------
+
+    #[test]
+    fn test_normalize_project_path_trailing_slashes() {
+        assert_eq!(
+            normalize_project_path("/home/user/project/"),
+            "/home/user/project"
+        );
+        assert_eq!(
+            normalize_project_path("/home/user/project//"),
+            "/home/user/project"
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_path_redundant_separators() {
+        assert_eq!(
+            normalize_project_path("/home//user///project"),
+            "/home/user/project"
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_path_already_clean() {
+        assert_eq!(
+            normalize_project_path("/home/user/project"),
+            "/home/user/project"
+        );
+    }
+
+    #[test]
+    fn test_normalize_project_path_root() {
+        assert_eq!(normalize_project_path("/"), "");
+    }
+
+    // -- WorkingRepresentationRequest cross-namespace ----------------------------
+
+    #[test]
+    fn test_working_representation_request_cross_namespace_default_empty() {
+        let request = WorkingRepresentationRequest::default();
+        assert!(request.cross_namespace_ids.is_empty());
     }
 }

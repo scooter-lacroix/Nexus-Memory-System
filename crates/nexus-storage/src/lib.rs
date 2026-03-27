@@ -9,9 +9,9 @@ pub mod repository;
 pub use migrations::create_processed_files_table;
 pub use models::*;
 pub use repository::{
-    ListMemoryFilters, MemoryRelationRepository, MemoryRepository, NamespaceRepository,
-    ProcessedFileRepository, StoreDigestParams, StoreMemoryParams, StoreMemoryWithLineageParams,
-    WorkingSetParams,
+    ListMemoryFilters, MemoryRelationRepository, MemoryRepository, MetricSample,
+    NamespaceRepository, ProcessedFileRepository, SemanticCandidateParams, StoreDigestParams,
+    StoreMemoryParams, StoreMemoryWithLineageParams, WorkingSetParams,
 };
 
 use sqlx::sqlite::SqliteConnectOptions;

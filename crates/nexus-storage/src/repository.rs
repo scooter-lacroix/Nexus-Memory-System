@@ -1,8 +1,11 @@
 //! Repository implementations for database operations
 
+use std::collections::HashMap;
+
 use crate::models::{
     memory_job_status, AgentNamespaceRow, ClaimedMemoryJob, EnqueueJobParams, MemoryEvidenceRow,
     MemoryJobRow, MemoryLineageEntry, MemoryRow, ProcessedFileRow, SessionDigestRow,
+    SystemMetricRow,
 };
 use crate::{db_error, Result};
 use chrono::{DateTime, Utc};
@@ -74,6 +77,26 @@ pub struct WorkingSetParams<'a> {
     pub include_raw: bool,
 }
 
+/// Parameters for embedding-backed semantic candidate retrieval.
+pub struct SemanticCandidateParams<'a> {
+    /// Namespace to search within.
+    pub namespace_id: i64,
+    /// Optional perspective lens for observer/subject/session scoping.
+    pub perspective: Option<&'a PerspectiveKey>,
+    /// Maximum number of candidate memories to return before vector ranking.
+    pub limit: i64,
+    /// When `false`, raw-activity hook noise is excluded.
+    pub include_raw: bool,
+}
+
+/// A persisted system metric sample.
+#[derive(Debug, Clone)]
+pub struct MetricSample {
+    pub metric_name: String,
+    pub metric_value: f64,
+    pub labels: serde_json::Value,
+}
+
 /// Maximum number of retry attempts before a job is permanently failed.
 const MAX_JOB_ATTEMPTS: i64 = 5;
 const RAW_ACTIVITY_FILTER_SQL: &str =
@@ -87,6 +110,10 @@ pub struct MemoryRepository {
 impl MemoryRepository {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
     }
 
     /// Store a new memory
@@ -568,6 +595,29 @@ impl MemoryRepository {
         )
         .bind(namespace_id)
         .bind(session_key)
+        .bind(digest_kind)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        match digest {
+            Some(d) => self.get_by_id(d.memory_id).await,
+            None => Ok(None),
+        }
+    }
+
+    /// Get the latest digest memory for a namespace and digest kind, regardless
+    /// of session key. Returns the `Memory` row that the digest points to, or
+    /// None if no digest exists.
+    pub async fn latest_digest_for_namespace(
+        &self,
+        namespace_id: i64,
+        digest_kind: &str,
+    ) -> Result<Option<Memory>> {
+        let digest: Option<SessionDigestRow> = sqlx::query_as::<_, SessionDigestRow>(
+            "SELECT * FROM session_digests WHERE namespace_id = ? AND digest_kind = ? ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(namespace_id)
         .bind(digest_kind)
         .fetch_optional(&self.pool)
         .await
@@ -1073,6 +1123,60 @@ impl MemoryRepository {
             .collect())
     }
 
+    /// Load lineage rows for many source/derived memory IDs in one query.
+    pub async fn load_lineage_batch(
+        &self,
+        memory_ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<MemoryLineageEntry>>> {
+        if memory_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let placeholders = memory_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            r#"
+            SELECT * FROM memory_evidence
+            WHERE derived_memory_id IN ({placeholders})
+               OR source_memory_id IN ({placeholders})
+            ORDER BY created_at ASC
+            "#
+        );
+
+        let mut query = sqlx::query_as::<_, MemoryEvidenceRow>(&sql);
+        for id in memory_ids {
+            query = query.bind(*id);
+        }
+        for id in memory_ids {
+            query = query.bind(*id);
+        }
+
+        let rows = query.fetch_all(&self.pool).await.map_err(db_error)?;
+        let mut grouped: HashMap<i64, Vec<MemoryLineageEntry>> = HashMap::new();
+
+        for row in rows {
+            let entry = MemoryLineageEntry {
+                derived_memory_id: row.derived_memory_id,
+                source_memory_id: row.source_memory_id,
+                evidence_role: row.evidence_role,
+            };
+
+            if memory_ids.contains(&entry.derived_memory_id) {
+                grouped
+                    .entry(entry.derived_memory_id)
+                    .or_default()
+                    .push(entry.clone());
+            }
+            if memory_ids.contains(&entry.source_memory_id) {
+                grouped
+                    .entry(entry.source_memory_id)
+                    .or_default()
+                    .push(entry);
+            }
+        }
+
+        Ok(grouped)
+    }
+
     /// Get a memory by ID
     pub async fn get_by_id(&self, id: i64) -> Result<Option<Memory>> {
         let row: Option<MemoryRow> = sqlx::query_as("SELECT * FROM memories WHERE id = ?")
@@ -1280,6 +1384,135 @@ impl MemoryRepository {
         Ok(rows)
     }
 
+    /// Search memories by text content and return domain memories.
+    pub async fn search_by_text_memories(
+        &self,
+        namespace_id: i64,
+        query: &str,
+        limit: i32,
+        include_raw: bool,
+    ) -> Result<Vec<Memory>> {
+        let rows = self
+            .search_by_text(namespace_id, query, limit, include_raw)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| self.row_to_memory(row))
+            .collect())
+    }
+
+    /// Fetch recent, embedding-bearing cognition memories for vector-first semantic recall.
+    pub async fn get_semantic_candidates(
+        &self,
+        params: SemanticCandidateParams<'_>,
+    ) -> Result<Vec<Memory>> {
+        let SemanticCandidateParams {
+            namespace_id,
+            perspective,
+            limit,
+            include_raw,
+        } = params;
+
+        let noise_sql = if include_raw {
+            String::new()
+        } else {
+            format!("AND {}", RAW_ACTIVITY_FILTER_SQL)
+        };
+
+        let rows = if let Some(perspective) = perspective {
+            let sql = if perspective.session_key.is_some() {
+                format!(
+                    r#"
+                    SELECT * FROM memories
+                    WHERE namespace_id = ?
+                      AND is_active = 1
+                      AND content_embedding IS NOT NULL
+                      AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
+                      AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
+                      AND (
+                          json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.session_key') = ?
+                          OR EXISTS (
+                              SELECT 1
+                              FROM json_each(COALESCE(json_extract(metadata, '$.cognitive.session_keys'), '[]'))
+                              WHERE value = ?
+                          )
+                      )
+                      {noise_sql}
+                    ORDER BY updated_at DESC, created_at DESC
+                    LIMIT ?
+                    "#
+                )
+            } else {
+                format!(
+                    r#"
+                    SELECT * FROM memories
+                    WHERE namespace_id = ?
+                      AND is_active = 1
+                      AND content_embedding IS NOT NULL
+                      AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
+                      AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
+                      {noise_sql}
+                    ORDER BY updated_at DESC, created_at DESC
+                    LIMIT ?
+                    "#
+                )
+            };
+
+            let mut query = sqlx::query_as::<_, MemoryRow>(&sql)
+                .bind(namespace_id)
+                .bind(&perspective.observer)
+                .bind(&perspective.subject);
+
+            if let Some(session_key) = &perspective.session_key {
+                query = query.bind(session_key);
+                query = query.bind(session_key);
+            }
+
+            query
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db_error)?
+        } else {
+            let sql = if include_raw {
+                r#"
+                SELECT * FROM memories
+                WHERE namespace_id = ?
+                  AND is_active = 1
+                  AND content_embedding IS NOT NULL
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT ?
+                "#
+                .to_string()
+            } else {
+                format!(
+                    r#"
+                    SELECT * FROM memories
+                    WHERE namespace_id = ?
+                      AND is_active = 1
+                      AND content_embedding IS NOT NULL
+                      AND {}
+                    ORDER BY updated_at DESC, created_at DESC
+                    LIMIT ?
+                    "#,
+                    RAW_ACTIVITY_FILTER_SQL,
+                )
+            };
+
+            sqlx::query_as::<_, MemoryRow>(&sql)
+                .bind(namespace_id)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db_error)?
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(|row| self.row_to_memory(row))
+            .collect())
+    }
+
     /// List memories with optional filters
     pub async fn list_filtered(
         &self,
@@ -1438,6 +1671,29 @@ impl MemoryRepository {
         .map_err(db_error)?;
 
         Ok(rows.into_iter().map(|(session_key,)| session_key).collect())
+    }
+
+    /// Count distinct non-empty cognitive session keys present in active memories.
+    pub async fn count_distinct_session_keys_with_cognition(
+        &self,
+        namespace_id: i64,
+    ) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(DISTINCT json_extract(COALESCE(metadata, '{}'), '$.cognitive.session_key'))
+            FROM memories
+            WHERE namespace_id = ?
+              AND is_active = 1
+              AND json_extract(COALESCE(metadata, '{}'), '$.cognitive.session_key') IS NOT NULL
+              AND TRIM(json_extract(COALESCE(metadata, '{}'), '$.cognitive.session_key')) <> ''
+            "#,
+        )
+        .bind(namespace_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(count)
     }
 
     /// List lineage-backed archived raw-activity memories that are safe to prune.
@@ -1865,6 +2121,102 @@ impl MemoryRepository {
         .await
         .map_err(db_error)?;
         Ok(count)
+    }
+
+    /// Record a system metric sample.
+    pub async fn record_metric(
+        &self,
+        metric_name: &str,
+        metric_value: f64,
+        labels: &serde_json::Value,
+    ) -> Result<i64> {
+        let labels_json = serde_json::to_string(labels)?;
+        let id: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO system_metrics (metric_name, metric_value, labels, recorded_at)
+            VALUES (?, ?, ?, ?)
+            RETURNING id
+            "#,
+        )
+        .bind(metric_name)
+        .bind(metric_value)
+        .bind(labels_json)
+        .bind(Utc::now())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(id)
+    }
+
+    /// Persist multiple metric samples in a single transaction.
+    pub async fn record_metrics_batch(&self, samples: &[MetricSample]) -> Result<()> {
+        if samples.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        for sample in samples {
+            let labels_json = serde_json::to_string(&sample.labels)?;
+            sqlx::query(
+                r#"
+                INSERT INTO system_metrics (metric_name, metric_value, labels, recorded_at)
+                VALUES (?, ?, ?, ?)
+                "#,
+            )
+            .bind(&sample.metric_name)
+            .bind(sample.metric_value)
+            .bind(labels_json)
+            .bind(Utc::now())
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        }
+        tx.commit().await.map_err(db_error)?;
+        Ok(())
+    }
+
+    /// Fetch the newest metric samples for a namespace and optional prefix.
+    pub async fn latest_metrics_for_namespace(
+        &self,
+        namespace_id: i64,
+        metric_prefix: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<SystemMetricRow>> {
+        let limit = limit.max(1);
+        let rows = if let Some(prefix) = metric_prefix {
+            sqlx::query_as::<_, SystemMetricRow>(
+                r#"
+                SELECT *
+                FROM system_metrics
+                WHERE json_extract(COALESCE(labels, '{}'), '$.namespace_id') = ?
+                  AND metric_name LIKE ?
+                ORDER BY recorded_at DESC, id DESC
+                LIMIT ?
+                "#,
+            )
+            .bind(namespace_id)
+            .bind(format!("{prefix}%"))
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?
+        } else {
+            sqlx::query_as::<_, SystemMetricRow>(
+                r#"
+                SELECT *
+                FROM system_metrics
+                WHERE json_extract(COALESCE(labels, '{}'), '$.namespace_id') = ?
+                ORDER BY recorded_at DESC, id DESC
+                LIMIT ?
+                "#,
+            )
+            .bind(namespace_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?
+        };
+        Ok(rows)
     }
 
     /// Count active memories for a namespace at one cognitive level.
@@ -2741,6 +3093,13 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(updated.id, replacement_memory.id);
+
+        let latest_for_namespace = repo
+            .latest_digest_for_namespace(ns_id, "short")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest_for_namespace.id, replacement_memory.id);
     }
 
     #[tokio::test]
@@ -3142,6 +3501,125 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(recent_all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_semantic_candidates_respect_perspective_and_raw_noise_filtering() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "test-agent").await;
+        let repo = MemoryRepository::new(pool);
+        let perspective = PerspectiveKey::new("claude-code", "claude-code", Some("s1".into()));
+
+        repo.store(StoreMemoryParams {
+            namespace_id: ns_id,
+            content: "clean semantic observation",
+            category: &Category::Facts,
+            memory_lane_type: None,
+            labels: &[],
+            metadata: &cognitive_metadata(CognitiveLevel::Explicit, &perspective, 0, 0),
+            embedding: Some(&[0.1_f32; 384]),
+            embedding_model: Some("mock"),
+        })
+        .await
+        .unwrap();
+
+        repo.store(StoreMemoryParams {
+            namespace_id: ns_id,
+            content: "raw semantic noise",
+            category: &Category::Session,
+            memory_lane_type: None,
+            labels: &["raw-activity".to_string()],
+            metadata: &serde_json::json!({
+                "raw_activity": true,
+                "cognitive": {
+                    "level": "raw",
+                    "observer": "claude-code",
+                    "subject": "claude-code",
+                    "session_key": "s1",
+                    "generated_by": "test"
+                }
+            }),
+            embedding: Some(&[0.2_f32; 384]),
+            embedding_model: Some("mock"),
+        })
+        .await
+        .unwrap();
+
+        repo.store(StoreMemoryParams {
+            namespace_id: ns_id,
+            content: "other perspective semantic",
+            category: &Category::Facts,
+            memory_lane_type: None,
+            labels: &[],
+            metadata: &serde_json::json!({
+                "cognitive": {
+                    "level": "explicit",
+                    "observer": "codex",
+                    "subject": "codex",
+                    "session_key": "s1",
+                    "generated_by": "test"
+                }
+            }),
+            embedding: Some(&[0.3_f32; 384]),
+            embedding_model: Some("mock"),
+        })
+        .await
+        .unwrap();
+
+        let candidates = repo
+            .get_semantic_candidates(SemanticCandidateParams {
+                namespace_id: ns_id,
+                perspective: Some(&perspective),
+                limit: 10,
+                include_raw: false,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].content, "clean semantic observation");
+    }
+
+    #[tokio::test]
+    async fn test_semantic_candidates_match_session_keys_array() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "test-agent").await;
+        let repo = MemoryRepository::new(pool);
+        let perspective = PerspectiveKey::new("claude-code", "claude-code", Some("s-array".into()));
+
+        repo.store(StoreMemoryParams {
+            namespace_id: ns_id,
+            content: "session array semantic observation",
+            category: &Category::Facts,
+            memory_lane_type: None,
+            labels: &[],
+            metadata: &serde_json::json!({
+                "cognitive": {
+                    "level": "explicit",
+                    "observer": "claude-code",
+                    "subject": "claude-code",
+                    "session_keys": ["s-array", "s-other"],
+                    "generated_by": "test"
+                }
+            }),
+            embedding: Some(&[0.4_f32; 384]),
+            embedding_model: Some("mock"),
+        })
+        .await
+        .unwrap();
+
+        let candidates = repo
+            .get_semantic_candidates(SemanticCandidateParams {
+                namespace_id: ns_id,
+                perspective: Some(&perspective),
+                limit: 10,
+                include_raw: false,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].content, "session array semantic observation");
     }
 
     #[tokio::test]
@@ -3679,6 +4157,84 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn test_record_metric_and_latest_metrics_for_namespace() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "metric-ns").await;
+        let other_ns = create_namespace(&pool, "metric-other").await;
+        let repo = MemoryRepository::new(pool);
+
+        repo.record_metric(
+            "cognition.query.total_ms",
+            12.5,
+            &serde_json::json!({"namespace_id": ns_id, "stage": "total", "unit": "ms"}),
+        )
+        .await
+        .unwrap();
+        repo.record_metric(
+            "cognition.query.total_ms",
+            18.0,
+            &serde_json::json!({"namespace_id": other_ns, "stage": "total", "unit": "ms"}),
+        )
+        .await
+        .unwrap();
+        repo.record_metric(
+            "cognition.representation.total_ms",
+            4.0,
+            &serde_json::json!({"namespace_id": ns_id, "stage": "total", "unit": "ms"}),
+        )
+        .await
+        .unwrap();
+
+        let metrics = repo
+            .latest_metrics_for_namespace(ns_id, Some("cognition."), 10)
+            .await
+            .unwrap();
+
+        assert_eq!(metrics.len(), 2);
+        assert!(metrics
+            .iter()
+            .all(|metric| metric.labels.contains(&ns_id.to_string())));
+        assert!(metrics
+            .iter()
+            .any(|metric| metric.metric_name == "cognition.query.total_ms"));
+        assert!(metrics
+            .iter()
+            .any(|metric| metric.metric_name == "cognition.representation.total_ms"));
+        assert!(metrics
+            .iter()
+            .all(|metric| { metric.metric_name.starts_with("cognition.") }));
+    }
+
+    #[tokio::test]
+    async fn test_record_metrics_batch_persists_all_samples() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "metric-batch").await;
+        let repo = MemoryRepository::new(pool);
+
+        repo.record_metrics_batch(&[
+            MetricSample {
+                metric_name: "cognition.query.total_ms".to_string(),
+                metric_value: 9.5,
+                labels: serde_json::json!({"namespace_id": ns_id, "stage": "total", "unit": "ms"}),
+            },
+            MetricSample {
+                metric_name: "cognition.query.answer.total_tokens".to_string(),
+                metric_value: 128.0,
+                labels: serde_json::json!({"namespace_id": ns_id, "stage": "answer", "unit": "tokens"}),
+            },
+        ])
+        .await
+        .unwrap();
+
+        let metrics = repo
+            .latest_metrics_for_namespace(ns_id, Some("cognition."), 10)
+            .await
+            .unwrap();
+
+        assert_eq!(metrics.len(), 2);
     }
 
     // ---- Observability query tests ----

@@ -4,25 +4,54 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use chrono::Utc;
+use nexus_core::config::CognitionConfig;
 use nexus_core::{
-    perspective_from_metadata, CognitiveLevel, CognitiveMetadata, Memory, PerspectiveKey,
-    WorkingRepresentation, WorkingRepresentationRequest,
+    CognitiveLevel, Memory, PerspectiveKey, WorkingRepresentation, WorkingRepresentationRequest,
 };
 
-use crate::types::MemoryBucket;
+use crate::types::{ExclusionReason, MemoryBucket};
+use crate::util::CognitionSnapshot;
 
 #[derive(Debug, Clone)]
-pub(crate) struct BucketedMemory {
-    pub(crate) memory: Memory,
-    pub(crate) bucket: MemoryBucket,
-    pub(crate) blended_score: f32,
+pub struct BucketedMemory {
+    pub memory: Memory,
+    pub bucket: MemoryBucket,
+    pub blended_score: f32,
 }
 
-pub(crate) fn flatten_ranked_representation(
+/// Result of ranking with introspection: included memories plus those
+/// excluded by budget truncation.
+#[derive(Debug, Clone)]
+pub struct RankedResult {
+    pub included: Vec<BucketedMemory>,
+    pub excluded: Vec<RankedExcludedMemory>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RankedExcludedMemory {
+    pub memory: Memory,
+    pub bucket: MemoryBucket,
+    pub blended_score: f32,
+    pub reason: ExclusionReason,
+}
+
+/// Deduplicate, rank, and split memories into included/excluded sets.
+pub fn flatten_ranked_representation_with_excluded(
     representation: WorkingRepresentation,
     request: &WorkingRepresentationRequest,
-) -> Vec<BucketedMemory> {
+) -> RankedResult {
+    flatten_ranked_representation_with_config(representation, request, None)
+}
+
+/// Like [`flatten_ranked_representation_with_excluded`] but accepts an optional
+/// `CognitionConfig` to enable memory aging decay in the blend.
+pub fn flatten_ranked_representation_with_config(
+    representation: WorkingRepresentation,
+    request: &WorkingRepresentationRequest,
+    cognition: Option<&CognitionConfig>,
+) -> RankedResult {
     let mut best_by_id: HashMap<i64, BucketedMemory> = HashMap::new();
+    let mut excluded = Vec::new();
 
     for (bucket, memories) in [
         (MemoryBucket::Digests, representation.digests),
@@ -33,7 +62,7 @@ pub(crate) fn flatten_ranked_representation(
     ] {
         for memory in memories {
             let candidate = BucketedMemory {
-                blended_score: blended_score(&memory, bucket, request),
+                blended_score: blended_score(&memory, bucket, request, cognition),
                 memory,
                 bucket,
             };
@@ -42,20 +71,53 @@ pub(crate) fn flatten_ranked_representation(
                 Some(existing)
                     if compare_bucketed_memory(&candidate, existing) == Ordering::Greater =>
                 {
+                    excluded.push(RankedExcludedMemory {
+                        memory: existing.memory.clone(),
+                        bucket: existing.bucket,
+                        blended_score: existing.blended_score,
+                        reason: ExclusionReason::Deduplicated,
+                    });
                     *existing = candidate;
                 }
                 None => {
                     best_by_id.insert(candidate.memory.id, candidate);
                 }
-                _ => {}
+                Some(_) => excluded.push(RankedExcludedMemory {
+                    memory: candidate.memory,
+                    bucket: candidate.bucket,
+                    blended_score: candidate.blended_score,
+                    reason: ExclusionReason::Deduplicated,
+                }),
             }
         }
     }
 
     let mut ranked: Vec<_> = best_by_id.into_values().collect();
     ranked.sort_by(|left, right| compare_bucketed_memory(left, right).reverse());
-    ranked.truncate(request.max_items);
-    ranked
+
+    let max_items = request.max_items;
+    if ranked.len() > max_items {
+        excluded.extend(ranked.split_off(max_items).into_iter().map(|memory| {
+            RankedExcludedMemory {
+                memory: memory.memory,
+                bucket: memory.bucket,
+                blended_score: memory.blended_score,
+                reason: ExclusionReason::BudgetTruncation,
+            }
+        }));
+    }
+
+    RankedResult {
+        included: ranked,
+        excluded,
+    }
+}
+
+pub(crate) fn flatten_ranked_representation(
+    representation: WorkingRepresentation,
+    request: &WorkingRepresentationRequest,
+) -> Vec<BucketedMemory> {
+    flatten_ranked_representation_with_config(representation, request, None).included
 }
 
 fn compare_bucketed_memory(left: &BucketedMemory, right: &BucketedMemory) -> Ordering {
@@ -71,6 +133,7 @@ fn blended_score(
     memory: &Memory,
     bucket: MemoryBucket,
     request: &WorkingRepresentationRequest,
+    cognition: Option<&CognitionConfig>,
 ) -> f32 {
     if memory.is_archived {
         return -0.5;
@@ -80,29 +143,22 @@ fn blended_score(
         return if request.include_raw { -0.1 } else { -1.0 };
     }
 
-    let cognitive = CognitiveMetadata::from_metadata(&memory.metadata);
-    let confidence = cognitive
-        .as_ref()
-        .and_then(|value| value.confidence)
-        .unwrap_or(0.75)
-        .clamp(0.0, 1.0);
-    let reinforcement_score = cognitive
-        .as_ref()
-        .map(|value| ((value.times_reinforced.max(0) as f32) / 5.0).min(1.0))
-        .unwrap_or_default();
+    let snapshot = CognitionSnapshot::from_memory(memory);
+    let confidence = snapshot.confidence.unwrap_or(0.75).clamp(0.0, 1.0);
+    let reinforcement_score = ((snapshot.times_reinforced.max(0) as f32) / 5.0).min(1.0);
     let semantic_similarity = memory
         .relevance_score
         .or(memory.similarity_score)
         .unwrap_or_default()
         .clamp(0.0, 1.0);
     let recency_score = recency_weight(memory);
-    let perspective_score = perspective_weight(memory, request.perspective.as_ref());
+    let perspective_score = perspective_weight(&snapshot, request.perspective.as_ref());
     let digest_or_derived_bonus = f32::from(matches!(
-        cognitive.as_ref().map(|value| value.level),
-        Some(CognitiveLevel::SummaryShort | CognitiveLevel::SummaryLong | CognitiveLevel::Derived)
+        snapshot.level,
+        CognitiveLevel::SummaryShort | CognitiveLevel::SummaryLong | CognitiveLevel::Derived
     ));
 
-    match bucket {
+    let base = match bucket {
         MemoryBucket::Digests => {
             0.45 * confidence + 0.30 * recency_score + 0.25 * perspective_score + 0.05
         }
@@ -123,7 +179,11 @@ fn blended_score(
         MemoryBucket::Contradictions => {
             0.60 * confidence + 0.25 * recency_score + 0.15 * perspective_score
         }
-    }
+    };
+
+    // Apply memory aging decay penalty when enabled.
+    let decay = decay_penalty(memory, cognition);
+    (base - decay).max(-1.0)
 }
 
 fn bucket_priority(bucket: MemoryBucket) -> u8 {
@@ -148,12 +208,52 @@ fn recency_weight(memory: &Memory) -> f32 {
     }
 }
 
-fn perspective_weight(memory: &Memory, request_perspective: Option<&PerspectiveKey>) -> f32 {
+/// Compute a decay penalty (0.0–0.15) based on memory age and access patterns.
+///
+/// Memories older than `decay_age_days` without recent access get an increasing
+/// penalty. Recent access (within `access_boost_days`) resets the effective age.
+fn decay_penalty(memory: &Memory, cognition: Option<&CognitionConfig>) -> f32 {
+    let config = match cognition {
+        Some(c) if c.memory_decay_enabled => c,
+        _ => return 0.0,
+    };
+
+    let age_days = (Utc::now() - memory.created_at).num_days() as u64;
+    if age_days < config.memory_decay_age_days {
+        return 0.0;
+    }
+
+    // Recent access resets the effective age.
+    let effective_age = if let Some(last_accessed) = memory.last_accessed {
+        let access_age = (Utc::now() - last_accessed).num_days() as u64;
+        if access_age < config.memory_decay_access_boost_days {
+            0
+        } else {
+            age_days.saturating_sub(config.memory_decay_access_boost_days)
+        }
+    } else {
+        age_days
+    };
+
+    if effective_age < config.memory_decay_age_days {
+        return 0.0;
+    }
+
+    // Scale penalty: 0 at decay_age_days, up to 0.15 at 2x decay_age_days.
+    let overage = (effective_age - config.memory_decay_age_days) as f32;
+    let scale = config.memory_decay_age_days as f32;
+    (overage / scale * 0.15).min(0.15)
+}
+
+fn perspective_weight(
+    snapshot: &CognitionSnapshot,
+    request_perspective: Option<&PerspectiveKey>,
+) -> f32 {
     let Some(request_perspective) = request_perspective else {
         return 0.5;
     };
 
-    let Some(memory_perspective) = perspective_from_metadata(&memory.metadata) else {
+    let Some(memory_perspective) = snapshot.perspective.as_ref() else {
         return 0.0;
     };
 
@@ -172,18 +272,16 @@ fn perspective_weight(memory: &Memory, request_perspective: Option<&PerspectiveK
 }
 
 fn is_raw_activity(memory: &Memory) -> bool {
-    memory.labels.iter().any(|label| label == "raw-activity")
-        || memory
-            .metadata
-            .get("raw_activity")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
+    CognitionSnapshot::from_memory(memory).raw_activity
 }
 
 #[cfg(test)]
 mod tests {
     use chrono::Duration;
-    use nexus_core::{infer_perspective, PerspectiveSource};
+    use nexus_core::config::CognitionConfig;
+    use nexus_core::{
+        infer_perspective, CognitiveMetadata, PerspectiveSource, WorkingRepresentation,
+    };
 
     use super::*;
 
@@ -349,5 +447,205 @@ mod tests {
         );
 
         assert_eq!(ranked[0].memory.id, 2);
+    }
+
+    #[test]
+    fn test_flatten_ranked_representation_with_excluded_captures_dedupe_and_budget() {
+        let perspective = infer_perspective(
+            PerspectiveSource::HookIngest,
+            "claude-code",
+            None::<String>,
+            None,
+        );
+        let shared = memory(
+            1,
+            "shared semantic",
+            MemoryBucket::Semantic,
+            &perspective,
+            CognitiveLevel::Explicit,
+        );
+        let lower_duplicate = memory(
+            1,
+            "shared recent",
+            MemoryBucket::Recent,
+            &perspective,
+            CognitiveLevel::Explicit,
+        );
+        let second = memory(
+            2,
+            "second memory",
+            MemoryBucket::Recent,
+            &perspective,
+            CognitiveLevel::Explicit,
+        );
+
+        let representation = WorkingRepresentation {
+            digests: vec![],
+            recent: vec![lower_duplicate.memory.clone(), second.memory.clone()],
+            semantic: vec![shared.memory.clone()],
+            derived: vec![],
+            contradictions: vec![],
+        };
+        let request = WorkingRepresentationRequest {
+            max_items: 1,
+            ..WorkingRepresentationRequest::default()
+        };
+
+        let ranked = flatten_ranked_representation_with_excluded(representation, &request);
+
+        assert_eq!(ranked.included.len(), 1);
+        assert_eq!(ranked.excluded.len(), 2);
+        assert!(ranked
+            .excluded
+            .iter()
+            .any(|item| item.reason == ExclusionReason::Deduplicated));
+        assert!(ranked
+            .excluded
+            .iter()
+            .any(|item| item.reason == ExclusionReason::BudgetTruncation));
+    }
+
+    #[test]
+    fn test_decay_penalty_demotes_old_memories_with_cognition_config() {
+        let perspective = infer_perspective(
+            PerspectiveSource::Query,
+            "claude-code",
+            None,
+            Some("session-a".to_string()),
+        );
+
+        let mut old_memory = memory(
+            1,
+            "old observation from long ago",
+            MemoryBucket::Recent,
+            &perspective,
+            CognitiveLevel::Explicit,
+        );
+        // Make it very old (200 days).
+        old_memory.memory.created_at = Utc::now() - Duration::days(200);
+
+        let fresh_memory = memory(
+            2,
+            "fresh observation just now",
+            MemoryBucket::Recent,
+            &perspective,
+            CognitiveLevel::Explicit,
+        );
+
+        let ranked = flatten_ranked_representation_with_config(
+            WorkingRepresentation {
+                recent: vec![old_memory.memory.clone(), fresh_memory.memory.clone()],
+                ..WorkingRepresentation::default()
+            },
+            &WorkingRepresentationRequest {
+                perspective: Some(perspective),
+                max_items: 10,
+                ..WorkingRepresentationRequest::default()
+            },
+            Some(&CognitionConfig {
+                memory_decay_enabled: true,
+                memory_decay_age_days: 90,
+                memory_decay_access_boost_days: 30,
+                ..CognitionConfig::default()
+            }),
+        );
+
+        // Fresh memory should rank higher.
+        assert_eq!(ranked.included[0].memory.id, 2);
+        assert!(ranked.included[0].blended_score > ranked.included[1].blended_score);
+    }
+
+    #[test]
+    fn test_decay_penalty_recent_access_resets_clock() {
+        let perspective = infer_perspective(
+            PerspectiveSource::Query,
+            "claude-code",
+            None,
+            Some("session-a".to_string()),
+        );
+
+        let mut old_but_accessed = memory(
+            1,
+            "old but recently accessed",
+            MemoryBucket::Recent,
+            &perspective,
+            CognitiveLevel::Explicit,
+        );
+        old_but_accessed.memory.created_at = Utc::now() - Duration::days(200);
+        old_but_accessed.memory.last_accessed = Some(Utc::now() - Duration::days(10));
+
+        let ranked = flatten_ranked_representation_with_config(
+            WorkingRepresentation {
+                recent: vec![old_but_accessed.memory],
+                ..WorkingRepresentation::default()
+            },
+            &WorkingRepresentationRequest {
+                perspective: Some(perspective),
+                max_items: 10,
+                ..WorkingRepresentationRequest::default()
+            },
+            Some(&CognitionConfig {
+                memory_decay_enabled: true,
+                memory_decay_age_days: 90,
+                memory_decay_access_boost_days: 30,
+                ..CognitionConfig::default()
+            }),
+        );
+
+        // Recent access should prevent decay — score should be >= 0 (no penalty).
+        assert!(ranked.included[0].blended_score >= 0.0);
+    }
+
+    #[test]
+    fn test_no_decay_when_disabled() {
+        let perspective = infer_perspective(
+            PerspectiveSource::Query,
+            "claude-code",
+            None,
+            Some("session-a".to_string()),
+        );
+
+        let mut old_memory = memory(
+            1,
+            "very old observation",
+            MemoryBucket::Recent,
+            &perspective,
+            CognitiveLevel::Explicit,
+        );
+        old_memory.memory.created_at = Utc::now() - Duration::days(200);
+
+        let without_decay = flatten_ranked_representation_with_config(
+            WorkingRepresentation {
+                recent: vec![old_memory.memory.clone()],
+                ..WorkingRepresentation::default()
+            },
+            &WorkingRepresentationRequest {
+                perspective: Some(perspective.clone()),
+                max_items: 10,
+                ..WorkingRepresentationRequest::default()
+            },
+            None, // no cognition config → no decay
+        );
+
+        let with_decay = flatten_ranked_representation_with_config(
+            WorkingRepresentation {
+                recent: vec![old_memory.memory.clone()],
+                ..WorkingRepresentation::default()
+            },
+            &WorkingRepresentationRequest {
+                perspective: Some(perspective.clone()),
+                max_items: 10,
+                ..WorkingRepresentationRequest::default()
+            },
+            Some(&CognitionConfig {
+                memory_decay_enabled: true,
+                memory_decay_age_days: 90,
+                memory_decay_access_boost_days: 30,
+                ..CognitionConfig::default()
+            }),
+        );
+
+        // Decay should reduce the score.
+        assert!(without_decay.included[0].blended_score > with_decay.included[0].blended_score);
     }
 }

@@ -1,13 +1,15 @@
 //! Digest service - produces short and long session summaries.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use nexus_core::config::AgentConfig;
+use nexus_core::traits::EmbeddingService;
 use nexus_core::{
     cognitive_level_from_metadata, CognitiveLevel, CognitiveMetadata, Memory, MemoryCategory,
     MemoryLaneCognitiveType, MemoryLaneType, PerspectiveKey,
 };
-use nexus_llm::{ChatMessage, GenerateParams, LlmClient, LlmClientJson};
+use nexus_llm::{ChatMessage, GenerateParams, LlmClient, TokenUsage};
 use nexus_storage::repository::{
     MemoryRepository, StoreDigestParams, StoreMemoryParams, StoreMemoryWithLineageParams,
 };
@@ -15,6 +17,10 @@ use tracing::{debug, info, warn};
 
 use crate::error::AgentError;
 use crate::prompts::{digest_user_prompt, DIGEST_SYSTEM_PROMPT};
+use crate::util::{
+    flush_metric_samples, maybe_embed, parse_json_response, stage_metric_sample,
+    token_usage_metric_samples,
+};
 
 const DIGEST_MAX_TOKENS: u32 = 4096;
 const DIGEST_MAX_SOURCE_MEMORIES: i64 = 200;
@@ -43,11 +49,20 @@ struct DigestEnvelope {
 pub struct DigestService {
     config: AgentConfig,
     llm: Arc<dyn LlmClient>,
+    embeddings: Option<Arc<dyn EmbeddingService>>,
 }
 
 impl DigestService {
-    pub fn new(config: AgentConfig, llm: Arc<dyn LlmClient>) -> Self {
-        Self { config, llm }
+    pub fn new(
+        config: AgentConfig,
+        llm: Arc<dyn LlmClient>,
+        embeddings: Option<Arc<dyn EmbeddingService>>,
+    ) -> Self {
+        Self {
+            config,
+            llm,
+            embeddings,
+        }
     }
 
     /// Produce short and long digests for a session.
@@ -61,6 +76,8 @@ impl DigestService {
         repo: &MemoryRepository,
         force: bool,
     ) -> Result<DigestResult, AgentError> {
+        let total_started = Instant::now();
+        let mut metrics = Vec::new();
         // Idempotency: return existing digests if present
         if !force {
             if let Some(existing) = existing_digest_ids(repo, namespace_id, session_key).await? {
@@ -75,7 +92,14 @@ impl DigestService {
             }
         }
 
+        let gather_started = Instant::now();
         let memories = gather_session_memories(repo, namespace_id, session_key).await?;
+        metrics.push(stage_metric_sample(
+            namespace_id,
+            "cognition.digest.gather_ms",
+            gather_started.elapsed().as_secs_f64() * 1000.0,
+            "gather",
+        ));
         if memories.is_empty() {
             return Err(AgentError::Digest(format!(
                 "No non-raw memories found for session \"{}\"",
@@ -88,7 +112,20 @@ impl DigestService {
         let min_id = source_ids.iter().copied().min().unwrap_or(0);
         let max_id = source_ids.iter().copied().max().unwrap_or(0);
 
-        let envelope = produce_digests(self.llm.as_ref(), session_key, &memories).await;
+        let produce_started = Instant::now();
+        let (envelope, usage) = produce_digests(self.llm.as_ref(), session_key, &memories).await;
+        metrics.push(stage_metric_sample(
+            namespace_id,
+            "cognition.digest.produce_ms",
+            produce_started.elapsed().as_secs_f64() * 1000.0,
+            "produce",
+        ));
+        metrics.extend(token_usage_metric_samples(
+            namespace_id,
+            "cognition.digest.produce",
+            "produce",
+            usage.as_ref(),
+        ));
         let short_content = truncate(envelope.short.trim(), SHORT_MAX_CHARS);
         let long_content = truncate(envelope.long.trim(), LONG_MAX_CHARS);
 
@@ -98,6 +135,7 @@ impl DigestService {
             session_key: Some(session_key.to_string()),
         };
 
+        let embeddings = self.embeddings.as_deref();
         let short_memory = store_digest_memory(
             repo,
             namespace_id,
@@ -105,6 +143,7 @@ impl DigestService {
             CognitiveLevel::SummaryShort,
             &perspective,
             &source_ids,
+            embeddings,
         )
         .await?;
 
@@ -115,12 +154,14 @@ impl DigestService {
             CognitiveLevel::SummaryLong,
             &perspective,
             &source_ids,
+            embeddings,
         )
         .await?;
 
         let short_tokens = estimate_tokens(&short_content);
         let long_tokens = estimate_tokens(&long_content);
 
+        let store_started = Instant::now();
         repo.store_digest(StoreDigestParams {
             namespace_id,
             session_key,
@@ -144,6 +185,12 @@ impl DigestService {
         })
         .await
         .map_err(|e| AgentError::Storage(e.to_string()))?;
+        metrics.push(stage_metric_sample(
+            namespace_id,
+            "cognition.digest.store_ms",
+            store_started.elapsed().as_secs_f64() * 1000.0,
+            "store",
+        ));
 
         info!(
             namespace_id,
@@ -153,6 +200,13 @@ impl DigestService {
             source_count,
             "Created session digests"
         );
+        metrics.push(stage_metric_sample(
+            namespace_id,
+            "cognition.digest.total_ms",
+            total_started.elapsed().as_secs_f64() * 1000.0,
+            "total",
+        ));
+        flush_metric_samples(repo, &metrics).await;
 
         Ok(DigestResult {
             short_id: short_memory.id,
@@ -220,7 +274,7 @@ async fn produce_digests(
     llm: &dyn LlmClient,
     session_key: &str,
     memories: &[Memory],
-) -> DigestEnvelope {
+) -> (DigestEnvelope, Option<TokenUsage>) {
     let pairs: Vec<(i64, &str)> = memories
         .iter()
         .map(|m| (m.id, m.content.as_str()))
@@ -237,18 +291,26 @@ async fn produce_digests(
         json_mode: true,
     };
 
-    match llm.generate_json::<DigestEnvelope>(params).await {
-        Ok(envelope) => {
-            if envelope.short.trim().is_empty() && envelope.long.trim().is_empty() {
-                warn!("LLM returned empty digest, using fallback");
-                fallback_digest(memories)
-            } else {
-                envelope
+    match llm.generate(params).await {
+        Ok(response) => {
+            let usage = response.usage.clone();
+            match parse_json_response::<DigestEnvelope>(&response) {
+                Ok(envelope)
+                    if envelope.short.trim().is_empty() && envelope.long.trim().is_empty() =>
+                {
+                    warn!("LLM returned empty digest, using fallback");
+                    (fallback_digest(memories), usage)
+                }
+                Ok(envelope) => (envelope, usage),
+                Err(error) => {
+                    warn!(%error, "LLM digest response was invalid JSON, using fallback");
+                    (fallback_digest(memories), usage)
+                }
             }
         }
         Err(error) => {
             warn!(%error, "LLM digest call failed, using fallback");
-            fallback_digest(memories)
+            (fallback_digest(memories), None)
         }
     }
 }
@@ -289,6 +351,7 @@ async fn store_digest_memory(
     level: CognitiveLevel,
     perspective: &PerspectiveKey,
     source_ids: &[i64],
+    embeddings: Option<&dyn EmbeddingService>,
 ) -> Result<Memory, AgentError> {
     let mut cognitive = CognitiveMetadata::new(
         level,
@@ -301,6 +364,7 @@ async fn store_digest_memory(
     cognitive.confidence = Some(0.80);
 
     let metadata = cognitive.merge_into(&serde_json::json!({}));
+    let (embedding, embedding_model) = maybe_embed(embeddings, content).await;
 
     let memory = repo
         .store_with_lineage(StoreMemoryWithLineageParams {
@@ -313,8 +377,8 @@ async fn store_digest_memory(
                 )),
                 labels: &["digest".to_string(), level.to_string().to_lowercase()],
                 metadata: &metadata,
-                embedding: None,
-                embedding_model: None,
+                embedding: embedding.as_deref(),
+                embedding_model: embedding_model.as_deref(),
             },
             source_memory_ids: source_ids,
             evidence_role: DIGESTED_FROM_ROLE,
@@ -458,6 +522,7 @@ mod tests {
         let service = DigestService::new(
             AgentConfig::default(),
             Arc::new(MockLlmClient::new(Vec::new())),
+            None,
         );
 
         let result = service
@@ -491,6 +556,7 @@ mod tests {
         let service = DigestService::new(
             AgentConfig::default(),
             Arc::new(MockLlmClient::new(vec![Ok(good_digest_response())])),
+            None,
         );
 
         let result = service
@@ -553,6 +619,7 @@ mod tests {
         let service = DigestService::new(
             AgentConfig::default(),
             Arc::new(MockLlmClient::new(vec![Ok(bad_response)])),
+            None,
         );
 
         let result = service
@@ -589,6 +656,7 @@ mod tests {
         let service = DigestService::new(
             AgentConfig::default(),
             Arc::new(MockLlmClient::new(vec![Ok(good_digest_response())])),
+            None,
         );
 
         let first = service
@@ -622,6 +690,7 @@ mod tests {
                 Ok(good_digest_response()),
                 Ok(good_digest_response()),
             ])),
+            None,
         );
 
         let first = service
@@ -676,6 +745,7 @@ mod tests {
         let service = DigestService::new(
             AgentConfig::default(),
             Arc::new(MockLlmClient::new(Vec::new())),
+            None,
         );
 
         let result = service
@@ -699,6 +769,7 @@ mod tests {
         let service = DigestService::new(
             AgentConfig::default(),
             Arc::new(MockLlmClient::new(Vec::new())),
+            None,
         );
 
         let result = service
@@ -730,6 +801,7 @@ mod tests {
         let service = DigestService::new(
             AgentConfig::default(),
             Arc::new(MockLlmClient::new(vec![Ok(good_digest_response())])),
+            None,
         );
 
         let result = service
@@ -795,6 +867,105 @@ mod tests {
             is_archived: false,
             access_count: 0,
         }
+    }
+
+    #[tokio::test]
+    async fn test_digest_memories_get_embeddings_when_service_provided() {
+        let (_pool, repo, namespace_id) = setup_repo().await;
+        store_session_memory(
+            &repo,
+            namespace_id,
+            "Fixed query pagination behavior.",
+            "session-embed",
+            CognitiveLevel::Explicit,
+        )
+        .await;
+        store_session_memory(
+            &repo,
+            namespace_id,
+            "Added working-set retrieval primitives.",
+            "session-embed",
+            CognitiveLevel::Explicit,
+        )
+        .await;
+
+        let mock_embed = nexus_embeddings::MockEmbeddingService::new();
+        let service = DigestService::new(
+            AgentConfig::default(),
+            Arc::new(MockLlmClient::new(vec![Ok(good_digest_response())])),
+            Some(Arc::new(mock_embed)),
+        );
+
+        let result = service
+            .digest_session(namespace_id, "session-embed", &repo, false)
+            .await
+            .unwrap();
+
+        let short = repo.get_by_id(result.short_id).await.unwrap().unwrap();
+        assert!(
+            short.content_embedding.is_some(),
+            "short digest should have an embedding when service is provided"
+        );
+        assert_eq!(
+            short.content_embedding.as_ref().unwrap().len(),
+            384,
+            "short digest embedding dimension should be 384"
+        );
+
+        let long = repo.get_by_id(result.long_id).await.unwrap().unwrap();
+        assert!(
+            long.content_embedding.is_some(),
+            "long digest should have an embedding when service is provided"
+        );
+        assert_eq!(
+            long.content_embedding.as_ref().unwrap().len(),
+            384,
+            "long digest embedding dimension should be 384"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_digest_memories_stored_without_embedding_when_service_absent() {
+        let (_pool, repo, namespace_id) = setup_repo().await;
+        store_session_memory(
+            &repo,
+            namespace_id,
+            "Fixed query pagination behavior.",
+            "session-no-embed",
+            CognitiveLevel::Explicit,
+        )
+        .await;
+        store_session_memory(
+            &repo,
+            namespace_id,
+            "Added working-set retrieval primitives.",
+            "session-no-embed",
+            CognitiveLevel::Explicit,
+        )
+        .await;
+
+        let service = DigestService::new(
+            AgentConfig::default(),
+            Arc::new(MockLlmClient::new(vec![Ok(good_digest_response())])),
+            None,
+        );
+
+        let result = service
+            .digest_session(namespace_id, "session-no-embed", &repo, false)
+            .await
+            .unwrap();
+
+        let short = repo.get_by_id(result.short_id).await.unwrap().unwrap();
+        assert!(
+            short.content_embedding.is_none(),
+            "short digest should NOT have embedding when no service provided"
+        );
+
+        let long = repo.get_by_id(result.long_id).await.unwrap().unwrap();
+        assert!(
+            long.content_embedding.is_none(),
+            "long digest should NOT have embedding when no service provided"
+        );
     }
 
     #[test]

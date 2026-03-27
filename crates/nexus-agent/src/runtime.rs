@@ -4,10 +4,12 @@ use std::collections::{BTreeSet, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use nexus_core::config::{AgentConfig, CognitionConfig};
+use nexus_core::traits::EmbeddingService;
 use nexus_core::{
     infer_perspective, CognitiveLevel, CognitiveMetadata, Memory, MemoryCategory,
     MemoryLaneCognitiveType, MemoryLaneType, PerspectiveKey, PerspectiveSource,
@@ -27,6 +29,7 @@ use crate::derive::DeriveService;
 use crate::digest::DigestService;
 use crate::error::AgentError;
 use crate::reflect::ReflectService;
+use crate::util::{flush_metric_samples, stage_metric_sample};
 
 const DERIVE_MEMORY_JOB: &str = "derive_memory";
 const ACTIVITY_DISTILL_JOB: &str = "activity_distill";
@@ -95,6 +98,33 @@ pub struct DreamCycleRequest<'a> {
     pub digest_reason: &'a str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DreamScheduleAction {
+    ImmediateBounded,
+    DelayedEnqueue,
+    DigestOnly,
+    Skip,
+}
+
+#[derive(Debug, Clone)]
+struct DreamSchedulePlan {
+    action: DreamScheduleAction,
+    reason: &'static str,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DreamSignals {
+    raw_event_count: usize,
+    explicit_count: usize,
+    derived_count: usize,
+    contradiction_count: usize,
+    has_digest_gap: bool,
+    /// Total non-raw memories in the session scope.
+    total_non_raw_count: usize,
+    /// Ratio of contradictions to total non-raw (0.0 when no memories).
+    contradiction_density: f32,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum RuntimeModeSerde {
@@ -114,11 +144,20 @@ impl From<RuntimeMode> for RuntimeModeSerde {
 pub struct RuntimeController {
     cognition: CognitionConfig,
     agent: AgentConfig,
+    embeddings: Option<Arc<dyn EmbeddingService>>,
 }
 
 impl RuntimeController {
-    pub fn new(cognition: CognitionConfig, agent: AgentConfig) -> Self {
-        Self { cognition, agent }
+    pub fn new(
+        cognition: CognitionConfig,
+        agent: AgentConfig,
+        embeddings: Option<Arc<dyn EmbeddingService>>,
+    ) -> Self {
+        Self {
+            cognition,
+            agent,
+            embeddings,
+        }
     }
 
     pub async fn ensure_started(
@@ -169,6 +208,7 @@ impl RuntimeController {
             &self.cognition,
             &self.agent,
             llm,
+            self.embeddings.clone(),
             &format!("runtime-start-{agent_type}-{}", state.session_key),
         )
         .await?;
@@ -231,6 +271,7 @@ impl RuntimeController {
             &self.cognition,
             &self.agent,
             llm.clone(),
+            self.embeddings.clone(),
             &format!("runtime-stop-{agent_type}-{derived_session_key}"),
         )
         .await?;
@@ -247,45 +288,155 @@ impl RuntimeController {
                 subject: agent_type.to_string(),
                 session_key: Some(derived_session_key.clone()),
             };
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(self.cognition.session_end_dream_timeout_secs),
-                run_dream_cycle(
-                    storage.pool().clone(),
-                    &self.cognition,
-                    &self.agent,
-                    llm,
-                    DreamCycleRequest {
-                        namespace_id: namespace.id,
-                        lease_owner: &lease_owner,
-                        perspective: Some(&shutdown_perspective),
-                        session_key: Some(derived_session_key.as_str()),
-                        reflect_reason: "session_end_dream",
-                        digest_reason: "session_end",
-                    },
-                ),
-            )
-            .await
-            {
-                Ok(Ok(processed)) if processed > 0 => {
-                    info!(
+            let signals =
+                collect_dream_signals(&memory_repo, namespace.id, &derived_session_key).await?;
+            let plan = choose_dream_schedule(&self.cognition, &signals, reason);
+            debug!(
+                agent_type,
+                session_key = ?session_key,
+                action = ?plan.action,
+                plan_reason = plan.reason,
+                raw_event_count = signals.raw_event_count,
+                contradiction_count = signals.contradiction_count,
+                contradiction_density = signals.contradiction_density,
+                total_non_raw = signals.total_non_raw_count,
+                has_digest_gap = signals.has_digest_gap,
+                "Selected adaptive dream schedule"
+            );
+            match plan.action {
+                DreamScheduleAction::ImmediateBounded => match tokio::time::timeout(
+                    std::time::Duration::from_secs(self.cognition.session_end_dream_timeout_secs),
+                    run_dream_cycle(
+                        storage.pool().clone(),
+                        &self.cognition,
+                        &self.agent,
+                        llm,
+                        self.embeddings.clone(),
+                        DreamCycleRequest {
+                            namespace_id: namespace.id,
+                            lease_owner: &lease_owner,
+                            perspective: Some(&shutdown_perspective),
+                            session_key: Some(derived_session_key.as_str()),
+                            reflect_reason: "session_end_dream",
+                            digest_reason: "session_end",
+                        },
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(processed)) if processed > 0 => {
+                        info!(
+                            agent_type,
+                            session_key = ?session_key,
+                            processed,
+                            plan_reason = plan.reason,
+                            "Dream pass completed through cognition jobs"
+                        );
+                    }
+                    Ok(Ok(_)) => {
+                        debug!(
+                            agent_type,
+                            session_key = ?session_key,
+                            plan_reason = plan.reason,
+                            "Dream pass skipped"
+                        );
+                    }
+                    Ok(Err(error)) => {
+                        warn!(%error, agent_type, session_key = ?session_key, "Dream pass failed");
+                    }
+                    Err(_) => {
+                        warn!(
+                            agent_type,
+                            session_key = ?session_key,
+                            timeout_secs = self.cognition.session_end_dream_timeout_secs,
+                            "Dream pass timed out during shutdown"
+                        );
+                    }
+                },
+                DreamScheduleAction::DelayedEnqueue => {
+                    let queued = enqueue_dream_jobs(
+                        &memory_repo,
+                        namespace.id,
+                        Some(&shutdown_perspective),
+                        Some(derived_session_key.as_str()),
+                        "session_end_delayed_dream",
+                        "session_end",
+                    )
+                    .await?;
+                    debug!(
                         agent_type,
                         session_key = ?session_key,
-                        processed,
-                        "Dream pass completed through cognition jobs"
+                        queued,
+                        plan_reason = plan.reason,
+                        "Queued delayed dream jobs without immediate drain"
                     );
                 }
-                Ok(Ok(_)) => {
-                    debug!(agent_type, session_key = ?session_key, "Dream pass skipped");
-                }
-                Ok(Err(error)) => {
-                    warn!(%error, agent_type, session_key = ?session_key, "Dream pass failed");
-                }
-                Err(_) => {
-                    warn!(
+                DreamScheduleAction::DigestOnly => {
+                    let queued = enqueue_digest_job_if_absent(
+                        &memory_repo,
+                        namespace.id,
+                        derived_session_key.as_str(),
+                        "session_end_digest_only",
+                    )
+                    .await?;
+                    debug!(
                         agent_type,
                         session_key = ?session_key,
-                        timeout_secs = self.cognition.session_end_dream_timeout_secs,
-                        "Dream pass timed out during shutdown"
+                        queued,
+                        plan_reason = plan.reason,
+                        "Queued digest-only shutdown work"
+                    );
+                    if queued && matches!(reason, RuntimeShutdownReason::SessionEnded) {
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(
+                                self.cognition.session_end_dream_timeout_secs,
+                            ),
+                            drain_cognition_jobs(
+                                storage.pool().clone(),
+                                namespace.id,
+                                &self.cognition,
+                                &self.agent,
+                                llm.clone(),
+                                self.embeddings.clone(),
+                                &format!("runtime-finalize-{agent_type}-{derived_session_key}"),
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(Ok(processed)) => {
+                                debug!(
+                                    agent_type,
+                                    session_key = ?session_key,
+                                    processed,
+                                    plan_reason = plan.reason,
+                                    "Drained digest-only shutdown work before runtime teardown"
+                                );
+                            }
+                            Ok(Err(error)) => {
+                                warn!(
+                                    %error,
+                                    agent_type,
+                                    session_key = ?session_key,
+                                    "Digest-only shutdown drain failed"
+                                );
+                            }
+                            Err(_) => {
+                                warn!(
+                                    agent_type,
+                                    session_key = ?session_key,
+                                    timeout_secs = self.cognition.session_end_dream_timeout_secs,
+                                    "Digest-only shutdown drain timed out"
+                                );
+                            }
+                        }
+                    }
+                }
+                DreamScheduleAction::Skip => {
+                    debug!(
+                        agent_type,
+                        session_key = ?session_key,
+                        plan_reason = plan.reason,
+                        "Skipped shutdown dream work after adaptive planning"
                     );
                 }
             }
@@ -326,6 +477,7 @@ pub async fn drain_cognition_jobs(
     cognition: &CognitionConfig,
     agent: &AgentConfig,
     llm: Arc<dyn LlmClient>,
+    embeddings: Option<Arc<dyn EmbeddingService>>,
     lease_owner: &str,
 ) -> Result<usize, AgentError> {
     let repo = MemoryRepository::new(pool);
@@ -351,16 +503,30 @@ pub async fn drain_cognition_jobs(
                 cognition,
                 agent,
                 llm.clone(),
+                embeddings.clone(),
                 lease_owner,
             )
             .await?;
         }
         if cognition.reflect_enabled {
-            progressed +=
-                process_reflect_jobs(&repo, namespace_id, cognition, agent, lease_owner).await?;
-            progressed +=
-                process_reflect_namespace_jobs(&repo, namespace_id, cognition, agent, lease_owner)
-                    .await?;
+            progressed += process_reflect_jobs(
+                &repo,
+                namespace_id,
+                cognition,
+                agent,
+                embeddings.clone(),
+                lease_owner,
+            )
+            .await?;
+            progressed += process_reflect_namespace_jobs(
+                &repo,
+                namespace_id,
+                cognition,
+                agent,
+                embeddings.clone(),
+                lease_owner,
+            )
+            .await?;
         }
         if cognition.digest_enabled {
             progressed += process_digest_jobs(
@@ -369,6 +535,7 @@ pub async fn drain_cognition_jobs(
                 cognition,
                 agent,
                 llm.clone(),
+                embeddings.clone(),
                 lease_owner,
             )
             .await?;
@@ -459,6 +626,29 @@ pub async fn enqueue_dream_jobs(
     Ok(queued)
 }
 
+async fn enqueue_digest_job_if_absent(
+    repo: &MemoryRepository,
+    namespace_id: i64,
+    session_key: &str,
+    digest_reason: &str,
+) -> Result<bool, AgentError> {
+    let payload = json!({
+        "session_key": session_key,
+        "reason": digest_reason,
+    });
+    enqueue_job_if_absent(
+        repo,
+        EnqueueJobParams {
+            namespace_id,
+            job_type: DIGEST_SESSION_JOB,
+            priority: 110,
+            perspective: None,
+            payload: &payload,
+        },
+    )
+    .await
+}
+
 async fn enqueue_job_if_absent(
     repo: &MemoryRepository,
     params: EnqueueJobParams<'_>,
@@ -515,9 +705,13 @@ pub async fn run_dream_cycle(
     cognition: &CognitionConfig,
     agent: &AgentConfig,
     llm: Arc<dyn LlmClient>,
+    embeddings: Option<Arc<dyn EmbeddingService>>,
     request: DreamCycleRequest<'_>,
 ) -> Result<usize, AgentError> {
     let repo = MemoryRepository::new(pool.clone());
+    let total_started = Instant::now();
+    let mut metrics = Vec::new();
+    let enqueue_started = Instant::now();
     enqueue_dream_jobs(
         &repo,
         request.namespace_id,
@@ -527,15 +721,237 @@ pub async fn run_dream_cycle(
         request.digest_reason,
     )
     .await?;
-    drain_cognition_jobs(
+    metrics.push(stage_metric_sample(
+        request.namespace_id,
+        "cognition.dream.enqueue_ms",
+        enqueue_started.elapsed().as_secs_f64() * 1000.0,
+        "enqueue",
+    ));
+    let drain_started = Instant::now();
+    let processed = drain_cognition_jobs(
         pool,
         request.namespace_id,
         cognition,
         agent,
         llm,
+        embeddings,
         request.lease_owner,
     )
-    .await
+    .await?;
+    metrics.push(stage_metric_sample(
+        request.namespace_id,
+        "cognition.dream.drain_ms",
+        drain_started.elapsed().as_secs_f64() * 1000.0,
+        "drain",
+    ));
+    metrics.push(stage_metric_sample(
+        request.namespace_id,
+        "cognition.dream.total_ms",
+        total_started.elapsed().as_secs_f64() * 1000.0,
+        "total",
+    ));
+    flush_metric_samples(&repo, &metrics).await;
+    Ok(processed)
+}
+
+async fn collect_dream_signals(
+    repo: &MemoryRepository,
+    namespace_id: i64,
+    session_key: &str,
+) -> Result<DreamSignals, AgentError> {
+    let memories = repo
+        .list_filtered(
+            namespace_id,
+            nexus_storage::repository::ListMemoryFilters {
+                category: None,
+                since: None,
+                until: None,
+                content_like: None,
+                include_raw: true,
+                limit: 256,
+                offset: 0,
+            },
+        )
+        .await
+        .map_err(|error| AgentError::Storage(error.to_string()))?;
+    let has_digest_gap = repo
+        .count_digests(namespace_id, Some(session_key))
+        .await
+        .map_err(|error| AgentError::Storage(error.to_string()))?
+        == 0;
+
+    let mut signals = DreamSignals {
+        has_digest_gap,
+        ..DreamSignals::default()
+    };
+    for memory in memories
+        .iter()
+        .filter(|memory| memory_matches_session_key(memory, session_key))
+    {
+        if memory.labels.iter().any(|label| label == "raw-activity")
+            || memory.metadata.get("raw_activity").is_some()
+        {
+            signals.raw_event_count += 1;
+        }
+        if let Some(level) =
+            CognitiveMetadata::from_metadata(&memory.metadata).map(|meta| meta.level)
+        {
+            match level {
+                CognitiveLevel::Explicit => {
+                    signals.explicit_count += 1;
+                    signals.total_non_raw_count += 1;
+                }
+                CognitiveLevel::Derived => {
+                    signals.derived_count += 1;
+                    signals.total_non_raw_count += 1;
+                }
+                CognitiveLevel::Contradiction => {
+                    signals.contradiction_count += 1;
+                    signals.total_non_raw_count += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    signals.contradiction_density = if signals.total_non_raw_count > 0 {
+        signals.contradiction_count as f32 / signals.total_non_raw_count as f32
+    } else {
+        0.0
+    };
+    Ok(signals)
+}
+
+fn memory_matches_session_key(memory: &Memory, session_key: &str) -> bool {
+    let metadata = &memory.metadata;
+    let matches_value = |value: Option<&serde_json::Value>| {
+        value.and_then(serde_json::Value::as_str) == Some(session_key)
+    };
+
+    if matches_value(metadata.pointer("/cognitive/session_key"))
+        || matches_value(metadata.pointer("/raw_activity/derived_session_key"))
+        || matches_value(metadata.pointer("/runtime/derived_session_key"))
+        || matches_value(metadata.pointer("/runtime/session_key"))
+    {
+        return true;
+    }
+
+    for pointer in [
+        "/cognitive/session_keys",
+        "/source/derived_session_keys",
+        "/raw_activity/derived_session_keys",
+    ] {
+        if metadata
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|values| {
+                values
+                    .iter()
+                    .any(|value| value.as_str() == Some(session_key))
+            })
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn choose_dream_schedule(
+    cognition: &CognitionConfig,
+    signals: &DreamSignals,
+    reason: RuntimeShutdownReason,
+) -> DreamSchedulePlan {
+    if signals.raw_event_count == 0
+        && signals.explicit_count == 0
+        && signals.derived_count == 0
+        && signals.contradiction_count == 0
+    {
+        return DreamSchedulePlan {
+            action: DreamScheduleAction::Skip,
+            reason: "no session cognition signal",
+        };
+    }
+
+    // High contradiction density (>20% of non-raw memories) always triggers immediate.
+    if signals.contradiction_count > 0
+        && signals.total_non_raw_count > 0
+        && signals.contradiction_density > 0.20
+    {
+        return DreamSchedulePlan {
+            action: DreamScheduleAction::ImmediateBounded,
+            reason: "high contradiction density requires immediate reconciliation",
+        };
+    }
+
+    // Moderate contradiction density (5-20%) on session end triggers immediate.
+    if matches!(reason, RuntimeShutdownReason::SessionEnded)
+        && signals.contradiction_density > 0.05
+        && signals.contradiction_density <= 0.20
+    {
+        return DreamSchedulePlan {
+            action: DreamScheduleAction::ImmediateBounded,
+            reason: "moderate contradiction density at session end warrants reconciliation",
+        };
+    }
+
+    if signals.contradiction_count > 0 && signals.contradiction_density <= 0.05 {
+        return DreamSchedulePlan {
+            action: DreamScheduleAction::ImmediateBounded,
+            reason: "contradictions require immediate reconciliation",
+        };
+    }
+
+    if signals.raw_event_count >= cognition.activity_distill_min_events {
+        return DreamSchedulePlan {
+            action: DreamScheduleAction::ImmediateBounded,
+            reason: "high session activity warrants immediate dream pass",
+        };
+    }
+
+    if matches!(reason, RuntimeShutdownReason::SessionEnded)
+        && signals.explicit_count >= 2
+        && signals.derived_count == 0
+    {
+        return DreamSchedulePlan {
+            action: DreamScheduleAction::ImmediateBounded,
+            reason: "session end flushes unreconciled explicit observations immediately",
+        };
+    }
+
+    if signals.has_digest_gap
+        && signals.explicit_count == 0
+        && signals.derived_count == 0
+        && signals.contradiction_count == 0
+        && signals.raw_event_count <= (cognition.activity_distill_min_events / 2).max(1)
+    {
+        return DreamSchedulePlan {
+            action: DreamScheduleAction::DigestOnly,
+            reason: "light session activity with uncovered digest window",
+        };
+    }
+
+    if matches!(reason, RuntimeShutdownReason::IdleTimeout)
+        && (signals.raw_event_count > 0
+            || signals.explicit_count >= 2
+            || (signals.explicit_count > 0 && signals.derived_count == 0))
+    {
+        return DreamSchedulePlan {
+            action: DreamScheduleAction::DelayedEnqueue,
+            reason: "idle timeout defers medium-signal dreaming to background jobs",
+        };
+    }
+
+    if signals.explicit_count >= 2 && signals.derived_count == 0 {
+        return DreamSchedulePlan {
+            action: DreamScheduleAction::DelayedEnqueue,
+            reason: "explicit observations suggest deferred reflection opportunity",
+        };
+    }
+
+    DreamSchedulePlan {
+        action: DreamScheduleAction::Skip,
+        reason: "insufficient signal for additional dream work",
+    }
 }
 
 async fn store_runtime_marker(
@@ -621,11 +1037,13 @@ pub fn derive_session_key(
         return value.to_string();
     }
 
+    let canonical_agent = nexus_core::canonicalize_agent_type(agent_type);
     let fallback_scope = cwd
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or("unknown-cwd");
+        .map(nexus_core::normalize_project_path)
+        .unwrap_or_else(|| "unknown-cwd".to_string());
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    agent_type.hash(&mut hasher);
+    canonical_agent.hash(&mut hasher);
     fallback_scope.hash(&mut hasher);
     format!("derived-{:016x}", hasher.finish())
 }
@@ -652,9 +1070,10 @@ fn runtime_reason_label(reason: RuntimeShutdownReason) -> &'static str {
 }
 
 async fn namespace_id_for(agent_type: &str, storage: &StorageManager) -> Result<i64, AgentError> {
+    let canonical = nexus_core::canonicalize_agent_type(agent_type);
     let namespace_repo = NamespaceRepository::new(storage.pool().clone());
     namespace_repo
-        .get_or_create(agent_type, agent_type)
+        .get_or_create(&canonical, &canonical)
         .await
         .map(|namespace| namespace.id)
         .map_err(|error| AgentError::Storage(error.to_string()))
@@ -666,6 +1085,7 @@ async fn process_derive_jobs(
     cognition: &CognitionConfig,
     agent: &AgentConfig,
     llm: Arc<dyn LlmClient>,
+    embeddings: Option<Arc<dyn EmbeddingService>>,
     lease_owner: &str,
 ) -> Result<usize, AgentError> {
     let jobs = repo
@@ -679,7 +1099,7 @@ async fn process_derive_jobs(
         .await
         .map_err(|error| AgentError::Storage(error.to_string()))?;
 
-    let service = DeriveService::new(agent.clone(), llm);
+    let service = DeriveService::new(agent.clone(), llm, embeddings);
     let mut processed = 0usize;
     for job in jobs {
         let memory_id = job
@@ -727,6 +1147,7 @@ async fn process_reflect_jobs(
     namespace_id: i64,
     cognition: &CognitionConfig,
     agent: &AgentConfig,
+    embeddings: Option<Arc<dyn EmbeddingService>>,
     lease_owner: &str,
 ) -> Result<usize, AgentError> {
     let jobs = repo
@@ -740,7 +1161,7 @@ async fn process_reflect_jobs(
         .await
         .map_err(|error| AgentError::Storage(error.to_string()))?;
 
-    let service = ReflectService::new(agent.clone());
+    let service = ReflectService::new(agent.clone(), cognition.clone(), embeddings.clone());
     let mut processed = 0usize;
     for job in jobs {
         let outcome = async {
@@ -777,6 +1198,7 @@ async fn process_reflect_namespace_jobs(
     namespace_id: i64,
     cognition: &CognitionConfig,
     agent: &AgentConfig,
+    embeddings: Option<Arc<dyn EmbeddingService>>,
     lease_owner: &str,
 ) -> Result<usize, AgentError> {
     let jobs = repo
@@ -790,7 +1212,7 @@ async fn process_reflect_namespace_jobs(
         .await
         .map_err(|error| AgentError::Storage(error.to_string()))?;
 
-    let service = ReflectService::new(agent.clone());
+    let service = ReflectService::new(agent.clone(), cognition.clone(), embeddings.clone());
     let mut processed = 0usize;
     for job in jobs {
         let outcome = service.reflect_cycle(namespace_id, repo).await.map(|_| ());
@@ -819,6 +1241,7 @@ async fn process_digest_jobs(
     cognition: &CognitionConfig,
     agent: &AgentConfig,
     llm: Arc<dyn LlmClient>,
+    embeddings: Option<Arc<dyn EmbeddingService>>,
     lease_owner: &str,
 ) -> Result<usize, AgentError> {
     let jobs = repo
@@ -832,7 +1255,7 @@ async fn process_digest_jobs(
         .await
         .map_err(|error| AgentError::Storage(error.to_string()))?;
 
-    let service = DigestService::new(agent.clone(), llm);
+    let service = DigestService::new(agent.clone(), llm, embeddings);
     let mut processed = 0usize;
     let mut seen_sessions = HashSet::new();
     for job in jobs {
@@ -1233,6 +1656,27 @@ fn fallback_distilled_session(events: &[DistillEvent]) -> DistilledSession {
     }
 }
 
+/// Create an embedding service when `config.embedding.enabled` is true.
+///
+/// Returns `None` when embeddings are disabled or the service fails to
+/// initialise — this preserves graceful degradation throughout the
+/// cognition pipeline.
+pub async fn create_embedding_service(
+    config: &nexus_core::Config,
+) -> Option<Arc<dyn EmbeddingService>> {
+    if !config.embedding.enabled {
+        return None;
+    }
+    use nexus_embeddings::{EmbeddingConfig as RuntimeEmbeddingConfig, OrtEmbeddingService};
+    match OrtEmbeddingService::new(RuntimeEmbeddingConfig::from_env()).await {
+        Ok(service) => Some(Arc::new(service)),
+        Err(error) => {
+            warn!(%error, "Failed to initialize embedding service, cognition will run without embeddings");
+            None
+        }
+    }
+}
+
 fn build_distill_cognitive_metadata(
     agent: &str,
     session_key: &str,
@@ -1341,6 +1785,7 @@ mod tests {
             Arc::new(UnavailableLlmClient {
                 message: "offline".to_string(),
             }),
+            None,
             DreamCycleRequest {
                 namespace_id: namespace.id,
                 lease_owner: "test-owner",
@@ -1502,6 +1947,7 @@ mod tests {
             Arc::new(UnavailableLlmClient {
                 message: "offline".to_string(),
             }),
+            None,
             "digest-skip",
         )
         .await
@@ -1551,6 +1997,162 @@ mod tests {
         let second = derive_session_key("claude-code", Some(""), Some("/tmp/project"));
         assert_eq!(first, second);
         assert!(first.starts_with("derived-"));
+    }
+
+    #[test]
+    fn choose_dream_schedule_immediate_for_contradictions() {
+        let plan = choose_dream_schedule(
+            &CognitionConfig::default(),
+            &DreamSignals {
+                contradiction_count: 1,
+                raw_event_count: 1,
+                ..DreamSignals::default()
+            },
+            RuntimeShutdownReason::SessionEnded,
+        );
+
+        assert_eq!(plan.action, DreamScheduleAction::ImmediateBounded);
+    }
+
+    #[test]
+    fn choose_dream_schedule_digest_only_for_light_digest_gap() {
+        let config = CognitionConfig::default();
+        let plan = choose_dream_schedule(
+            &config,
+            &DreamSignals {
+                raw_event_count: 1,
+                has_digest_gap: true,
+                ..DreamSignals::default()
+            },
+            RuntimeShutdownReason::SessionEnded,
+        );
+
+        assert_eq!(plan.action, DreamScheduleAction::DigestOnly);
+    }
+
+    #[test]
+    fn choose_dream_schedule_delays_idle_medium_signal_sessions() {
+        let plan = choose_dream_schedule(
+            &CognitionConfig::default(),
+            &DreamSignals {
+                raw_event_count: 2,
+                explicit_count: 2,
+                derived_count: 0,
+                ..DreamSignals::default()
+            },
+            RuntimeShutdownReason::IdleTimeout,
+        );
+
+        assert_eq!(plan.action, DreamScheduleAction::DelayedEnqueue);
+    }
+
+    #[test]
+    fn choose_dream_schedule_session_end_flushes_explicit_reflection() {
+        let plan = choose_dream_schedule(
+            &CognitionConfig::default(),
+            &DreamSignals {
+                explicit_count: 2,
+                has_digest_gap: true,
+                ..DreamSignals::default()
+            },
+            RuntimeShutdownReason::SessionEnded,
+        );
+
+        assert_eq!(plan.action, DreamScheduleAction::ImmediateBounded);
+    }
+
+    #[tokio::test]
+    async fn collect_dream_signals_counts_session_signal_types() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        nexus_storage::migrations::run_migrations(&pool)
+            .await
+            .unwrap();
+
+        let namespace_repo = NamespaceRepository::new(pool.clone());
+        let namespace = namespace_repo
+            .get_or_create("runtime-dream-signals", "runtime-dream-signals")
+            .await
+            .unwrap();
+        let repo = MemoryRepository::new(pool.clone());
+
+        for (content, labels, metadata) in [
+            (
+                "tool event",
+                vec!["raw-activity".to_string()],
+                json!({
+                    "raw_activity": true,
+                    "cognitive": {
+                        "level": "raw",
+                        "observer": "claude-code",
+                        "subject": "claude-code",
+                        "session_key": "signals-session"
+                    }
+                }),
+            ),
+            (
+                "explicit note",
+                vec![],
+                json!({
+                    "cognitive": {
+                        "level": "explicit",
+                        "observer": "claude-code",
+                        "subject": "claude-code",
+                        "session_key": "signals-session"
+                    }
+                }),
+            ),
+            (
+                "derived insight",
+                vec![],
+                json!({
+                    "cognitive": {
+                        "level": "derived",
+                        "observer": "claude-code",
+                        "subject": "claude-code",
+                        "session_key": "signals-session"
+                    }
+                }),
+            ),
+            (
+                "contradiction record",
+                vec![],
+                json!({
+                    "cognitive": {
+                        "level": "contradiction",
+                        "observer": "claude-code",
+                        "subject": "claude-code",
+                        "session_key": "signals-session"
+                    }
+                }),
+            ),
+        ] {
+            repo.store(StoreMemoryParams {
+                namespace_id: namespace.id,
+                content,
+                category: &MemoryCategory::Session,
+                memory_lane_type: None,
+                labels: &labels,
+                metadata: &metadata,
+                embedding: None,
+                embedding_model: None,
+            })
+            .await
+            .unwrap();
+        }
+
+        let signals = collect_dream_signals(&repo, namespace.id, "signals-session")
+            .await
+            .unwrap();
+
+        assert_eq!(signals.raw_event_count, 1);
+        assert_eq!(signals.explicit_count, 1);
+        assert_eq!(signals.derived_count, 1);
+        assert_eq!(signals.contradiction_count, 1);
+        assert!(signals.has_digest_gap);
     }
 
     #[tokio::test]
@@ -1638,5 +2240,73 @@ mod tests {
             .len(),
             1
         );
+    }
+
+    // ---- Adaptive dream scheduling tests (Phase 16) ----
+
+    #[test]
+    fn test_choose_dream_schedule_uses_contradiction_density() {
+        let cognition = CognitionConfig::default();
+
+        // No signals → skip.
+        let plan = choose_dream_schedule(
+            &cognition,
+            &DreamSignals::default(),
+            RuntimeShutdownReason::SessionEnded,
+        );
+        assert_eq!(plan.action, DreamScheduleAction::Skip);
+
+        // High contradiction density → immediate.
+        let high_density = DreamSignals {
+            total_non_raw_count: 10,
+            contradiction_count: 3,
+            contradiction_density: 0.30,
+            ..DreamSignals::default()
+        };
+        let plan = choose_dream_schedule(
+            &cognition,
+            &high_density,
+            RuntimeShutdownReason::SessionEnded,
+        );
+        assert_eq!(plan.action, DreamScheduleAction::ImmediateBounded);
+        assert!(plan.reason.contains("high contradiction density"));
+
+        // Moderate contradiction density at session end → immediate.
+        let moderate_density = DreamSignals {
+            total_non_raw_count: 20,
+            contradiction_count: 2,
+            contradiction_density: 0.10,
+            explicit_count: 5,
+            ..DreamSignals::default()
+        };
+        let plan = choose_dream_schedule(
+            &cognition,
+            &moderate_density,
+            RuntimeShutdownReason::SessionEnded,
+        );
+        assert_eq!(plan.action, DreamScheduleAction::ImmediateBounded);
+        assert!(plan.reason.contains("moderate contradiction density"));
+
+        // Moderate contradiction density at idle timeout → not immediate.
+        let plan = choose_dream_schedule(
+            &cognition,
+            &moderate_density,
+            RuntimeShutdownReason::IdleTimeout,
+        );
+        assert_ne!(plan.action, DreamScheduleAction::ImmediateBounded);
+    }
+
+    #[test]
+    fn test_dream_signals_computes_contradiction_density() {
+        let signals = DreamSignals {
+            total_non_raw_count: 20,
+            contradiction_count: 4,
+            contradiction_density: 4.0 / 20.0,
+            ..DreamSignals::default()
+        };
+        assert!((signals.contradiction_density - 0.20).abs() < f32::EPSILON);
+
+        let empty = DreamSignals::default();
+        assert!((empty.contradiction_density).abs() < f32::EPSILON);
     }
 }

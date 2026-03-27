@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use nexus_core::config::AgentConfig;
+use nexus_core::traits::EmbeddingService;
 use nexus_core::{
     cognitive_level_from_metadata, infer_perspective, perspective_from_metadata, CognitiveLevel,
     CognitiveMetadata, Memory, MemoryCategory, MemoryLaneType, PerspectiveKey, PerspectiveSource,
@@ -17,6 +18,7 @@ use tracing::{debug, info, warn};
 
 use crate::error::AgentError;
 use crate::prompts::{derive_user_prompt, DERIVE_SYSTEM_PROMPT};
+use crate::util::maybe_embed;
 
 const DERIVE_MAX_TOKENS: u32 = 4096;
 const REFLECT_PERSPECTIVE_JOB: &str = "reflect_perspective";
@@ -29,6 +31,7 @@ const LOW_SIGNAL_LABEL: &str = "low-signal";
 pub struct DeriveService {
     config: AgentConfig,
     llm: Arc<dyn LlmClient>,
+    embeddings: Option<Arc<dyn EmbeddingService>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -46,8 +49,16 @@ struct DerivedObservationEnvelope {
 }
 
 impl DeriveService {
-    pub fn new(config: AgentConfig, llm: Arc<dyn LlmClient>) -> Self {
-        Self { config, llm }
+    pub fn new(
+        config: AgentConfig,
+        llm: Arc<dyn LlmClient>,
+        embeddings: Option<Arc<dyn EmbeddingService>>,
+    ) -> Self {
+        Self {
+            config,
+            llm,
+            embeddings,
+        }
     }
 
     pub async fn derive_memory(
@@ -113,6 +124,8 @@ impl DeriveService {
                 .as_deref()
                 .and_then(MemoryLaneType::parse);
             let metadata = derive_metadata(memory, &perspective, observation.confidence);
+            let (embedding, embedding_model) =
+                maybe_embed(self.embeddings.as_deref(), &observation.content).await;
 
             let derived = repo
                 .store_with_lineage(StoreMemoryWithLineageParams {
@@ -123,8 +136,8 @@ impl DeriveService {
                         memory_lane_type: memory_lane_type.as_ref(),
                         labels: &observation.labels,
                         metadata: &metadata,
-                        embedding: None,
-                        embedding_model: None,
+                        embedding: embedding.as_deref(),
+                        embedding_model: embedding_model.as_deref(),
                     },
                     source_memory_ids: &[memory.id],
                     evidence_role: DERIVED_FROM_ROLE,
@@ -509,6 +522,7 @@ mod tests {
         let service = DeriveService::new(
             AgentConfig::default(),
             Arc::new(MockLlmClient::new(Vec::new())),
+            None,
         );
         let derived_ids = service.derive_memory(&explicit, &repo).await.unwrap();
         assert!(derived_ids.is_empty());
@@ -531,6 +545,7 @@ mod tests {
         let service = DeriveService::new(
             AgentConfig::default(),
             Arc::new(MockLlmClient::new(vec![Ok(response)])),
+            None,
         );
 
         let derived_ids = service.derive_memory(&raw, &repo).await.unwrap();
@@ -583,6 +598,7 @@ mod tests {
         let service = DeriveService::new(
             AgentConfig::default(),
             Arc::new(MockLlmClient::new(vec![Ok(response)])),
+            None,
         );
 
         let first = service.derive_memory(&raw, &repo).await.unwrap();
@@ -614,6 +630,7 @@ mod tests {
         let service = DeriveService::new(
             AgentConfig::default(),
             Arc::new(MockLlmClient::new(vec![Ok(bad_response)])),
+            None,
         );
 
         let derived_ids = service.derive_memory(&raw, &repo).await.unwrap();
@@ -662,6 +679,7 @@ mod tests {
         let service = DeriveService::new(
             AgentConfig::default(),
             Arc::new(MockLlmClient::new(vec![Ok(response)])),
+            None,
         );
 
         let derived_ids = service.derive_memory(&raw, &repo).await.unwrap();
@@ -675,6 +693,69 @@ mod tests {
         assert_eq!(
             derived.metadata["agent"]["summary"],
             serde_json::Value::String("Useful summary survives.".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_derive_memory_produces_embeddings_when_service_provided() {
+        let (_pool, repo, namespace_id) = setup_repo().await;
+        let raw = store_raw_memory(
+            &repo,
+            namespace_id,
+            "Implemented the query path with tight pagination.",
+        )
+        .await;
+
+        let mock_embed = nexus_embeddings::MockEmbeddingService::new();
+        let response = GenerateResponse {
+            content: r#"{"observations":[{"content":"Implemented query path with pagination.","category":"facts","memory_lane_type":null,"labels":["query","pagination"],"confidence":0.85}]}"#.to_string(),
+            model: "mock-model".to_string(),
+            usage: None,
+        };
+        let service = DeriveService::new(
+            AgentConfig::default(),
+            Arc::new(MockLlmClient::new(vec![Ok(response)])),
+            Some(Arc::new(mock_embed)),
+        );
+
+        let derived_ids = service.derive_memory(&raw, &repo).await.unwrap();
+        let derived = repo.get_by_id(derived_ids[0]).await.unwrap().unwrap();
+
+        assert!(
+            derived.content_embedding.is_some(),
+            "derived explicit observation should have an embedding when service is provided"
+        );
+        let embedding = derived.content_embedding.as_ref().unwrap();
+        assert_eq!(embedding.len(), 384, "embedding dimension should be 384");
+    }
+
+    #[tokio::test]
+    async fn test_derive_memory_stores_without_embedding_when_service_absent() {
+        let (_pool, repo, namespace_id) = setup_repo().await;
+        let raw = store_raw_memory(
+            &repo,
+            namespace_id,
+            "Implemented the query path with tight pagination.",
+        )
+        .await;
+
+        let response = GenerateResponse {
+            content: r#"{"observations":[{"content":"Implemented query path with pagination.","category":"facts","memory_lane_type":null,"labels":["query","pagination"],"confidence":0.85}]}"#.to_string(),
+            model: "mock-model".to_string(),
+            usage: None,
+        };
+        let service = DeriveService::new(
+            AgentConfig::default(),
+            Arc::new(MockLlmClient::new(vec![Ok(response)])),
+            None,
+        );
+
+        let derived_ids = service.derive_memory(&raw, &repo).await.unwrap();
+        let derived = repo.get_by_id(derived_ids[0]).await.unwrap().unwrap();
+
+        assert!(
+            derived.content_embedding.is_none(),
+            "derived observation should NOT have an embedding when no service provided"
         );
     }
 
@@ -710,6 +791,7 @@ mod tests {
             Arc::new(MockLlmClient::new(vec![Err(
                 nexus_llm::LlmError::InvalidJsonResponse("bad".to_string()),
             )])),
+            None,
         );
 
         let derived_ids = service.derive_memory(&low_signal, &repo).await.unwrap();

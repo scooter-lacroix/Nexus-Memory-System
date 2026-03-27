@@ -8,26 +8,39 @@
 //! 5. Generate an answer via LLM, attaching lineage metadata.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use nexus_core::config::AgentConfig;
+use nexus_core::traits::EmbeddingService;
 use nexus_core::{Memory, WorkingRepresentationRequest};
 use nexus_lephase::{CompressionMode, LePhaseIntegration};
-use nexus_llm::{ChatMessage, GenerateParams, LlmClient, LlmClientJson};
-use nexus_storage::repository::{MemoryRelationRepository, MemoryRepository};
+use nexus_llm::{ChatMessage, GenerateParams, LlmClient, TokenUsage};
+use nexus_storage::repository::{MemoryRelationRepository, MemoryRepository, NamespaceRepository};
 use tracing::{debug, info, warn};
 
 use crate::error::AgentError;
+use crate::identity::IdentityResolver;
 use crate::prompts::{
     query_refinement_user_prompt, query_user_prompt_with_lineage, QUERY_SYSTEM_PROMPT,
 };
-use crate::ranking::{flatten_ranked_representation, BucketedMemory};
+use crate::ranking::{
+    flatten_ranked_representation_with_excluded, BucketedMemory, RankedExcludedMemory, RankedResult,
+};
 use crate::representation::RepresentationService;
-use crate::types::{MemoryLineage, QueryAnswer};
-use crate::util::extract_agent_summary;
+use crate::types::{
+    BucketIntrospectionStats, ExcludedCandidate, InclusionReason, InclusionSignal, MemoryBucket,
+    MemoryLineage, QueryAnswer, QueryIntrospection, RelevantReflection,
+    RepresentationConfigSnapshot,
+};
+use crate::util::{
+    extract_agent_summary, flush_metric_samples, parse_json_response, stage_metric_sample,
+    token_usage_metric_samples, CognitionSnapshot,
+};
 
 pub struct QueryService {
     llm: std::sync::Arc<dyn LlmClient>,
     config: AgentConfig,
+    representation: RepresentationService,
 }
 
 /// Threshold below which the lightweight (non-phase-grouped) context builder is used.
@@ -35,7 +48,23 @@ const PHASE_GROUPING_THRESHOLD: usize = 3;
 
 impl QueryService {
     pub fn new(llm: std::sync::Arc<dyn LlmClient>, config: AgentConfig) -> Self {
-        Self { llm, config }
+        Self {
+            llm,
+            config,
+            representation: RepresentationService::new(),
+        }
+    }
+
+    pub fn with_embedder(
+        llm: std::sync::Arc<dyn LlmClient>,
+        config: AgentConfig,
+        embedder: std::sync::Arc<dyn EmbeddingService>,
+    ) -> Self {
+        Self {
+            llm,
+            config,
+            representation: RepresentationService::with_embedder(embedder),
+        }
     }
 
     pub async fn query(
@@ -53,6 +82,7 @@ impl QueryService {
             include_raw: false,
             ..WorkingRepresentationRequest::default()
         };
+        let request = self.with_cross_namespace_ids(request, memory_repo).await?;
 
         self.query_with_representation(question, request, memory_repo, relation_repo)
             .await
@@ -66,48 +96,199 @@ impl QueryService {
         _relation_repo: &MemoryRelationRepository<'_>,
     ) -> Result<QueryAnswer, AgentError> {
         info!(question = %question, "Processing query");
+        let total_started = Instant::now();
+        let mut metrics = Vec::new();
 
-        let representation = RepresentationService::new()
+        let representation_started = Instant::now();
+        let representation = self
+            .representation
             .build(&request, memory_repo)
             .await
             .map_err(|e| {
                 warn!(error = %e, "Failed to build working representation");
                 AgentError::Storage(e.to_string())
             })?;
+        metrics.push(stage_metric_sample(
+            request.namespace_id,
+            "cognition.query.representation_ms",
+            representation_started.elapsed().as_secs_f64() * 1000.0,
+            "representation",
+        ));
 
-        let bucketed = flatten_ranked_representation(representation, &request);
+        let flatten_started = Instant::now();
+        let ranked = flatten_ranked_representation_with_excluded(representation, &request);
+        let bucketed = &ranked.included;
+        metrics.push(stage_metric_sample(
+            request.namespace_id,
+            "cognition.query.flatten_ms",
+            flatten_started.elapsed().as_secs_f64() * 1000.0,
+            "flatten",
+        ));
         debug!(count = bucketed.len(), "Found relevant memories");
 
         if bucketed.is_empty() {
-            let answer = self.generate_answer(question, "").await?;
+            let answer_started = Instant::now();
+            let (answer, usage) = self.generate_answer(question, "").await?;
+            metrics.push(stage_metric_sample(
+                request.namespace_id,
+                "cognition.query.answer_ms",
+                answer_started.elapsed().as_secs_f64() * 1000.0,
+                "answer",
+            ));
+            metrics.extend(token_usage_metric_samples(
+                request.namespace_id,
+                "cognition.query.answer",
+                "answer",
+                usage.as_ref(),
+            ));
+            metrics.push(stage_metric_sample(
+                request.namespace_id,
+                "cognition.query.total_ms",
+                total_started.elapsed().as_secs_f64() * 1000.0,
+                "total",
+            ));
+            flush_metric_samples(memory_repo, &metrics).await;
             return Ok(answer);
         }
 
         // Build lineages (phase detection + relevance scoring).
-        let lineages = build_lineages(&bucketed);
+        let lineages = build_lineages(bucketed);
 
         // Build context: phase-grouped for larger sets, lightweight for small sets.
+        let context_started = Instant::now();
         let context = if bucketed.len() >= PHASE_GROUPING_THRESHOLD {
-            self.build_phase_aware_context(&bucketed, &lineages)?
+            self.build_phase_aware_context(bucketed, &lineages)?
         } else {
-            self.build_lightweight_context(&bucketed, &lineages)?
+            self.build_lightweight_context(bucketed, &lineages)?
         };
+        metrics.push(stage_metric_sample(
+            request.namespace_id,
+            "cognition.query.context_ms",
+            context_started.elapsed().as_secs_f64() * 1000.0,
+            "context",
+        ));
 
         debug!(context_len = context.len(), "Built query context");
 
-        let answer = self.generate_answer(question, &context).await?;
-        let mut answer = if should_refine_answer(question, &answer, &bucketed) {
-            let refined = self
+        let answer_started = Instant::now();
+        let (answer, usage) = self.generate_answer(question, &context).await?;
+        metrics.push(stage_metric_sample(
+            request.namespace_id,
+            "cognition.query.answer_ms",
+            answer_started.elapsed().as_secs_f64() * 1000.0,
+            "answer",
+        ));
+        metrics.extend(token_usage_metric_samples(
+            request.namespace_id,
+            "cognition.query.answer",
+            "answer",
+            usage.as_ref(),
+        ));
+        let mut answer = if should_refine_answer(question, &answer, bucketed) {
+            let refine_started = Instant::now();
+            let (refined, usage) = self
                 .generate_refined_answer(question, &context, &answer)
                 .await?;
+            metrics.push(stage_metric_sample(
+                request.namespace_id,
+                "cognition.query.refine_ms",
+                refine_started.elapsed().as_secs_f64() * 1000.0,
+                "refine",
+            ));
+            metrics.extend(token_usage_metric_samples(
+                request.namespace_id,
+                "cognition.query.refine",
+                "refine",
+                usage.as_ref(),
+            ));
             select_better_answer(answer, refined)
         } else {
             answer
         };
         answer.lineages = lineages;
 
+        metrics.push(stage_metric_sample(
+            request.namespace_id,
+            "cognition.query.total_ms",
+            total_started.elapsed().as_secs_f64() * 1000.0,
+            "total",
+        ));
+        flush_metric_samples(memory_repo, &metrics).await;
+
         info!("Query answered successfully");
         Ok(answer)
+    }
+
+    /// Compute introspection for a query without calling the LLM.
+    ///
+    /// Builds the working representation, runs ranking with excluded-candidate
+    /// capture, and fetches recent reflective inferences. Returns a
+    /// `QueryIntrospection` suitable for observability surfaces.
+    pub async fn query_introspection(
+        &self,
+        question: &str,
+        namespace_id: i64,
+        memory_repo: &MemoryRepository,
+    ) -> Result<QueryIntrospection, AgentError> {
+        let request = WorkingRepresentationRequest {
+            namespace_id,
+            perspective: None,
+            query: Some(question.to_string()),
+            max_items: self.config.query_context_limit,
+            include_raw: false,
+            ..WorkingRepresentationRequest::default()
+        };
+        let request = self.with_cross_namespace_ids(request, memory_repo).await?;
+
+        self.introspection_with_representation(&request, question, memory_repo)
+            .await
+    }
+
+    /// Introspection with a custom representation request.
+    pub async fn introspection_with_representation(
+        &self,
+        request: &WorkingRepresentationRequest,
+        question: &str,
+        memory_repo: &MemoryRepository,
+    ) -> Result<QueryIntrospection, AgentError> {
+        introspect_query_with_representation_service(
+            &self.representation,
+            request,
+            question,
+            memory_repo,
+        )
+        .await
+    }
+
+    async fn with_cross_namespace_ids(
+        &self,
+        mut request: WorkingRepresentationRequest,
+        memory_repo: &MemoryRepository,
+    ) -> Result<WorkingRepresentationRequest, AgentError> {
+        if !request.cross_namespace_ids.is_empty() {
+            return Ok(request);
+        }
+
+        let namespace_repo = NamespaceRepository::new(memory_repo.pool().clone());
+        let namespaces = namespace_repo
+            .list_all()
+            .await
+            .map_err(|e| AgentError::Storage(e.to_string()))?;
+        let Some(current) = namespaces
+            .iter()
+            .find(|namespace| namespace.id == request.namespace_id)
+        else {
+            return Ok(request);
+        };
+
+        request.cross_namespace_ids =
+            IdentityResolver::related_namespace_ids(&namespace_repo, &current.name)
+                .await
+                .into_iter()
+                .filter(|id| *id != request.namespace_id)
+                .collect();
+
+        Ok(request)
     }
 
     /// Lightweight context builder for small memory sets (fast path).
@@ -180,7 +361,7 @@ impl QueryService {
         &self,
         question: &str,
         context: &str,
-    ) -> Result<QueryAnswer, AgentError> {
+    ) -> Result<(QueryAnswer, Option<TokenUsage>), AgentError> {
         let user_msg = if context.is_empty() {
             query_user_prompt_with_lineage(question, "No relevant memories found.")
         } else {
@@ -197,13 +378,16 @@ impl QueryService {
             json_mode: true,
         };
 
-        let answer: QueryAnswer = self
+        let response = self
             .llm
-            .generate_json(params)
+            .generate(params)
             .await
             .map_err(|e| AgentError::Llm(e.to_string()))?;
+        let usage = response.usage.clone();
+        let answer: QueryAnswer =
+            parse_json_response(&response).map_err(|e| AgentError::Llm(e.to_string()))?;
 
-        Ok(answer)
+        Ok((answer, usage))
     }
 
     async fn generate_refined_answer(
@@ -211,7 +395,7 @@ impl QueryService {
         question: &str,
         context: &str,
         draft: &QueryAnswer,
-    ) -> Result<QueryAnswer, AgentError> {
+    ) -> Result<(QueryAnswer, Option<TokenUsage>), AgentError> {
         let params = GenerateParams {
             messages: vec![
                 ChatMessage::system(QUERY_SYSTEM_PROMPT),
@@ -226,11 +410,25 @@ impl QueryService {
             json_mode: true,
         };
 
-        self.llm
-            .generate_json(params)
+        let response = self
+            .llm
+            .generate(params)
             .await
-            .map_err(|e| AgentError::Llm(e.to_string()))
+            .map_err(|e| AgentError::Llm(e.to_string()))?;
+        let usage = response.usage.clone();
+        let answer: QueryAnswer =
+            parse_json_response(&response).map_err(|e| AgentError::Llm(e.to_string()))?;
+        Ok((answer, usage))
     }
+}
+
+fn introspection_request(request: &WorkingRepresentationRequest) -> WorkingRepresentationRequest {
+    let mut overfetch = request.clone();
+    overfetch.max_items = request
+        .max_items
+        .saturating_mul(3)
+        .max(request.max_items + 8);
+    overfetch
 }
 
 // ---------------------------------------------------------------------------
@@ -331,13 +529,482 @@ fn annotate_with_buckets(formatted: &str, lineage_map: &HashMap<i64, &MemoryLine
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// Introspection builder
 // ---------------------------------------------------------------------------
+
+const CONTENT_PREVIEW_LEN: usize = 80;
+const MAX_EXCLUDED_CANDIDATES: usize = 20;
+const MAX_RELEVANT_REFLECTIONS: usize = 10;
+
+/// Build full introspection from ranked results.
+///
+/// This is a pure structural analysis — no LLM calls.
+pub(crate) async fn build_introspection(
+    ranked: &RankedResult,
+    question: &str,
+    request: &WorkingRepresentationRequest,
+    memory_repo: &MemoryRepository,
+    started: Instant,
+) -> Result<QueryIntrospection, AgentError> {
+    let included = build_inclusion_reasons(&ranked.included, request);
+    let excluded = build_excluded_candidates(&ranked.excluded);
+    let bucket_stats = build_bucket_stats(&ranked.included, &ranked.excluded);
+    let relevant_reflections = fetch_relevant_reflections(question, request, memory_repo).await?;
+
+    let pipeline_latency_ms = Some(started.elapsed().as_millis() as u64);
+    let representation_config = Some(RepresentationConfigSnapshot {
+        max_items: request.max_items,
+        include_raw: request.include_raw,
+        include_digests: request.include_digests,
+        include_semantic: request.include_semantic,
+        include_derived: request.include_derived,
+        include_contradictions: request.include_contradictions,
+    });
+
+    Ok(QueryIntrospection {
+        included,
+        excluded_candidates: excluded,
+        relevant_reflections,
+        bucket_stats,
+        pipeline_latency_ms,
+        representation_config,
+    })
+}
+
+fn build_inclusion_reasons(
+    bucketed: &[BucketedMemory],
+    request: &WorkingRepresentationRequest,
+) -> Vec<InclusionReason> {
+    let analyzer = nexus_lephase::PhaseAnalyzer::new();
+
+    bucketed
+        .iter()
+        .map(|bm| {
+            let analysis = analyzer.analyze(&bm.memory);
+            let relevance = bm
+                .memory
+                .relevance_score
+                .or(bm.memory.similarity_score)
+                .or(Some((bm.blended_score / 100.0).clamp(0.0, 1.0)));
+            let signals = extract_inclusion_signals(bm, request);
+
+            InclusionReason {
+                memory_id: bm.memory.id,
+                bucket: bm.bucket,
+                phase: analysis.phase.phase_type.to_string(),
+                relevance_score: relevance,
+                blended_score: bm.blended_score,
+                reason: classify_inclusion_reason(bm, relevance),
+                signals,
+            }
+        })
+        .collect()
+}
+
+/// Extract structured signals explaining why a memory was included.
+///
+/// Decomposes the blended score factors into human-readable signals.
+fn extract_inclusion_signals(
+    bm: &BucketedMemory,
+    request: &WorkingRepresentationRequest,
+) -> Vec<InclusionSignal> {
+    use crate::util::CognitionSnapshot;
+    use nexus_core::CognitiveLevel;
+
+    let memory = &bm.memory;
+    let snapshot = CognitionSnapshot::from_memory(memory);
+    let mut signals = Vec::new();
+
+    // Recency signal
+    let age_hours = (chrono::Utc::now() - memory.created_at).num_hours();
+    let recency_desc = match age_hours {
+        h if h <= 1 => "Created within the last hour".to_string(),
+        h if h <= 6 => format!("Created {h}h ago"),
+        h if h <= 24 => format!("Created {h}h ago"),
+        h if h <= 72 => format!("Created {h}h ago"),
+        h if h <= 168 => format!("Created {}d ago", h / 24),
+        _ => format!("Created {}d ago", age_hours / 24),
+    };
+    let recency_weight = match age_hours {
+        h if h <= 1 => 1.0,
+        h if h <= 6 => 0.8,
+        h if h <= 24 => 0.6,
+        h if h <= 72 => 0.35,
+        h if h <= 168 => 0.15,
+        _ => 0.0,
+    };
+    signals.push(InclusionSignal {
+        signal_type: "recency".to_string(),
+        description: recency_desc,
+        weight_contribution: recency_weight,
+    });
+
+    // Cognitive level signal
+    let level_desc = match snapshot.level {
+        CognitiveLevel::Explicit => "Explicit factual memory",
+        CognitiveLevel::Derived => "System-derived insight",
+        CognitiveLevel::Contradiction => "Detected contradiction",
+        CognitiveLevel::SummaryShort => "Short-form session digest",
+        CognitiveLevel::SummaryLong => "Long-form session digest",
+        CognitiveLevel::Raw => "Raw activity record",
+    };
+    let confidence = snapshot.confidence.unwrap_or(0.75).clamp(0.0, 1.0);
+    signals.push(InclusionSignal {
+        signal_type: "cognitive_level".to_string(),
+        description: format!("{level_desc} (confidence: {:.2})", confidence),
+        weight_contribution: confidence,
+    });
+
+    // Semantic similarity signal (only for semantic bucket)
+    if matches!(bm.bucket, MemoryBucket::Semantic) {
+        let similarity = memory
+            .relevance_score
+            .or(memory.similarity_score)
+            .unwrap_or_default();
+        if similarity > 0.0 {
+            signals.push(InclusionSignal {
+                signal_type: "semantic_similarity".to_string(),
+                description: format!("Embedding similarity score: {:.3}", similarity),
+                weight_contribution: similarity,
+            });
+        }
+    }
+
+    // Perspective match signal
+    if let Some(ref req_perspective) = request.perspective {
+        if let Some(ref mem_perspective) = snapshot.perspective {
+            let observer_match = mem_perspective.observer == req_perspective.observer;
+            let subject_match = mem_perspective.subject == req_perspective.subject;
+            if observer_match || subject_match {
+                let match_kind = if observer_match && subject_match {
+                    "full perspective match"
+                } else if observer_match {
+                    "observer match"
+                } else {
+                    "subject match"
+                };
+                let weight = if observer_match && subject_match {
+                    1.0
+                } else {
+                    0.5
+                };
+                signals.push(InclusionSignal {
+                    signal_type: "perspective_match".to_string(),
+                    description: match_kind.to_string(),
+                    weight_contribution: weight,
+                });
+            }
+        }
+    }
+
+    // Reinforcement signal
+    if snapshot.times_reinforced > 0 {
+        let reinforced = ((snapshot.times_reinforced as f32) / 5.0).min(1.0);
+        signals.push(InclusionSignal {
+            signal_type: "reinforcement".to_string(),
+            description: format!("Reinforced {} time(s)", snapshot.times_reinforced),
+            weight_contribution: reinforced,
+        });
+    }
+
+    // Bucket boost signal
+    let bucket_desc = match bm.bucket {
+        MemoryBucket::Digests => Some("Digest bucket — prioritized for context grounding"),
+        MemoryBucket::Contradictions => {
+            Some("Contradiction bucket — surfaced for conflict awareness")
+        }
+        MemoryBucket::Derived => Some("Derived bucket — system insight priority"),
+        MemoryBucket::Semantic => None,
+        MemoryBucket::Recent => None,
+    };
+    if let Some(desc) = bucket_desc {
+        signals.push(InclusionSignal {
+            signal_type: "bucket_boost".to_string(),
+            description: desc.to_string(),
+            weight_contribution: 0.0,
+        });
+    }
+
+    signals
+}
+
+fn classify_inclusion_reason(bm: &BucketedMemory, relevance: Option<f32>) -> String {
+    match bm.bucket {
+        MemoryBucket::Semantic => {
+            let score_str = relevance
+                .map(|s| format!("{:.2}", s))
+                .unwrap_or_else(|| "N/A".to_string());
+            format!("Semantic match (score: {}) in semantic bucket", score_str)
+        }
+        MemoryBucket::Digests => "Session digest selected for context grounding".to_string(),
+        MemoryBucket::Derived => {
+            format!(
+                "Reinforced derived insight (blended: {:.2}) in derived bucket",
+                bm.blended_score
+            )
+        }
+        MemoryBucket::Recent => {
+            format!(
+                "Recent memory (blended: {:.2}) in recent bucket",
+                bm.blended_score
+            )
+        }
+        MemoryBucket::Contradictions => {
+            "Contradiction detected — surfaced for conflict awareness".to_string()
+        }
+    }
+}
+
+fn build_excluded_candidates(excluded: &[RankedExcludedMemory]) -> Vec<ExcludedCandidate> {
+    excluded
+        .iter()
+        .take(MAX_EXCLUDED_CANDIDATES)
+        .map(|excluded| ExcludedCandidate {
+            memory_id: excluded.memory.id,
+            bucket: excluded.bucket,
+            blended_score: excluded.blended_score,
+            reason: excluded.reason.clone(),
+            content_preview: truncate_str(&excluded.memory.content, CONTENT_PREVIEW_LEN),
+        })
+        .collect()
+}
+
+fn build_bucket_stats(
+    included: &[BucketedMemory],
+    excluded: &[RankedExcludedMemory],
+) -> Vec<BucketIntrospectionStats> {
+    let mut all_buckets: Vec<(MemoryBucket, usize, usize)> = Vec::new();
+
+    for bm in included {
+        if let Some(entry) = all_buckets.iter_mut().find(|(b, _, _)| *b == bm.bucket) {
+            entry.1 += 1;
+        } else {
+            all_buckets.push((bm.bucket, 1, 0));
+        }
+    }
+
+    for excluded in excluded {
+        if let Some(entry) = all_buckets
+            .iter_mut()
+            .find(|(bucket, _, _)| *bucket == excluded.bucket)
+        {
+            entry.2 += 1;
+        } else {
+            all_buckets.push((excluded.bucket, 0, 1));
+        }
+    }
+
+    all_buckets
+        .into_iter()
+        .map(|(bucket, inc, exc)| BucketIntrospectionStats {
+            bucket,
+            fetched: inc + exc,
+            included: inc,
+            excluded: exc,
+        })
+        .collect()
+}
+
+async fn fetch_relevant_reflections(
+    question: &str,
+    request: &WorkingRepresentationRequest,
+    memory_repo: &MemoryRepository,
+) -> Result<Vec<RelevantReflection>, AgentError> {
+    let query_terms = tokenize_query(question);
+    let filters = nexus_storage::repository::ListMemoryFilters {
+        category: None,
+        since: None,
+        until: None,
+        content_like: None,
+        include_raw: false,
+        limit: (MAX_RELEVANT_REFLECTIONS as i64).max(10) * 8,
+        offset: 0,
+    };
+
+    let all = memory_repo
+        .list_filtered(request.namespace_id, filters)
+        .await
+        .map_err(|e| AgentError::Storage(e.to_string()))?;
+
+    let mut ranked: Vec<(f32, Memory)> = all
+        .into_iter()
+        .filter(|m| {
+            if !reflection_matches_request_scope(m, request) {
+                return false;
+            }
+            let level = m
+                .metadata
+                .get("cognitive")
+                .and_then(|c| c.get("level"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            level == "derived" || level == "contradiction"
+        })
+        .map(|m| {
+            let content_terms = tokenize_query(&m.content);
+            let overlap = if query_terms.is_empty() {
+                0.0
+            } else {
+                let shared = query_terms.intersection(&content_terms).count() as f32;
+                shared / query_terms.len() as f32
+            };
+            let confidence = m
+                .metadata
+                .get("cognitive")
+                .and_then(|c| c.get("confidence"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.75) as f32;
+            let recency = {
+                let age_hours = (chrono::Utc::now() - m.created_at).num_hours();
+                match age_hours {
+                    h if h <= 1 => 1.0,
+                    h if h <= 6 => 0.8,
+                    h if h <= 24 => 0.6,
+                    h if h <= 72 => 0.35,
+                    h if h <= 168 => 0.15,
+                    _ => 0.0,
+                }
+            };
+            let score = if query_terms.is_empty() {
+                0.5 * confidence + 0.5 * recency
+            } else {
+                0.65 * overlap + 0.20 * confidence + 0.15 * recency
+            };
+            (score, m)
+        })
+        .filter(|(score, _)| query_terms.is_empty() || *score > 0.0)
+        .collect();
+    ranked.sort_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| right.1.created_at.cmp(&left.1.created_at))
+    });
+
+    let reflections: Vec<RelevantReflection> = ranked
+        .into_iter()
+        .take(MAX_RELEVANT_REFLECTIONS)
+        .map(|(_, m)| {
+            let reflection_type = m
+                .metadata
+                .get("cognitive")
+                .and_then(|c| c.get("level"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let confidence = m
+                .metadata
+                .get("cognitive")
+                .and_then(|c| c.get("confidence"))
+                .and_then(|v| v.as_f64());
+
+            RelevantReflection {
+                memory_id: m.id,
+                reflection_type,
+                content_preview: truncate_str(&m.content, CONTENT_PREVIEW_LEN),
+                confidence,
+                created_at: m.created_at.to_rfc3339(),
+            }
+        })
+        .collect();
+
+    Ok(reflections)
+}
+
+fn reflection_matches_request_scope(
+    memory: &Memory,
+    request: &WorkingRepresentationRequest,
+) -> bool {
+    let Some(request_perspective) = request.perspective.as_ref() else {
+        return true;
+    };
+
+    let snapshot = CognitionSnapshot::from_memory(memory);
+    let Some(memory_perspective) = snapshot.perspective.as_ref() else {
+        return false;
+    };
+
+    if memory_perspective.observer != request_perspective.observer
+        || memory_perspective.subject != request_perspective.subject
+    {
+        return false;
+    }
+
+    match request_perspective.session_key.as_deref() {
+        Some(session_key) => memory_perspective.session_key.as_deref() == Some(session_key),
+        None => true,
+    }
+}
+
+fn tokenize_query(text: &str) -> std::collections::BTreeSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter_map(|segment| {
+            let term = segment.trim().to_ascii_lowercase();
+            (term.len() >= 3).then_some(term)
+        })
+        .collect()
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &s[..end])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Standalone introspection (no LLM required)
+// ---------------------------------------------------------------------------
+
+/// Introspect query ranking decisions without requiring an LLM client.
+///
+/// This is the recommended entry point for observability surfaces (web API,
+/// CLI) that need introspection data but don't need to generate answers.
+/// Builds the same overfetched representation used by service-backed
+/// introspection so near-miss/excluded-candidate explanations are consistent
+/// across CLI, web, and agent surfaces.
+pub async fn introspect_query(
+    request: &WorkingRepresentationRequest,
+    question: &str,
+    memory_repo: &MemoryRepository,
+) -> Result<QueryIntrospection, AgentError> {
+    introspect_query_with_representation_service(
+        &RepresentationService::new(),
+        request,
+        question,
+        memory_repo,
+    )
+    .await
+}
+
+async fn introspect_query_with_representation_service(
+    representation: &RepresentationService,
+    request: &WorkingRepresentationRequest,
+    question: &str,
+    memory_repo: &MemoryRepository,
+) -> Result<QueryIntrospection, AgentError> {
+    let started = Instant::now();
+    let overfetch_request = introspection_request(request);
+    let representation = representation
+        .build(&overfetch_request, memory_repo)
+        .await
+        .map_err(|e| AgentError::Storage(e.to_string()))?;
+
+    let ranked = flatten_ranked_representation_with_excluded(representation, request);
+
+    build_introspection(&ranked, question, request, memory_repo, started).await
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::MemoryBucket;
+    use crate::types::{ExclusionReason, MemoryBucket};
     use async_trait::async_trait;
     use nexus_core::{CognitiveLevel, CognitiveMetadata, MemoryCategory, PerspectiveKey};
     use nexus_llm::GenerateResponse;
@@ -614,7 +1281,7 @@ mod tests {
             answer: "Maybe.".to_string(),
             citations: Vec::new(),
             confidence: 0.55,
-            lineages: Vec::new(),
+            ..Default::default()
         };
 
         assert!(should_refine_answer(
@@ -639,7 +1306,7 @@ mod tests {
                 excerpt: "Gemini is active".to_string(),
             }],
             confidence: 0.91,
-            lineages: Vec::new(),
+            ..Default::default()
         };
 
         assert!(!should_refine_answer(
@@ -655,7 +1322,7 @@ mod tests {
             answer: "Short".to_string(),
             citations: Vec::new(),
             confidence: 0.78,
-            lineages: Vec::new(),
+            ..Default::default()
         };
         let refined = QueryAnswer {
             answer: "Longer answer with supporting detail and an explicit citation.".to_string(),
@@ -665,7 +1332,7 @@ mod tests {
                 excerpt: "Supporting excerpt".to_string(),
             }],
             confidence: 0.76,
-            lineages: Vec::new(),
+            ..Default::default()
         };
 
         let selected = select_better_answer(initial, refined);
@@ -911,6 +1578,7 @@ mod tests {
                     include_derived: true,
                     include_digests: true,
                     include_contradictions: true,
+                    ..WorkingRepresentationRequest::default()
                 },
                 &repo,
                 &relation_repo,
@@ -1016,6 +1684,7 @@ mod tests {
                     include_derived: true,
                     include_digests: true,
                     include_contradictions: true,
+                    ..WorkingRepresentationRequest::default()
                 },
                 &repo,
                 &relation_repo,
@@ -1081,6 +1750,110 @@ mod tests {
             "The migration timeline shows several execution details with stronger support."
         );
         assert_eq!(llm.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_query_service_auto_includes_cross_namespace_alias_digest_without_perspective() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        nexus_storage::migrations::run_migrations(&pool)
+            .await
+            .unwrap();
+
+        let namespace_repo = NamespaceRepository::new(pool.clone());
+        let primary = namespace_repo
+            .get_or_create("claude-code", "claude-code")
+            .await
+            .unwrap();
+        let alias = namespace_repo
+            .get_or_create("claude", "claude")
+            .await
+            .unwrap();
+        let unrelated = namespace_repo
+            .get_or_create("codex", "codex")
+            .await
+            .unwrap();
+
+        let repo = MemoryRepository::new(pool.clone());
+        let relation_repo = MemoryRelationRepository::new(&pool);
+        let perspective =
+            PerspectiveKey::new("claude-code", "claude-code", Some("session-1".to_string()));
+
+        let alias_digest = store_memory(
+            &repo,
+            alias.id,
+            "Alias digest summary: the claude namespace captured the provider rollout timeline.",
+            CognitiveLevel::SummaryShort,
+            &perspective,
+        )
+        .await;
+        repo.store_digest(StoreDigestParams {
+            namespace_id: alias.id,
+            session_key: "session-1",
+            digest_kind: "short",
+            memory_id: alias_digest.id,
+            start_memory_id: Some(alias_digest.id),
+            end_memory_id: Some(alias_digest.id),
+            token_count: 48,
+        })
+        .await
+        .unwrap();
+
+        let unrelated_digest = store_memory(
+            &repo,
+            unrelated.id,
+            "Unrelated codex digest summary: refactor unrelated CLI parsing bug.",
+            CognitiveLevel::SummaryShort,
+            &perspective,
+        )
+        .await;
+        repo.store_digest(StoreDigestParams {
+            namespace_id: unrelated.id,
+            session_key: "session-1",
+            digest_kind: "short",
+            memory_id: unrelated_digest.id,
+            start_memory_id: Some(unrelated_digest.id),
+            end_memory_id: Some(unrelated_digest.id),
+            token_count: 41,
+        })
+        .await
+        .unwrap();
+
+        let llm = Arc::new(MockLlmClient::new(vec![Ok(answer_response(
+            "The provider rollout timeline is preserved in the alias digest.",
+            0.93,
+            &[alias_digest.id],
+        ))]));
+        let service = QueryService::new(llm.clone(), AgentConfig::default());
+
+        let answer = service
+            .query(
+                "What does the provider rollout timeline say?",
+                primary.id,
+                &repo,
+                &relation_repo,
+            )
+            .await
+            .unwrap();
+
+        assert!(answer
+            .lineages
+            .iter()
+            .any(|lineage| lineage.memory_id == alias_digest.id));
+        assert!(!answer
+            .lineages
+            .iter()
+            .any(|lineage| lineage.memory_id == unrelated_digest.id));
+
+        let prompts = llm.user_messages();
+        assert!(prompts.iter().any(|prompt| prompt.contains(
+            "Alias digest summary: the claude namespace captured the provider rollout timeline."
+        )));
+        assert!(!prompts.iter().any(|prompt| prompt
+            .contains("Unrelated codex digest summary: refactor unrelated CLI parsing bug.")));
     }
 
     #[tokio::test]
@@ -1159,5 +1932,701 @@ mod tests {
         assert!(!answer.lineages.is_empty());
         let prompts = llm.user_messages();
         assert!(prompts.iter().any(|prompt| prompt.contains("Summary:")));
+    }
+
+    // -----------------------------------------------------------------------
+    // Introspection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_inclusion_reasons_produces_non_empty_reasons() {
+        let bucketed = vec![
+            BucketedMemory {
+                memory: test_memory(1, "Fix the authentication bug"),
+                bucket: MemoryBucket::Semantic,
+                blended_score: 0.91,
+            },
+            BucketedMemory {
+                memory: test_memory(2, "Session digest for sprint review"),
+                bucket: MemoryBucket::Digests,
+                blended_score: 0.85,
+            },
+            BucketedMemory {
+                memory: test_memory(3, "Derived insight: auth patterns converge"),
+                bucket: MemoryBucket::Derived,
+                blended_score: 0.88,
+            },
+        ];
+
+        let default_request = WorkingRepresentationRequest::default();
+        let reasons = build_inclusion_reasons(&bucketed, &default_request);
+        assert_eq!(reasons.len(), 3);
+
+        assert_eq!(reasons[0].memory_id, 1);
+        assert_eq!(reasons[0].bucket, MemoryBucket::Semantic);
+        assert!(!reasons[0].reason.is_empty());
+        assert!(reasons[0].reason.contains("Semantic match"));
+
+        assert_eq!(reasons[1].memory_id, 2);
+        assert_eq!(reasons[1].bucket, MemoryBucket::Digests);
+        assert!(reasons[1].reason.contains("digest"));
+
+        assert_eq!(reasons[2].memory_id, 3);
+        assert_eq!(reasons[2].bucket, MemoryBucket::Derived);
+        assert!(reasons[2].reason.contains("derived"));
+    }
+
+    #[test]
+    fn test_build_excluded_candidates_classifies_exclusion_reasons() {
+        let explicit_memory = Memory {
+            id: 10,
+            namespace_id: 1,
+            content: "Low-scoring memory that got cut".to_string(),
+            category: nexus_core::MemoryCategory::Facts,
+            labels: Vec::new(),
+            metadata: serde_json::json!({
+                "cognitive": {
+                    "level": "explicit",
+                    "confidence": 0.85,
+                    "observer": "",
+                    "subject": "",
+                    "generated_by": ""
+                }
+            }),
+            ..Memory::default()
+        };
+        let duplicate_memory = test_memory(11, "Another excluded memory with more text content");
+
+        let excluded = vec![
+            RankedExcludedMemory {
+                memory: explicit_memory,
+                bucket: MemoryBucket::Recent,
+                blended_score: 0.30,
+                reason: ExclusionReason::BudgetTruncation,
+            },
+            RankedExcludedMemory {
+                memory: duplicate_memory,
+                bucket: MemoryBucket::Semantic,
+                blended_score: 0.25,
+                reason: ExclusionReason::Deduplicated,
+            },
+        ];
+
+        let candidates = build_excluded_candidates(&excluded);
+        assert_eq!(candidates.len(), 2);
+
+        assert_eq!(candidates[0].memory_id, 10);
+        assert_eq!(candidates[0].reason, ExclusionReason::BudgetTruncation);
+        assert!(!candidates[0].content_preview.is_empty());
+
+        assert_eq!(candidates[1].memory_id, 11);
+        assert_eq!(candidates[1].reason, ExclusionReason::Deduplicated);
+    }
+
+    #[test]
+    fn test_build_bucket_stats_correct_counts() {
+        let included = vec![
+            BucketedMemory {
+                memory: test_memory(1, "a"),
+                bucket: MemoryBucket::Semantic,
+                blended_score: 0.9,
+            },
+            BucketedMemory {
+                memory: test_memory(2, "b"),
+                bucket: MemoryBucket::Semantic,
+                blended_score: 0.8,
+            },
+            BucketedMemory {
+                memory: test_memory(3, "c"),
+                bucket: MemoryBucket::Derived,
+                blended_score: 0.7,
+            },
+        ];
+        let excluded = vec![
+            RankedExcludedMemory {
+                memory: test_memory(4, "d"),
+                bucket: MemoryBucket::Semantic,
+                blended_score: 0.5,
+                reason: ExclusionReason::BudgetTruncation,
+            },
+            RankedExcludedMemory {
+                memory: test_memory(5, "e"),
+                bucket: MemoryBucket::Recent,
+                blended_score: 0.4,
+                reason: ExclusionReason::BudgetTruncation,
+            },
+        ];
+
+        let stats = build_bucket_stats(&included, &excluded);
+
+        let semantic = stats
+            .iter()
+            .find(|s| s.bucket == MemoryBucket::Semantic)
+            .unwrap();
+        assert_eq!(semantic.fetched, 3);
+        assert_eq!(semantic.included, 2);
+        assert_eq!(semantic.excluded, 1);
+
+        let derived = stats
+            .iter()
+            .find(|s| s.bucket == MemoryBucket::Derived)
+            .unwrap();
+        assert_eq!(derived.fetched, 1);
+        assert_eq!(derived.included, 1);
+        assert_eq!(derived.excluded, 0);
+
+        let recent = stats
+            .iter()
+            .find(|s| s.bucket == MemoryBucket::Recent)
+            .unwrap();
+        assert_eq!(recent.fetched, 1);
+        assert_eq!(recent.included, 0);
+        assert_eq!(recent.excluded, 1);
+    }
+
+    #[test]
+    fn test_query_introspection_serialization_contract() {
+        let introspection = QueryIntrospection {
+            included: vec![InclusionReason {
+                memory_id: 1,
+                bucket: MemoryBucket::Semantic,
+                phase: "execution".to_string(),
+                relevance_score: Some(0.87),
+                blended_score: 0.91,
+                reason: "Semantic match (score: 0.87) in semantic bucket".to_string(),
+                signals: vec![InclusionSignal {
+                    signal_type: "semantic_similarity".to_string(),
+                    description: "Embedding similarity score: 0.870".to_string(),
+                    weight_contribution: 0.87,
+                }],
+            }],
+            excluded_candidates: vec![ExcludedCandidate {
+                memory_id: 2,
+                bucket: MemoryBucket::Recent,
+                blended_score: 0.30,
+                reason: ExclusionReason::BudgetTruncation,
+                content_preview: "Some content...".to_string(),
+            }],
+            relevant_reflections: vec![RelevantReflection {
+                memory_id: 3,
+                reflection_type: "derived".to_string(),
+                content_preview: "Auth patterns converge...".to_string(),
+                confidence: Some(0.92),
+                created_at: "2026-03-27T12:00:00Z".to_string(),
+            }],
+            bucket_stats: vec![BucketIntrospectionStats {
+                bucket: MemoryBucket::Semantic,
+                fetched: 2,
+                included: 1,
+                excluded: 1,
+            }],
+            pipeline_latency_ms: Some(12),
+            representation_config: Some(RepresentationConfigSnapshot {
+                max_items: 20,
+                include_raw: false,
+                include_digests: true,
+                include_semantic: true,
+                include_derived: true,
+                include_contradictions: true,
+            }),
+        };
+
+        let json = serde_json::to_string(&introspection).expect("serialize introspection");
+        let parsed: QueryIntrospection =
+            serde_json::from_str(&json).expect("deserialize introspection");
+
+        assert_eq!(parsed.included.len(), 1);
+        assert_eq!(parsed.excluded_candidates.len(), 1);
+        assert_eq!(parsed.relevant_reflections.len(), 1);
+        assert_eq!(parsed.bucket_stats.len(), 1);
+        assert_eq!(
+            parsed.excluded_candidates[0].reason,
+            ExclusionReason::BudgetTruncation
+        );
+        assert_eq!(parsed.bucket_stats[0].fetched, 2);
+        assert_eq!(parsed.pipeline_latency_ms, Some(12));
+        assert!(parsed.representation_config.is_some());
+        let config = parsed.representation_config.unwrap();
+        assert_eq!(config.max_items, 20);
+        assert!(!config.include_raw);
+        assert!(config.include_digests);
+        // Signals round-trip
+        assert_eq!(parsed.included[0].signals.len(), 1);
+        assert_eq!(
+            parsed.included[0].signals[0].signal_type,
+            "semantic_similarity"
+        );
+    }
+
+    #[test]
+    fn test_truncate_str_behavior() {
+        assert_eq!(truncate_str("short", 80), "short");
+        assert_eq!(truncate_str("hello world", 5), "hello...");
+        assert_eq!(truncate_str("a longer string here", 10), "a longer s...");
+    }
+
+    #[tokio::test]
+    async fn test_query_introspection_with_stored_memories() {
+        let (_pool, repo, namespace_id, perspective) = setup_repo().await;
+
+        // Store explicit and derived memories
+        let explicit = store_memory(
+            &repo,
+            namespace_id,
+            "The authentication module uses JWT tokens for session management",
+            CognitiveLevel::Explicit,
+            &perspective,
+        )
+        .await;
+        let _derived = store_memory(
+            &repo,
+            namespace_id,
+            "Derived: JWT token patterns show convergence across microservices",
+            CognitiveLevel::Derived,
+            &perspective,
+        )
+        .await;
+
+        let llm = Arc::new(MockLlmClient::new(vec![])); // No LLM calls needed
+        let service = QueryService::new(llm, AgentConfig::default());
+
+        let introspection = service
+            .query_introspection("authentication tokens", namespace_id, &repo)
+            .await
+            .unwrap();
+
+        // Should have at least the explicit memory included
+        assert!(introspection
+            .included
+            .iter()
+            .any(|i| i.memory_id == explicit.id));
+        // All inclusion reasons should be non-empty and have signals
+        for reason in &introspection.included {
+            assert!(!reason.reason.is_empty());
+            assert!(!reason.signals.is_empty());
+        }
+        // Pipeline latency should be populated
+        assert!(introspection.pipeline_latency_ms.is_some());
+        // Representation config should be populated
+        assert!(introspection.representation_config.is_some());
+        // Bucket stats should be present
+        assert!(!introspection.bucket_stats.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_query_introspection_surfaces_excluded_candidates_with_small_budget() {
+        let (_pool, repo, namespace_id, perspective) = setup_repo().await;
+
+        store_memory(
+            &repo,
+            namespace_id,
+            "Session cookies replaced JWT for auth",
+            CognitiveLevel::Explicit,
+            &perspective,
+        )
+        .await;
+        store_memory(
+            &repo,
+            namespace_id,
+            "Derived auth insight from repeated login failures",
+            CognitiveLevel::Derived,
+            &perspective,
+        )
+        .await;
+        store_memory(
+            &repo,
+            namespace_id,
+            "Recent authentication follow-up note",
+            CognitiveLevel::Explicit,
+            &perspective,
+        )
+        .await;
+
+        let service =
+            QueryService::new(Arc::new(MockLlmClient::new(vec![])), AgentConfig::default());
+        let request = WorkingRepresentationRequest {
+            namespace_id,
+            perspective: Some(perspective.clone()),
+            query: Some("authentication".to_string()),
+            max_items: 1,
+            include_raw: false,
+            include_recent: true,
+            include_semantic: true,
+            include_derived: true,
+            include_digests: true,
+            include_contradictions: true,
+            ..WorkingRepresentationRequest::default()
+        };
+
+        let introspection = service
+            .introspection_with_representation(&request, "authentication", &repo)
+            .await
+            .unwrap();
+
+        assert!(!introspection.excluded_candidates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_relevant_reflections_uses_tokenized_matching() {
+        let (_pool, repo, namespace_id, perspective) = setup_repo().await;
+
+        store_memory(
+            &repo,
+            namespace_id,
+            "Derived insight: session cookies replaced JWT after CSRF review",
+            CognitiveLevel::Derived,
+            &perspective,
+        )
+        .await;
+        store_memory(
+            &repo,
+            namespace_id,
+            "Contradiction: older notes still mention JWT login flow",
+            CognitiveLevel::Contradiction,
+            &perspective,
+        )
+        .await;
+
+        let request = WorkingRepresentationRequest {
+            namespace_id,
+            perspective: Some(perspective.clone()),
+            query: Some("why did auth move away from jwt tokens".to_string()),
+            ..WorkingRepresentationRequest::default()
+        };
+
+        let reflections =
+            fetch_relevant_reflections("why did auth move away from jwt tokens", &request, &repo)
+                .await
+                .unwrap();
+
+        assert!(!reflections.is_empty());
+        assert!(reflections
+            .iter()
+            .any(|reflection| reflection.content_preview.to_lowercase().contains("jwt")));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_relevant_reflections_respects_request_scope() {
+        let (_pool, repo, namespace_id, perspective) = setup_repo().await;
+        let other_perspective = PerspectiveKey {
+            observer: "codex".to_string(),
+            subject: "codex".to_string(),
+            session_key: Some("other-session".to_string()),
+        };
+
+        store_memory(
+            &repo,
+            namespace_id,
+            "Derived auth insight from the active scoped session",
+            CognitiveLevel::Derived,
+            &perspective,
+        )
+        .await;
+        store_memory(
+            &repo,
+            namespace_id,
+            "Derived auth insight from an unrelated session",
+            CognitiveLevel::Derived,
+            &other_perspective,
+        )
+        .await;
+
+        let request = WorkingRepresentationRequest {
+            namespace_id,
+            perspective: Some(perspective.clone()),
+            query: Some("auth insight".to_string()),
+            ..WorkingRepresentationRequest::default()
+        };
+
+        let reflections = fetch_relevant_reflections("auth insight", &request, &repo)
+            .await
+            .unwrap();
+
+        assert_eq!(reflections.len(), 1);
+        assert!(reflections[0]
+            .content_preview
+            .contains("active scoped session"));
+    }
+
+    #[tokio::test]
+    async fn test_standalone_introspect_query_matches_service_introspection_contract() {
+        let (_pool, repo, namespace_id, perspective) = setup_repo().await;
+
+        for content in [
+            "Session cookies replaced JWT for auth",
+            "Derived auth insight from repeated login failures",
+            "Recent authentication follow-up note",
+        ] {
+            store_memory(
+                &repo,
+                namespace_id,
+                content,
+                if content.starts_with("Derived") {
+                    CognitiveLevel::Derived
+                } else {
+                    CognitiveLevel::Explicit
+                },
+                &perspective,
+            )
+            .await;
+        }
+
+        let request = WorkingRepresentationRequest {
+            namespace_id,
+            perspective: Some(perspective.clone()),
+            query: Some("authentication".to_string()),
+            max_items: 1,
+            include_raw: false,
+            include_recent: true,
+            include_semantic: true,
+            include_derived: true,
+            include_digests: true,
+            include_contradictions: true,
+            ..WorkingRepresentationRequest::default()
+        };
+
+        let service =
+            QueryService::new(Arc::new(MockLlmClient::new(vec![])), AgentConfig::default());
+        let from_service = service
+            .introspection_with_representation(&request, "authentication", &repo)
+            .await
+            .unwrap();
+        let standalone = introspect_query(&request, "authentication", &repo)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            standalone
+                .excluded_candidates
+                .iter()
+                .map(|candidate| {
+                    (
+                        candidate.memory_id,
+                        candidate.bucket,
+                        candidate.reason.clone(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            from_service
+                .excluded_candidates
+                .iter()
+                .map(|candidate| {
+                    (
+                        candidate.memory_id,
+                        candidate.bucket,
+                        candidate.reason.clone(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            "standalone introspection should expose the same excluded candidates as service introspection"
+        );
+        assert_eq!(
+            standalone
+                .bucket_stats
+                .iter()
+                .map(|stats| (stats.bucket, stats.fetched, stats.included, stats.excluded))
+                .collect::<Vec<_>>(),
+            from_service
+                .bucket_stats
+                .iter()
+                .map(|stats| (stats.bucket, stats.fetched, stats.included, stats.excluded))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            standalone
+                .included
+                .iter()
+                .map(|reason| (reason.memory_id, reason.bucket))
+                .collect::<Vec<_>>(),
+            from_service
+                .included
+                .iter()
+                .map(|reason| (reason.memory_id, reason.bucket))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_query_answer_introspection_field_defaults_to_none() {
+        let answer = QueryAnswer {
+            answer: "test".to_string(),
+            citations: vec![],
+            confidence: 0.9,
+            lineages: vec![],
+            introspection: None,
+        };
+
+        let json = serde_json::to_string(&answer).unwrap();
+        assert!(!json.contains("introspection"));
+    }
+
+    #[test]
+    fn test_query_answer_introspection_serializes_when_present() {
+        let answer = QueryAnswer {
+            answer: "test".to_string(),
+            citations: vec![],
+            confidence: 0.9,
+            lineages: vec![],
+            introspection: Some(QueryIntrospection {
+                included: vec![],
+                excluded_candidates: vec![],
+                relevant_reflections: vec![],
+                bucket_stats: vec![],
+                pipeline_latency_ms: None,
+                representation_config: None,
+            }),
+        };
+
+        let json = serde_json::to_string(&answer).unwrap();
+        assert!(json.contains("introspection"));
+        let parsed: QueryAnswer = serde_json::from_str(&json).unwrap();
+        assert!(parsed.introspection.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 16 contract tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_inclusion_signals_populated_for_semantic_bucket() {
+        let semantic_memory = Memory {
+            id: 42,
+            namespace_id: 1,
+            content: "Authentication uses JWT tokens".to_string(),
+            category: nexus_core::MemoryCategory::Facts,
+            labels: Vec::new(),
+            metadata: serde_json::json!({
+                "cognitive": {
+                    "level": "explicit",
+                    "confidence": 0.90,
+                    "observer": "",
+                    "subject": "",
+                    "generated_by": ""
+                }
+            }),
+            similarity_score: Some(0.85),
+            ..Memory::default()
+        };
+        let bm = BucketedMemory {
+            memory: semantic_memory,
+            bucket: MemoryBucket::Semantic,
+            blended_score: 0.92,
+        };
+        let default_request = WorkingRepresentationRequest::default();
+        let reasons = build_inclusion_reasons(std::slice::from_ref(&bm), &default_request);
+        assert_eq!(reasons.len(), 1);
+        assert!(!reasons[0].signals.is_empty());
+        // Should have at least recency, cognitive_level, and semantic_similarity
+        let signal_types: Vec<&str> = reasons[0]
+            .signals
+            .iter()
+            .map(|s| s.signal_type.as_str())
+            .collect();
+        assert!(signal_types.contains(&"recency"));
+        assert!(signal_types.contains(&"cognitive_level"));
+        assert!(signal_types.contains(&"semantic_similarity"));
+    }
+
+    #[test]
+    fn test_inclusion_signals_populated_for_digest_bucket() {
+        let digest_memory = Memory {
+            id: 55,
+            namespace_id: 1,
+            content: "Session summary: worked on auth module".to_string(),
+            category: nexus_core::MemoryCategory::Session,
+            labels: Vec::new(),
+            metadata: serde_json::json!({
+                "cognitive": {
+                    "level": "summary_short",
+                    "confidence": 0.80,
+                    "observer": "",
+                    "subject": "",
+                    "generated_by": ""
+                }
+            }),
+            ..Memory::default()
+        };
+        let bm = BucketedMemory {
+            memory: digest_memory,
+            bucket: MemoryBucket::Digests,
+            blended_score: 0.88,
+        };
+        let default_request = WorkingRepresentationRequest::default();
+        let reasons = build_inclusion_reasons(&[bm], &default_request);
+        assert_eq!(reasons.len(), 1);
+        let signal_types: Vec<&str> = reasons[0]
+            .signals
+            .iter()
+            .map(|s| s.signal_type.as_str())
+            .collect();
+        assert!(signal_types.contains(&"bucket_boost"));
+    }
+
+    #[test]
+    fn test_exclusion_reason_variants_serialize_correctly() {
+        for (variant, expected) in [
+            (ExclusionReason::BudgetTruncation, "budget_truncation"),
+            (
+                ExclusionReason::ConfidenceBelowThreshold,
+                "confidence_below_threshold",
+            ),
+            (ExclusionReason::Deduplicated, "deduplicated"),
+        ] {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, format!("\"{expected}\""));
+            let parsed: ExclusionReason = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, variant);
+        }
+    }
+
+    #[test]
+    fn test_representation_config_snapshot_serialization() {
+        let config = RepresentationConfigSnapshot {
+            max_items: 30,
+            include_raw: true,
+            include_digests: true,
+            include_semantic: true,
+            include_derived: false,
+            include_contradictions: false,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"max_items\":30"));
+        let parsed: RepresentationConfigSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.max_items, 30);
+        assert!(parsed.include_raw);
+        assert!(!parsed.include_derived);
+    }
+
+    #[test]
+    fn test_introspection_optional_fields_default_safely() {
+        let intro = QueryIntrospection {
+            included: vec![],
+            excluded_candidates: vec![],
+            relevant_reflections: vec![],
+            bucket_stats: vec![],
+            pipeline_latency_ms: None,
+            representation_config: None,
+        };
+        let json = serde_json::to_string(&intro).unwrap();
+        // Optional fields should not appear in JSON when None
+        assert!(!json.contains("pipeline_latency_ms"));
+        assert!(!json.contains("representation_config"));
+        // Round-trip
+        let parsed: QueryIntrospection = serde_json::from_str(&json).unwrap();
+        assert!(parsed.pipeline_latency_ms.is_none());
+        assert!(parsed.representation_config.is_none());
+    }
+
+    #[test]
+    fn test_exclusion_reason_display_impl() {
+        assert_eq!(
+            format!("{}", ExclusionReason::BudgetTruncation),
+            "budget_truncation"
+        );
+        assert_eq!(
+            format!("{}", ExclusionReason::ConfidenceBelowThreshold),
+            "confidence_below_threshold"
+        );
+        assert_eq!(format!("{}", ExclusionReason::Deduplicated), "deduplicated");
     }
 }

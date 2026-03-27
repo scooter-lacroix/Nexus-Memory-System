@@ -110,6 +110,22 @@ pub struct CognitionConfig {
     pub session_end_dream_timeout_secs: u64,
     /// Maximum retry-buffer artifacts to process during a bounded flush
     pub retry_buffer_drain_limit: usize,
+    /// Enable belief revision when contradictions are detected (reduce confidence on sources)
+    pub contradiction_belief_revision_enabled: bool,
+    /// How much to reduce confidence on each contradicted memory (0.0–1.0)
+    pub contradiction_confidence_penalty: f32,
+    /// Enable memory aging decay in ranking blend
+    pub memory_decay_enabled: bool,
+    /// Days before a memory starts decaying in ranking score
+    pub memory_decay_age_days: u64,
+    /// Days that a recent access resets the decay clock
+    pub memory_decay_access_boost_days: u64,
+    /// Enable adaptive dream interval in the periodic supervisor loop
+    pub adaptive_dream_enabled: bool,
+    /// Floor (minimum) for adaptive dream interval in seconds
+    pub adaptive_dream_min_interval_secs: u64,
+    /// Ceiling (maximum) for adaptive dream interval in seconds
+    pub adaptive_dream_max_interval_secs: u64,
 }
 
 impl Default for CognitionConfig {
@@ -134,6 +150,14 @@ impl Default for CognitionConfig {
             include_raw_by_default: false,
             session_end_dream_timeout_secs: 8,
             retry_buffer_drain_limit: 8,
+            contradiction_belief_revision_enabled: true,
+            contradiction_confidence_penalty: 0.15,
+            memory_decay_enabled: true,
+            memory_decay_age_days: 90,
+            memory_decay_access_boost_days: 30,
+            adaptive_dream_enabled: true,
+            adaptive_dream_min_interval_secs: 60,
+            adaptive_dream_max_interval_secs: 1800,
         }
     }
 }
@@ -316,6 +340,42 @@ impl Config {
                 .parse()
                 .unwrap_or(CognitionConfig::default().retry_buffer_drain_limit);
         }
+        if let Ok(enabled) = std::env::var("NEXUS_COGNITION_CONTRADICTION_BELIEF_REVISION_ENABLED")
+        {
+            config.cognition.contradiction_belief_revision_enabled =
+                enabled.parse().unwrap_or(true);
+        }
+        if let Ok(penalty) = std::env::var("NEXUS_COGNITION_CONTRADICTION_CONFIDENCE_PENALTY") {
+            config.cognition.contradiction_confidence_penalty = penalty
+                .parse()
+                .unwrap_or(CognitionConfig::default().contradiction_confidence_penalty);
+        }
+        if let Ok(enabled) = std::env::var("NEXUS_COGNITION_MEMORY_DECAY_ENABLED") {
+            config.cognition.memory_decay_enabled = enabled.parse().unwrap_or(true);
+        }
+        if let Ok(days) = std::env::var("NEXUS_COGNITION_MEMORY_DECAY_AGE_DAYS") {
+            config.cognition.memory_decay_age_days = days
+                .parse()
+                .unwrap_or(CognitionConfig::default().memory_decay_age_days);
+        }
+        if let Ok(days) = std::env::var("NEXUS_COGNITION_MEMORY_DECAY_ACCESS_BOOST_DAYS") {
+            config.cognition.memory_decay_access_boost_days = days
+                .parse()
+                .unwrap_or(CognitionConfig::default().memory_decay_access_boost_days);
+        }
+        if let Ok(enabled) = std::env::var("NEXUS_COGNITION_ADAPTIVE_DREAM_ENABLED") {
+            config.cognition.adaptive_dream_enabled = enabled.parse().unwrap_or(true);
+        }
+        if let Ok(secs) = std::env::var("NEXUS_COGNITION_ADAPTIVE_DREAM_MIN_INTERVAL_SECS") {
+            config.cognition.adaptive_dream_min_interval_secs = secs
+                .parse()
+                .unwrap_or(CognitionConfig::default().adaptive_dream_min_interval_secs);
+        }
+        if let Ok(secs) = std::env::var("NEXUS_COGNITION_ADAPTIVE_DREAM_MAX_INTERVAL_SECS") {
+            config.cognition.adaptive_dream_max_interval_secs = secs
+                .parse()
+                .unwrap_or(CognitionConfig::default().adaptive_dream_max_interval_secs);
+        }
 
         Ok(config)
     }
@@ -449,6 +509,13 @@ mod tests {
         assert!(config.cognition.activity_distill_enabled);
         assert_eq!(config.cognition.representation_max_items, 24);
         assert!(!config.cognition.include_raw_by_default);
+        assert!(config.cognition.contradiction_belief_revision_enabled);
+        assert!((config.cognition.contradiction_confidence_penalty - 0.15).abs() < f32::EPSILON);
+        assert!(config.cognition.memory_decay_enabled);
+        assert_eq!(config.cognition.memory_decay_age_days, 90);
+        assert!(config.cognition.adaptive_dream_enabled);
+        assert_eq!(config.cognition.adaptive_dream_min_interval_secs, 60);
+        assert_eq!(config.cognition.adaptive_dream_max_interval_secs, 1800);
     }
 
     #[test]

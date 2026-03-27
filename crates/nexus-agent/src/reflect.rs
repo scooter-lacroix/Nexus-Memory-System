@@ -9,12 +9,15 @@
 //! operates entirely through deterministic content analysis.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Instant;
 
-use nexus_core::config::AgentConfig;
+use chrono::Utc;
+use nexus_core::config::{AgentConfig, CognitionConfig};
+use nexus_core::traits::EmbeddingService;
 use nexus_core::{
-    cognitive_level_from_metadata, perspective_from_metadata, CognitiveLevel, CognitiveMetadata,
-    Memory, MemoryCategory, MemoryLaneCognitiveType, MemoryLanePriorityType, MemoryLaneType,
-    PerspectiveKey,
+    CognitiveLevel, CognitiveMetadata, Memory, MemoryCategory, MemoryLaneCognitiveType,
+    MemoryLanePriorityType, MemoryLaneType, PerspectiveKey,
 };
 use nexus_storage::repository::{
     ListMemoryFilters, MemoryRepository, StoreMemoryParams, StoreMemoryWithLineageParams,
@@ -22,6 +25,7 @@ use nexus_storage::repository::{
 use tracing::{debug, info};
 
 use crate::error::AgentError;
+use crate::util::{flush_metric_samples, maybe_embed, stage_metric_sample, CognitionSnapshot};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -116,11 +120,21 @@ pub struct ReflectionResult {
 /// already have evidence links are skipped.
 pub struct ReflectService {
     _config: AgentConfig,
+    cognition: CognitionConfig,
+    embeddings: Option<Arc<dyn EmbeddingService>>,
 }
 
 impl ReflectService {
-    pub fn new(config: AgentConfig) -> Self {
-        Self { _config: config }
+    pub fn new(
+        config: AgentConfig,
+        cognition: CognitionConfig,
+        embeddings: Option<Arc<dyn EmbeddingService>>,
+    ) -> Self {
+        Self {
+            _config: config,
+            cognition,
+            embeddings,
+        }
     }
 
     /// Run a single bounded reflection cycle over the namespace's memories.
@@ -133,6 +147,7 @@ impl ReflectService {
         namespace_id: i64,
         repo: &MemoryRepository,
     ) -> Result<ReflectionResult, AgentError> {
+        let started = Instant::now();
         let groups = gather_candidates(namespace_id, repo).await?;
         let scanned: usize = groups.values().map(Vec::len).sum();
         if scanned < 2 {
@@ -146,7 +161,14 @@ impl ReflectService {
         };
 
         for (perspective, candidates) in groups {
-            let group_result = run_reflection_group(candidates, &perspective, repo).await?;
+            let group_result = run_reflection_group(
+                candidates,
+                &perspective,
+                repo,
+                self.embeddings.as_deref(),
+                &self.cognition,
+            )
+            .await?;
             result.pairs_compared += group_result.pairs_compared;
             result.reinforcements += group_result.reinforcements;
             result.insights_created += group_result.insights_created;
@@ -165,6 +187,16 @@ impl ReflectService {
             contradictions = result.contradictions_created,
             "Reflection cycle complete"
         );
+        flush_metric_samples(
+            repo,
+            &[stage_metric_sample(
+                namespace_id,
+                "cognition.reflect.total_ms",
+                started.elapsed().as_secs_f64() * 1000.0,
+                "reflect_total",
+            )],
+        )
+        .await;
 
         Ok(result)
     }
@@ -177,7 +209,14 @@ impl ReflectService {
     ) -> Result<ReflectionResult, AgentError> {
         let groups = gather_candidates(namespace_id, repo).await?;
         let candidates = groups.get(perspective).cloned().unwrap_or_default();
-        run_reflection_group(candidates, perspective, repo).await
+        run_reflection_group(
+            candidates,
+            perspective,
+            repo,
+            self.embeddings.as_deref(),
+            &self.cognition,
+        )
+        .await
     }
 
     /// Compare two memories and return the reflection case, if any.
@@ -193,6 +232,8 @@ async fn run_reflection_group(
     candidates: Vec<Memory>,
     perspective: &PerspectiveKey,
     repo: &MemoryRepository,
+    embeddings: Option<&dyn EmbeddingService>,
+    cognition: &CognitionConfig,
 ) -> Result<ReflectionResult, AgentError> {
     let scanned = candidates.len();
     if scanned < 2 {
@@ -222,13 +263,14 @@ async fn run_reflection_group(
 
             match compare_pair(left, right) {
                 Some(ReflectionCase::Reinforcement) => {
-                    handle_reinforcement(left, right, perspective, repo).await?;
+                    handle_reinforcement(left, right, perspective, repo, embeddings).await?;
                     reinforcement_pairs.push((left.id, right.id));
                     result.reinforcements += 1;
                 }
                 Some(ReflectionCase::Contradiction) => {
                     let contradiction_id =
-                        handle_contradiction(left, right, perspective, repo).await?;
+                        handle_contradiction(left, right, perspective, repo, embeddings, cognition)
+                            .await?;
                     result.contradiction_ids.push(contradiction_id);
                     result.contradictions_created += 1;
                 }
@@ -237,9 +279,14 @@ async fn run_reflection_group(
         }
     }
 
-    let insight_ids =
-        synthesize_reinforcement_insights(&candidates, &reinforcement_pairs, perspective, repo)
-            .await?;
+    let insight_ids = synthesize_reinforcement_insights(
+        &candidates,
+        &reinforcement_pairs,
+        perspective,
+        repo,
+        embeddings,
+    )
+    .await?;
     result.insights_created = insight_ids.len();
     result.insight_ids = insight_ids;
 
@@ -272,23 +319,28 @@ async fn gather_candidates(
 
     // Only consider Explicit and Derived level memories for reflection.
     let mut candidates: HashMap<PerspectiveKey, Vec<Memory>> = HashMap::new();
-    for memory in all.into_iter().filter(|m| {
-        let level = cognitive_level_from_metadata(&m.metadata);
-        matches!(level, CognitiveLevel::Explicit | CognitiveLevel::Derived)
-            && !is_reflection_generated(m)
-    }) {
-        if let Some(perspective) = perspective_from_metadata(&memory.metadata) {
-            candidates.entry(perspective).or_default().push(memory);
+    for memory in all {
+        let snapshot = CognitionSnapshot::from_memory(&memory);
+        if matches!(
+            snapshot.level,
+            CognitiveLevel::Explicit | CognitiveLevel::Derived
+        ) && !is_reflection_generated(&snapshot, &memory)
+        {
+            if let Some(perspective) = snapshot.perspective {
+                candidates.entry(perspective).or_default().push(memory);
+            }
         }
     }
 
     Ok(candidates)
 }
 
-fn is_reflection_generated(memory: &Memory) -> bool {
+fn is_reflection_generated(snapshot: &CognitionSnapshot, memory: &Memory) -> bool {
     memory.labels.iter().any(|label| label == "reflection")
-        || CognitiveMetadata::from_metadata(&memory.metadata)
-            .map(|cognitive| cognitive.generated_by == REFLECT_GENERATED_BY)
+        || snapshot
+            .generated_by
+            .as_deref()
+            .map(|generated_by| generated_by == REFLECT_GENERATED_BY)
             .unwrap_or(false)
 }
 
@@ -317,31 +369,34 @@ async fn load_pair_evidence(
     repo: &MemoryRepository,
     candidates: &[Memory],
 ) -> Result<HashSet<PairKey>, AgentError> {
+    let candidate_ids: Vec<i64> = candidates.iter().map(|memory| memory.id).collect();
+    let lineage_by_memory = repo
+        .load_lineage_batch(&candidate_ids)
+        .await
+        .map_err(|e| AgentError::Storage(e.to_string()))?;
+
     // Map: reflection_memory_id → Vec<source_memory_id>
     let mut reflection_to_sources: HashMap<i64, Vec<i64>> = HashMap::new();
 
     for mem in candidates {
-        let lineage = repo
-            .load_lineage(mem.id)
-            .await
-            .map_err(|e| AgentError::Storage(e.to_string()))?;
-
-        for entry in &lineage {
-            let role = entry.evidence_role.to_lowercase();
-            if role == REINFORCE_EVIDENCE_ROLE || role == CONTRADICT_EVIDENCE_ROLE {
-                let reflection_id = entry.derived_memory_id;
-                let source_id = entry.source_memory_id;
-                // The reflection memory is derived_memory_id; the source is source_memory_id.
-                // But load_lineage returns rows where either column matches mem.id,
-                // so we need to figure out which is the reflection and which is the source.
-                // Convention: store_with_lineage puts the NEW memory as derived_memory_id
-                // and the ORIGINAL as source_memory_id.
-                // Since we're loading lineage for a candidate (original), the candidate
-                // will appear as source_memory_id in the evidence row.
-                reflection_to_sources
-                    .entry(reflection_id)
-                    .or_default()
-                    .push(source_id);
+        if let Some(lineage) = lineage_by_memory.get(&mem.id) {
+            for entry in lineage {
+                let role = entry.evidence_role.to_lowercase();
+                if role == REINFORCE_EVIDENCE_ROLE || role == CONTRADICT_EVIDENCE_ROLE {
+                    let reflection_id = entry.derived_memory_id;
+                    let source_id = entry.source_memory_id;
+                    // The reflection memory is derived_memory_id; the source is source_memory_id.
+                    // But load_lineage returns rows where either column matches mem.id,
+                    // so we need to figure out which is the reflection and which is the source.
+                    // Convention: store_with_lineage puts the NEW memory as derived_memory_id
+                    // and the ORIGINAL as source_memory_id.
+                    // Since we're loading lineage for a candidate (original), the candidate
+                    // will appear as source_memory_id in the evidence row.
+                    reflection_to_sources
+                        .entry(reflection_id)
+                        .or_default()
+                        .push(source_id);
+                }
             }
         }
     }
@@ -441,6 +496,7 @@ async fn handle_reinforcement(
     right: &Memory,
     perspective: &PerspectiveKey,
     repo: &MemoryRepository,
+    embeddings: Option<&dyn EmbeddingService>,
 ) -> Result<(), AgentError> {
     let content = format!("Reinforced observation ({}x): {}", 2, left.content.trim());
 
@@ -456,6 +512,7 @@ async fn handle_reinforcement(
     cognitive.times_reinforced = 2;
 
     let metadata = cognitive.merge_into(&serde_json::json!({}));
+    let (embedding, embedding_model) = maybe_embed(embeddings, &content).await;
 
     repo.store_with_lineage(StoreMemoryWithLineageParams {
         store: StoreMemoryParams {
@@ -471,8 +528,8 @@ async fn handle_reinforcement(
                 "auto".to_string(),
             ],
             metadata: &metadata,
-            embedding: None,
-            embedding_model: None,
+            embedding: embedding.as_deref(),
+            embedding_model: embedding_model.as_deref(),
         },
         source_memory_ids: &[left.id, right.id],
         evidence_role: REINFORCE_EVIDENCE_ROLE,
@@ -500,6 +557,8 @@ async fn handle_contradiction(
     right: &Memory,
     perspective: &PerspectiveKey,
     repo: &MemoryRepository,
+    embeddings: Option<&dyn EmbeddingService>,
+    cognition: &CognitionConfig,
 ) -> Result<i64, AgentError> {
     let content = format!(
         "Contradiction: \"{}\" vs \"{}\"",
@@ -521,6 +580,7 @@ async fn handle_contradiction(
     let metadata = cognitive.merge_into(&serde_json::json!({
         "contradiction_source_ids": [left.id, right.id],
     }));
+    let (embedding, embedding_model) = maybe_embed(embeddings, &content).await;
 
     let memory = repo
         .store_with_lineage(StoreMemoryWithLineageParams {
@@ -537,16 +597,34 @@ async fn handle_contradiction(
                     "auto".to_string(),
                 ],
                 metadata: &metadata,
-                embedding: None,
-                embedding_model: None,
+                embedding: embedding.as_deref(),
+                embedding_model: embedding_model.as_deref(),
             },
             source_memory_ids: &[left.id, right.id],
             evidence_role: CONTRADICT_EVIDENCE_ROLE,
         })
         .await
         .map_err(|e| AgentError::Storage(e.to_string()))?;
-    increment_cognitive_counter(repo, left.id, "times_contradicted").await?;
-    increment_cognitive_counter(repo, right.id, "times_contradicted").await?;
+    // Combined increment + belief revision: one load, one parse, one write per memory.
+    // Previous code called increment_cognitive_counter and apply_belief_revision
+    // separately, causing 4 DB loads/writes for a single contradiction pair.
+    if cognition.contradiction_belief_revision_enabled {
+        increment_counter_and_revise_belief(
+            repo,
+            left.id,
+            cognition.contradiction_confidence_penalty,
+        )
+        .await?;
+        increment_counter_and_revise_belief(
+            repo,
+            right.id,
+            cognition.contradiction_confidence_penalty,
+        )
+        .await?;
+    } else {
+        increment_cognitive_counter(repo, left.id, "times_contradicted").await?;
+        increment_cognitive_counter(repo, right.id, "times_contradicted").await?;
+    }
 
     debug!(
         left_id = left.id,
@@ -571,22 +649,23 @@ async fn increment_cognitive_counter(
         return Ok(());
     };
 
+    // Parse cognitive metadata exactly once.  The snapshot call was redundant
+    // here because we need the full CognitiveMetadata struct to merge_into
+    // anyway; the snapshot only stores a subset of its fields.
     let mut cognitive =
         CognitiveMetadata::from_metadata(&memory.metadata).unwrap_or_else(|| CognitiveMetadata {
-            level: cognitive_level_from_metadata(&memory.metadata),
-            observer: perspective_from_metadata(&memory.metadata)
-                .map(|p| p.observer)
-                .unwrap_or_else(|| "unknown".to_string()),
-            subject: perspective_from_metadata(&memory.metadata)
-                .map(|p| p.subject)
-                .unwrap_or_else(|| "unknown".to_string()),
-            session_key: perspective_from_metadata(&memory.metadata).and_then(|p| p.session_key),
+            level: CognitiveLevel::Raw,
+            observer: "unknown".to_string(),
+            subject: "unknown".to_string(),
+            session_key: None,
             source_memory_ids: Vec::new(),
             confidence: None,
             times_reinforced: 0,
             times_contradicted: 0,
             generated_by: REFLECT_GENERATED_BY.to_string(),
             derived_at: None,
+            last_belief_revision: None,
+            resolution_status: None,
         });
 
     match counter_key {
@@ -606,11 +685,47 @@ async fn increment_cognitive_counter(
     Ok(())
 }
 
+/// Combined increment + belief revision for contradiction handling.
+///
+/// Performs both `increment_cognitive_counter("times_contradicted")` and
+/// `apply_belief_revision` in a single DB load/parse/write cycle, halving the
+/// round-trips compared to calling them separately.
+async fn increment_counter_and_revise_belief(
+    repo: &MemoryRepository,
+    memory_id: i64,
+    penalty: f32,
+) -> Result<(), AgentError> {
+    let Some(memory) = repo
+        .get_by_id(memory_id)
+        .await
+        .map_err(|e| AgentError::Storage(e.to_string()))?
+    else {
+        return Ok(());
+    };
+
+    let mut cognitive = match CognitiveMetadata::from_metadata(&memory.metadata) {
+        Some(c) => c,
+        None => return Ok(()),
+    };
+
+    cognitive.times_contradicted = cognitive.times_contradicted.saturating_add(1);
+    cognitive.confidence = Some((cognitive.confidence.unwrap_or(0.75) - penalty).max(0.0));
+    cognitive.last_belief_revision = Some(Utc::now());
+    cognitive.resolution_status = Some("revised".to_string());
+
+    let merged = cognitive.merge_into(&memory.metadata);
+    repo.update_memory_metadata(memory_id, &merged)
+        .await
+        .map_err(|e| AgentError::Storage(e.to_string()))?;
+    Ok(())
+}
+
 async fn synthesize_reinforcement_insights(
     candidates: &[Memory],
     reinforcement_pairs: &[(i64, i64)],
     perspective: &PerspectiveKey,
     repo: &MemoryRepository,
+    embeddings: Option<&dyn EmbeddingService>,
 ) -> Result<Vec<i64>, AgentError> {
     if reinforcement_pairs.is_empty() {
         return Ok(Vec::new());
@@ -658,6 +773,7 @@ async fn synthesize_reinforcement_insights(
         let metadata = cognitive.merge_into(&serde_json::json!({
             "reflection_kind": "insight",
         }));
+        let (embedding, embedding_model) = maybe_embed(embeddings, &content).await;
         let memory = repo
             .store_with_lineage(StoreMemoryWithLineageParams {
                 store: StoreMemoryParams {
@@ -673,8 +789,8 @@ async fn synthesize_reinforcement_insights(
                         "auto".to_string(),
                     ],
                     metadata: &metadata,
-                    embedding: None,
-                    embedding_model: None,
+                    embedding: embedding.as_deref(),
+                    embedding_model: embedding_model.as_deref(),
                 },
                 source_memory_ids: &source_ids,
                 evidence_role: INSIGHT_EVIDENCE_ROLE,
@@ -751,10 +867,14 @@ async fn find_existing_component_memory(
         return Ok(None);
     };
 
-    let lineage = repo
-        .load_lineage(first_source_id)
+    let lineage_by_source = repo
+        .load_lineage_batch(source_ids)
         .await
         .map_err(|e| AgentError::Storage(e.to_string()))?;
+    let lineage = lineage_by_source
+        .get(&first_source_id)
+        .cloned()
+        .unwrap_or_default();
     let candidate_ids: Vec<i64> = lineage
         .into_iter()
         .filter(|entry| {
@@ -764,22 +884,17 @@ async fn find_existing_component_memory(
         .collect();
 
     for derived_id in candidate_ids {
-        let mut matches_all = true;
-        for &source_id in source_ids {
-            let source_lineage = repo
-                .load_lineage(source_id)
-                .await
-                .map_err(|e| AgentError::Storage(e.to_string()))?;
-            let supports_component = source_lineage.iter().any(|entry| {
-                entry.derived_memory_id == derived_id
-                    && entry.source_memory_id == source_id
-                    && entry.evidence_role == evidence_role
-            });
-            if !supports_component {
-                matches_all = false;
-                break;
-            }
-        }
+        let matches_all = source_ids.iter().all(|source_id| {
+            lineage_by_source
+                .get(source_id)
+                .into_iter()
+                .flat_map(|entries| entries.iter())
+                .any(|entry| {
+                    entry.derived_memory_id == derived_id
+                        && entry.source_memory_id == *source_id
+                        && entry.evidence_role == evidence_role
+                })
+        });
 
         if matches_all {
             return Ok(Some(derived_id));
@@ -1036,7 +1151,7 @@ mod tests {
     #[tokio::test]
     async fn test_reflect_cycle_empty_namespace() {
         let (_pool, repo, namespace_id) = setup_repo().await;
-        let service = ReflectService::new(AgentConfig::default());
+        let service = ReflectService::new(AgentConfig::default(), CognitionConfig::default(), None);
 
         let result = service.reflect_cycle(namespace_id, &repo).await.unwrap();
         assert_eq!(result.memories_scanned, 0);
@@ -1052,7 +1167,7 @@ mod tests {
 
         store_memory(&repo, namespace_id, "raw noise event", &raw_metadata()).await;
 
-        let service = ReflectService::new(AgentConfig::default());
+        let service = ReflectService::new(AgentConfig::default(), CognitionConfig::default(), None);
         let result = service.reflect_cycle(namespace_id, &repo).await.unwrap();
 
         assert_eq!(result.memories_scanned, 0);
@@ -1077,7 +1192,7 @@ mod tests {
         )
         .await;
 
-        let service = ReflectService::new(AgentConfig::default());
+        let service = ReflectService::new(AgentConfig::default(), CognitionConfig::default(), None);
         let result = service.reflect_cycle(namespace_id, &repo).await.unwrap();
 
         assert_eq!(result.memories_scanned, 2);
@@ -1114,7 +1229,7 @@ mod tests {
         )
         .await;
 
-        let service = ReflectService::new(AgentConfig::default());
+        let service = ReflectService::new(AgentConfig::default(), CognitionConfig::default(), None);
         let result = service.reflect_cycle(namespace_id, &repo).await.unwrap();
 
         assert_eq!(result.memories_scanned, 2);
@@ -1148,7 +1263,7 @@ mod tests {
         )
         .await;
 
-        let service = ReflectService::new(AgentConfig::default());
+        let service = ReflectService::new(AgentConfig::default(), CognitionConfig::default(), None);
 
         // First pass.
         let result1 = service.reflect_cycle(namespace_id, &repo).await.unwrap();
@@ -1183,7 +1298,7 @@ mod tests {
         )
         .await;
 
-        let service = ReflectService::new(AgentConfig::default());
+        let service = ReflectService::new(AgentConfig::default(), CognitionConfig::default(), None);
         service.reflect_cycle(namespace_id, &repo).await.unwrap();
 
         // Verify evidence links exist: both m1 and m2 should share a reinforcement
@@ -1230,7 +1345,7 @@ mod tests {
         )
         .await;
 
-        let service = ReflectService::new(AgentConfig::default());
+        let service = ReflectService::new(AgentConfig::default(), CognitionConfig::default(), None);
         let result = service.reflect_cycle(namespace_id, &repo).await.unwrap();
         assert_eq!(result.contradiction_ids.len(), 1);
 
@@ -1294,7 +1409,7 @@ mod tests {
         )
         .await;
 
-        let service = ReflectService::new(AgentConfig::default());
+        let service = ReflectService::new(AgentConfig::default(), CognitionConfig::default(), None);
         let result = service.reflect_cycle(namespace_id, &repo).await.unwrap();
 
         assert_eq!(result.memories_scanned, 2);
@@ -1319,7 +1434,7 @@ mod tests {
             .await;
         }
 
-        let service = ReflectService::new(AgentConfig::default());
+        let service = ReflectService::new(AgentConfig::default(), CognitionConfig::default(), None);
         let result = service.reflect_cycle(namespace_id, &repo).await.unwrap();
 
         assert_eq!(result.insights_created, 1);
@@ -1364,7 +1479,7 @@ mod tests {
         )
         .await;
 
-        let service = ReflectService::new(AgentConfig::default());
+        let service = ReflectService::new(AgentConfig::default(), CognitionConfig::default(), None);
 
         let result1 = service.reflect_cycle(namespace_id, &repo).await.unwrap();
         assert_eq!(result1.contradictions_created, 1);
@@ -1394,7 +1509,7 @@ mod tests {
             .await;
         }
 
-        let service = ReflectService::new(AgentConfig::default());
+        let service = ReflectService::new(AgentConfig::default(), CognitionConfig::default(), None);
         let first = service.reflect_cycle(namespace_id, &repo).await.unwrap();
         let second = service.reflect_cycle(namespace_id, &repo).await.unwrap();
 
@@ -1420,6 +1535,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_contradiction_gets_embedding_when_service_provided() {
+        let (_pool, repo, namespace_id) = setup_repo().await;
+
+        store_memory(
+            &repo,
+            namespace_id,
+            "The cache system is enabled and improves performance",
+            &explicit_metadata("claude-code"),
+        )
+        .await;
+        store_memory(
+            &repo,
+            namespace_id,
+            "The cache system is not enabled and degrades performance",
+            &explicit_metadata("claude-code"),
+        )
+        .await;
+
+        let mock_embed = nexus_embeddings::MockEmbeddingService::new();
+        let service = ReflectService::new(
+            AgentConfig::default(),
+            CognitionConfig::default(),
+            Some(Arc::new(mock_embed)),
+        );
+        let result = service.reflect_cycle(namespace_id, &repo).await.unwrap();
+
+        assert_eq!(result.contradiction_ids.len(), 1);
+
+        let contradiction = repo
+            .get_by_id(result.contradiction_ids[0])
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            contradiction.content_embedding.is_some(),
+            "contradiction memory should have an embedding when service is provided"
+        );
+        assert_eq!(
+            contradiction.content_embedding.as_ref().unwrap().len(),
+            384,
+            "embedding dimension should be 384"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_insight_gets_embedding_when_service_provided() {
+        let (_pool, repo, namespace_id) = setup_repo().await;
+
+        for content in [
+            "The query service handles search requests",
+            "The query service handles search requests efficiently",
+            "The query service handles search requests reliably",
+        ] {
+            store_memory(
+                &repo,
+                namespace_id,
+                content,
+                &explicit_metadata("claude-code"),
+            )
+            .await;
+        }
+
+        let mock_embed = nexus_embeddings::MockEmbeddingService::new();
+        let service = ReflectService::new(
+            AgentConfig::default(),
+            CognitionConfig::default(),
+            Some(Arc::new(mock_embed)),
+        );
+        let result = service.reflect_cycle(namespace_id, &repo).await.unwrap();
+
+        assert_eq!(result.insights_created, 1);
+
+        let insight = repo
+            .get_by_id(result.insight_ids[0])
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            insight.content_embedding.is_some(),
+            "insight memory should have an embedding when service is provided"
+        );
+        assert_eq!(
+            insight.content_embedding.as_ref().unwrap().len(),
+            384,
+            "embedding dimension should be 384"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reflect_stores_without_embedding_when_service_absent() {
+        let (_pool, repo, namespace_id) = setup_repo().await;
+
+        store_memory(
+            &repo,
+            namespace_id,
+            "The cache system is enabled and improves performance",
+            &explicit_metadata("claude-code"),
+        )
+        .await;
+        store_memory(
+            &repo,
+            namespace_id,
+            "The cache system is not enabled and degrades performance",
+            &explicit_metadata("claude-code"),
+        )
+        .await;
+
+        let service = ReflectService::new(AgentConfig::default(), CognitionConfig::default(), None);
+        let result = service.reflect_cycle(namespace_id, &repo).await.unwrap();
+        assert_eq!(result.contradiction_ids.len(), 1);
+
+        let contradiction = repo
+            .get_by_id(result.contradiction_ids[0])
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            contradiction.content_embedding.is_none(),
+            "contradiction memory should NOT have embedding when no service provided"
+        );
+    }
+
+    #[tokio::test]
     async fn test_reflect_cycle_does_not_cross_perspectives() {
         let (_pool, repo, namespace_id) = setup_repo().await;
 
@@ -1438,12 +1676,141 @@ mod tests {
         )
         .await;
 
-        let service = ReflectService::new(AgentConfig::default());
+        let service = ReflectService::new(AgentConfig::default(), CognitionConfig::default(), None);
         let result = service.reflect_cycle(namespace_id, &repo).await.unwrap();
 
         assert_eq!(result.memories_scanned, 2);
         assert_eq!(result.pairs_compared, 0);
         assert_eq!(result.reinforcements, 0);
         assert_eq!(result.contradictions_created, 0);
+    }
+
+    // ---- Belief revision tests (Phase 16) ----
+
+    #[tokio::test]
+    async fn test_belief_revision_reduces_confidence_on_contradiction() {
+        let (_pool, repo, namespace_id) = setup_repo().await;
+
+        let left = store_memory(
+            &repo,
+            namespace_id,
+            "The cache system is enabled and improves performance",
+            &explicit_metadata("claude-code"),
+        )
+        .await;
+        let right = store_memory(
+            &repo,
+            namespace_id,
+            "The cache system is not enabled and degrades performance",
+            &explicit_metadata("claude-code"),
+        )
+        .await;
+
+        // Both start with default confidence (None → 0.75).
+        let left_before = repo.get_by_id(left.id).await.unwrap().unwrap();
+        let right_before = repo.get_by_id(right.id).await.unwrap().unwrap();
+        let left_conf_before = CognitiveMetadata::from_metadata(&left_before.metadata)
+            .unwrap()
+            .confidence;
+        let right_conf_before = CognitiveMetadata::from_metadata(&right_before.metadata)
+            .unwrap()
+            .confidence;
+
+        let service = ReflectService::new(
+            AgentConfig::default(),
+            CognitionConfig {
+                contradiction_belief_revision_enabled: true,
+                contradiction_confidence_penalty: 0.15,
+                ..CognitionConfig::default()
+            },
+            None,
+        );
+        let result = service.reflect_cycle(namespace_id, &repo).await.unwrap();
+
+        assert_eq!(result.contradictions_created, 1);
+
+        let left_after = repo.get_by_id(left.id).await.unwrap().unwrap();
+        let right_after = repo.get_by_id(right.id).await.unwrap().unwrap();
+        let left_cognitive = CognitiveMetadata::from_metadata(&left_after.metadata).unwrap();
+        let right_cognitive = CognitiveMetadata::from_metadata(&right_after.metadata).unwrap();
+
+        // Confidence should have decreased (use unwrap_or for Option comparison).
+        assert!(
+            left_cognitive.confidence.unwrap_or(0.75) < left_conf_before.unwrap_or(0.75),
+            "left confidence should decrease after belief revision"
+        );
+        assert!(
+            right_cognitive.confidence.unwrap_or(0.75) < right_conf_before.unwrap_or(0.75),
+            "right confidence should decrease after belief revision"
+        );
+        // Belief revision timestamp should be set.
+        assert!(left_cognitive.last_belief_revision.is_some());
+        assert!(right_cognitive.last_belief_revision.is_some());
+        // Resolution status should be "revised".
+        assert_eq!(left_cognitive.resolution_status.as_deref(), Some("revised"));
+        assert_eq!(
+            right_cognitive.resolution_status.as_deref(),
+            Some("revised")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_belief_revision_disabled_does_not_modify_confidence() {
+        let (_pool, repo, namespace_id) = setup_repo().await;
+
+        store_memory(
+            &repo,
+            namespace_id,
+            "The cache system is enabled",
+            &explicit_metadata("claude-code"),
+        )
+        .await;
+        store_memory(
+            &repo,
+            namespace_id,
+            "The cache system is not enabled",
+            &explicit_metadata("claude-code"),
+        )
+        .await;
+
+        let service = ReflectService::new(
+            AgentConfig::default(),
+            CognitionConfig {
+                contradiction_belief_revision_enabled: false,
+                ..CognitionConfig::default()
+            },
+            None,
+        );
+        let _result = service.reflect_cycle(namespace_id, &repo).await.unwrap();
+
+        // Check that no memories got belief revision stamps.
+        let memories = repo
+            .list_filtered(
+                namespace_id,
+                ListMemoryFilters {
+                    category: None,
+                    since: None,
+                    until: None,
+                    content_like: None,
+                    include_raw: false,
+                    limit: 10,
+                    offset: 0,
+                },
+            )
+            .await
+            .unwrap();
+
+        for memory in memories {
+            if let Some(cognitive) = CognitiveMetadata::from_metadata(&memory.metadata) {
+                assert!(
+                    cognitive.last_belief_revision.is_none(),
+                    "no belief revision should occur when disabled"
+                );
+                assert!(
+                    cognitive.resolution_status.is_none(),
+                    "no resolution status when belief revision disabled"
+                );
+            }
+        }
     }
 }

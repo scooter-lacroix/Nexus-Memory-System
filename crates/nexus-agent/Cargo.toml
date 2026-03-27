@@ -14,6 +14,7 @@ nexus-core = { workspace = true }
 nexus-storage = { workspace = true }
 nexus-llm = { workspace = true }
 nexus-embeddings = { workspace = true }
+nexus-vectors = { workspace = true }
 nexus-lephase = { workspace = true }
 
 # Async
@@ -47,6 +48,7 @@ uuid = { workspace = true }
 dirs = { workspace = true }
 
 [dev-dependencies]
+nexus-hooks = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 criterion = { workspace = true }
 tempfile = { workspace = true }

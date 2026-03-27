@@ -9,6 +9,7 @@ pub mod consolidate;
 pub mod derive;
 pub mod digest;
 pub mod error;
+pub mod identity;
 pub mod inbox;
 pub mod ingest;
 pub mod prompts;
@@ -29,9 +30,13 @@ pub use digest::{DigestResult, DigestService};
 pub use error::{AgentError, Result};
 pub use inbox::{InboxScanner, ScanResult};
 pub use ingest::IngestService;
-pub use query::QueryService;
+pub use query::{introspect_query, QueryService};
 pub use reflect::{ReflectService, ReflectionCase, ReflectionOutput, ReflectionResult};
 pub use representation::RepresentationService;
-pub use runtime::{derive_session_key, RuntimeController, RuntimeMode, RuntimeShutdownReason};
+pub use runtime::{
+    create_embedding_service, derive_session_key, RuntimeController, RuntimeMode,
+    RuntimeShutdownReason,
+};
 pub use supervisor::AgentSupervisor;
 pub use types::*;
+pub use util::CognitionSnapshot;
