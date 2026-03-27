@@ -22,6 +22,8 @@ nexus-mcp = { workspace = true }
 nexus-lephase = { workspace = true }
 nexus-agent = { workspace = true }
 nexus-llm = { workspace = true }
+nexus-orchestrator = { workspace = true }
+nexus-web = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

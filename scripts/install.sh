@@ -356,7 +356,23 @@ write_env_file() {
 export NEXUS_DATABASE_PATH="${DB_PATH}"
 export NEXUS_SYNC_POLICY="auto"
 export NEXUS_AUTO_INGEST="true"
-export NEXUS_EMBEDDINGS_ENABLED="true"
+export NEXUS_EMBEDDINGS_ENABLED="false"
+
+# Optional semantic embeddings
+# Remote provider example:
+# export NEXUS_EMBEDDINGS_ENABLED="true"
+# export NEXUS_EMBEDDING_BACKEND="openai-compatible"
+# export NEXUS_EMBEDDING_PROVIDER="inherit"
+# export NEXUS_EMBEDDING_MODEL="text-embedding-004"
+# Local ONNX example:
+# export NEXUS_EMBEDDING_BACKEND="local"
+# export NEXUS_EMBEDDING_MODEL_PATH="${REPO_ROOT}/models/all-MiniLM-L6-v2.onnx"
+# export NEXUS_TOKENIZER_PATH="${REPO_ROOT}/models/all-MiniLM-L6-v2-tokenizer"
+# Local OpenAI-compatible runtime example (vLLM / LM Studio / llama.cpp):
+# export NEXUS_EMBEDDING_BACKEND="openai-compatible"
+# export NEXUS_EMBEDDING_PROVIDER="lmstudio"
+# export NEXUS_EMBEDDING_BASE_URL="http://127.0.0.1:1234/v1"
+# export NEXUS_EMBEDDING_MODEL="text-embedding-3-small"
 
 # Always-on agent (uncomment and configure to enable)
 # export NEXUS_LLM_PROVIDER="openai"
@@ -374,7 +390,23 @@ EOF
 set -gx NEXUS_DATABASE_PATH "${DB_PATH}"
 set -gx NEXUS_SYNC_POLICY "auto"
 set -gx NEXUS_AUTO_INGEST "true"
-set -gx NEXUS_EMBEDDINGS_ENABLED "true"
+set -gx NEXUS_EMBEDDINGS_ENABLED "false"
+
+# Optional semantic embeddings
+# Remote provider example:
+# set -gx NEXUS_EMBEDDINGS_ENABLED "true"
+# set -gx NEXUS_EMBEDDING_BACKEND "openai-compatible"
+# set -gx NEXUS_EMBEDDING_PROVIDER "inherit"
+# set -gx NEXUS_EMBEDDING_MODEL "text-embedding-004"
+# Local ONNX example:
+# set -gx NEXUS_EMBEDDING_BACKEND "local"
+# set -gx NEXUS_EMBEDDING_MODEL_PATH "${REPO_ROOT}/models/all-MiniLM-L6-v2.onnx"
+# set -gx NEXUS_TOKENIZER_PATH "${REPO_ROOT}/models/all-MiniLM-L6-v2-tokenizer"
+# Local OpenAI-compatible runtime example (vLLM / LM Studio / llama.cpp):
+# set -gx NEXUS_EMBEDDING_BACKEND "openai-compatible"
+# set -gx NEXUS_EMBEDDING_PROVIDER "lmstudio"
+# set -gx NEXUS_EMBEDDING_BASE_URL "http://127.0.0.1:1234/v1"
+# set -gx NEXUS_EMBEDDING_MODEL "text-embedding-3-small"
 
 # Always-on agent (uncomment and configure to enable)
 # set -gx NEXUS_LLM_PROVIDER "openai"
@@ -512,24 +544,29 @@ configure_claude_code() {
         return
     fi
 
-    # Check if NEXUS_DATABASE_PATH is already present
-    if python3 -c "
-import json, sys
-with open('${settings_file}') as f:
-    s = json.load(f)
-if s.get('env', {}).get('NEXUS_DATABASE_PATH'):
-    sys.exit(0)
-sys.exit(1)
-" 2>/dev/null; then
-        ok "Claude Code settings.json already has Nexus env vars"
-        return
-    fi
-
     python3 -c "
 import json
+import os
 
 settings_path = '${settings_file}'
-db_path = '${DB_PATH}'
+env_path = '${ENV_FILE}'
+
+def parse_env_file(path):
+    values = {}
+    if not os.path.exists(path):
+        return values
+    with open(path) as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if '=' not in line:
+                continue
+            key, value = line.split('=', 1)
+            key = key.strip()
+            value = value.strip().strip('\"')
+            values[key] = value
+    return values
 
 with open(settings_path) as f:
     s = json.load(f)
@@ -537,10 +574,30 @@ with open(settings_path) as f:
 if 'env' not in s:
     s['env'] = {}
 
-s['env']['NEXUS_DATABASE_PATH'] = db_path
-s['env']['NEXUS_SYNC_POLICY'] = 'auto'
-s['env']['NEXUS_AUTO_INGEST'] = 'true'
-s['env']['NEXUS_EMBEDDINGS_ENABLED'] = 'true'
+env_values = parse_env_file(env_path)
+
+desired = {
+    'NEXUS_DATABASE_PATH': env_values.get('NEXUS_DATABASE_PATH', '${DB_PATH}'),
+    'NEXUS_SYNC_POLICY': env_values.get('NEXUS_SYNC_POLICY', 'auto'),
+    'NEXUS_AUTO_INGEST': env_values.get('NEXUS_AUTO_INGEST', 'true'),
+    'NEXUS_LLM_PROVIDER': env_values.get('NEXUS_LLM_PROVIDER', ''),
+    'NEXUS_LLM_MODEL': env_values.get('NEXUS_LLM_MODEL', ''),
+    'NEXUS_LLM_API_KEY_ENV': env_values.get('NEXUS_LLM_API_KEY_ENV', ''),
+    'NEXUS_EMBEDDINGS_ENABLED': env_values.get('NEXUS_EMBEDDINGS_ENABLED', 'false'),
+    'NEXUS_EMBEDDING_BACKEND': env_values.get('NEXUS_EMBEDDING_BACKEND', ''),
+    'NEXUS_EMBEDDING_PROVIDER': env_values.get('NEXUS_EMBEDDING_PROVIDER', ''),
+    'NEXUS_EMBEDDING_MODEL': env_values.get('NEXUS_EMBEDDING_MODEL', ''),
+    'NEXUS_EMBEDDING_API_KEY_ENV': env_values.get('NEXUS_EMBEDDING_API_KEY_ENV', ''),
+}
+
+for key in ('NEXUS_EMBEDDING_BASE_URL', 'GEMINI_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'GROQ_API_KEY'):
+    value = env_values.get(key, '')
+    if value:
+        desired[key] = value
+
+for key, value in desired.items():
+    if value:
+        s['env'][key] = value
 
 with open(settings_path, 'w') as f:
     json.dump(s, f, indent=2)
@@ -548,7 +605,7 @@ with open(settings_path, 'w') as f:
 " 2>/dev/null
 
     if [[ $? -eq 0 ]]; then
-        ok "Added Nexus env vars to Claude Code settings.json"
+        ok "Updated Claude Code settings.json with Nexus env vars"
     else
         warn "Failed to update Claude Code settings.json"
     fi
@@ -704,7 +761,7 @@ configure_claude_hooks() {
         return
     fi
 
-    python3 -c "
+python3 -c "
 import json
 
 settings_path = '${settings_file}'
@@ -720,27 +777,78 @@ legacy_markers = [
     'NEXUS_SERVER_URL',
     'nexus serve',
     'claude-code PostToolUse',
+    'session start --agent claude-code',
+    'event-ingest.js claude-code',
 ]
 
+def normalize_entry(entry):
+    if not isinstance(entry, dict):
+        return None
+    matcher = entry.get('matcher', '')
+    hooks = entry.get('hooks')
+    if isinstance(hooks, list):
+        normalized_hooks = []
+        for hook in hooks:
+            if not isinstance(hook, dict):
+                continue
+            if hook.get('type') != 'command':
+                normalized_hooks.append(hook)
+                continue
+            command = hook.get('command')
+            if not command:
+                continue
+            normalized = {
+                'type': 'command',
+                'command': command,
+            }
+            if 'timeout' in hook:
+                normalized['timeout'] = hook['timeout']
+            normalized_hooks.append(normalized)
+        if normalized_hooks:
+            return {'matcher': matcher, 'hooks': normalized_hooks}
+        return None
+    command = entry.get('command')
+    if command:
+        hook = {'type': 'command', 'command': command}
+        if 'timeout' in entry:
+            hook['timeout'] = entry['timeout']
+        return {'matcher': matcher, 'hooks': [hook]}
+    return None
+
+def entry_commands(entry):
+    commands = []
+    for hook in entry.get('hooks', []):
+        if isinstance(hook, dict):
+            command = hook.get('command')
+            if command:
+                commands.append(command)
+    return commands
+
 for hook_name, entries in list(s['hooks'].items()):
+    if hook_name == 'SessionCompact':
+        del s['hooks'][hook_name]
+        continue
+    if not isinstance(entries, list):
+        s['hooks'][hook_name] = []
+        continue
     cleaned = []
     for entry in entries:
-        command = entry.get('command', '')
-        if 'event-ingest.js' in command and not any(
-            f'event-ingest.js claude-code {event_name}' in command
-            for event_name in ('SessionStart', 'PostToolUse', 'PreCompact', 'SessionCompact', 'Stop', 'SessionEnd')
+        normalized = normalize_entry(entry)
+        if normalized is None:
+            continue
+        commands = entry_commands(normalized)
+        if any(
+            any(marker in command for marker in legacy_markers)
+            for command in commands
         ):
             continue
-        if any(marker in command for marker in legacy_markers) and 'event-ingest.js claude-code' not in command:
-            continue
-        cleaned.append(entry)
+        cleaned.append(normalized)
     s['hooks'][hook_name] = cleaned
 
 required_hooks = {
     'SessionStart': ('SessionStart', 10000),
     'PostToolUse': ('PostToolUse', 30000),
     'PreCompact': ('PreCompact', 5000),
-    'SessionCompact': ('SessionCompact', 5000),
     'Stop': ('Stop', 30000),
     'SessionEnd': ('SessionEnd', 30000),
 }
@@ -749,11 +857,14 @@ for hook_name, (event_name, timeout) in required_hooks.items():
     if hook_name not in s['hooks']:
         s['hooks'][hook_name] = []
     command = f'node {shim_path} claude-code {event_name}'
-    if not any(command in entry.get('command', '') for entry in s['hooks'][hook_name]):
+    if not any(command in candidate for entry in s['hooks'][hook_name] for candidate in entry_commands(entry)):
         s['hooks'][hook_name].append({
             'matcher': '',
-            'command': command,
-            'timeout': timeout,
+            'hooks': [{
+                'type': 'command',
+                'command': command,
+                'timeout': timeout,
+            }],
         })
 
 with open(settings_path, 'w') as f:
