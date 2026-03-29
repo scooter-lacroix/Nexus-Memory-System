@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: crates-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish crates & create GitHub release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: release-${{ runner.os }}-cargo-
+
+      - name: Extract workspace version
+        id: version
+        run: |
+          VERSION=$(grep -A2 '^\[workspace\.package\]' Cargo.toml | grep '^version' | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Detected workspace version: ${VERSION}"
+
+      - name: Check if release already exists
+        id: check
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          if git rev-parse "${TAG}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${TAG} already exists — skipping release"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate workspace
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+
+      - name: Publish crates to crates.io
+        if: steps.check.outputs.skip == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Topological publish order (dependencies before dependents)
+          CRATES=(
+            nexus-memory-core
+            nexus-memory-storage
+            nexus-memory-llm
+            nexus-memory-embeddings
+            nexus-memory-lephase
+            nexus-memory-vectors
+            nexus-memory-hooks
+            nexus-memory-orchestrator
+            nexus-memory-agent
+            nexus-memory-mcp
+            nexus-memory-web
+            nexus-memory
+          )
+
+          for CRATE in "${CRATES[@]}"; do
+            echo "::group::Publishing ${CRATE} v${VERSION}"
+
+            # Skip if already published
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              "https://crates.io/api/v1/crates/${CRATE}/${VERSION}")
+
+            if [ "${HTTP_CODE}" = "200" ]; then
+              echo "${CRATE} v${VERSION} already on crates.io — skipping"
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Publish with retries for index propagation
+            MAX_RETRIES=3
+            RETRY=0
+            until cargo publish -p "${CRATE}" --locked; do
+              RETRY=$((RETRY + 1))
+              if [ "${RETRY}" -ge "${MAX_RETRIES}" ]; then
+                echo "::error::Failed to publish ${CRATE} after ${MAX_RETRIES} attempts"
+                exit 1
+              fi
+              echo "Publish attempt ${RETRY} failed, waiting 60s for index propagation..."
+              sleep 60
+            done
+
+            echo "${CRATE} v${VERSION} published successfully"
+            echo "::endgroup::"
+
+            # Wait for crates.io index propagation before publishing dependents
+            sleep 30
+          done
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          gh release create "${TAG}" \
+            --target "${GITHUB_SHA}" \
+            --title "Nexus Memory System ${TAG}" \
+            --generate-notes
+
+      - name: Summary
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "## 🚀 Released v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Published crates" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Crate | Version |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|---------|" >> "$GITHUB_STEP_SUMMARY"
+          for CRATE in nexus-memory-core nexus-memory-storage nexus-memory-llm \
+            nexus-memory-embeddings nexus-memory-lephase nexus-memory-vectors \
+            nexus-memory-hooks nexus-memory-orchestrator nexus-memory-agent \
+            nexus-memory-mcp nexus-memory-web nexus-memory; do
+            echo "| [\`${CRATE}\`](https://crates.io/crates/${CRATE}) | ${VERSION} |" >> "$GITHUB_STEP_SUMMARY"
+          done
