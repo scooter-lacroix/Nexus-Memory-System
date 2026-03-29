@@ -35,10 +35,16 @@ jobs:
           key: release-${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: release-${{ runner.os }}-cargo-
 
+      - name: Install Python 3 (for metadata parsing)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Extract workspace version
         id: version
         run: |
-          VERSION=$(grep -A2 '^\[workspace\.package\]' Cargo.toml | grep '^version' | sed 's/.*"\(.*\)".*/\1/')
+          VERSION=$(cargo metadata --format-version 1 --no-deps \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['packages'][0]['version'])")
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Detected workspace version: ${VERSION}"
@@ -65,57 +71,7 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-
-          # Topological publish order (dependencies before dependents)
-          CRATES=(
-            nexus-memory-core
-            nexus-memory-storage
-            nexus-memory-llm
-            nexus-memory-embeddings
-            nexus-memory-lephase
-            nexus-memory-vectors
-            nexus-memory-hooks
-            nexus-memory-orchestrator
-            nexus-memory-agent
-            nexus-memory-mcp
-            nexus-memory-web
-            nexus-memory
-          )
-
-          for CRATE in "${CRATES[@]}"; do
-            echo "::group::Publishing ${CRATE} v${VERSION}"
-
-            # Skip if already published
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-              "https://crates.io/api/v1/crates/${CRATE}/${VERSION}")
-
-            if [ "${HTTP_CODE}" = "200" ]; then
-              echo "${CRATE} v${VERSION} already on crates.io — skipping"
-              echo "::endgroup::"
-              continue
-            fi
-
-            # Publish with retries for index propagation
-            MAX_RETRIES=3
-            RETRY=0
-            until cargo publish -p "${CRATE}" --locked; do
-              RETRY=$((RETRY + 1))
-              if [ "${RETRY}" -ge "${MAX_RETRIES}" ]; then
-                echo "::error::Failed to publish ${CRATE} after ${MAX_RETRIES} attempts"
-                exit 1
-              fi
-              echo "Publish attempt ${RETRY} failed, waiting 60s for index propagation..."
-              sleep 60
-            done
-
-            echo "${CRATE} v${VERSION} published successfully"
-            echo "::endgroup::"
-
-            # Wait for crates.io index propagation before publishing dependents
-            sleep 30
-          done
+        run: ./scripts/publish-crates.sh
 
       - name: Create GitHub Release
         if: steps.check.outputs.skip == 'false'
@@ -137,9 +93,11 @@ jobs:
           echo "### Published crates" >> "$GITHUB_STEP_SUMMARY"
           echo "| Crate | Version |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|---------|" >> "$GITHUB_STEP_SUMMARY"
-          for CRATE in nexus-memory-core nexus-memory-storage nexus-memory-llm \
-            nexus-memory-embeddings nexus-memory-lephase nexus-memory-vectors \
-            nexus-memory-hooks nexus-memory-orchestrator nexus-memory-agent \
-            nexus-memory-mcp nexus-memory-web nexus-memory; do
-            echo "| [\`${CRATE}\`](https://crates.io/crates/${CRATE}) | ${VERSION} |" >> "$GITHUB_STEP_SUMMARY"
-          done
+          cargo metadata --format-version 1 --no-deps \
+            | python3 -c "
+          import json, sys
+          meta = json.load(sys.stdin)
+          ws = set(meta.get('workspace_members', []))
+          for p in sorted((p['name'] for p in meta['packages'] if p['id'] in ws)):
+              print(f'| [\`{p}\`](https://crates.io/crates/{p}) | ${VERSION} |')
+          " >> "$GITHUB_STEP_SUMMARY"

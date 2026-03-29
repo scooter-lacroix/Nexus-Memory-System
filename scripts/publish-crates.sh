@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-# Publish all workspace crates to crates.io in topological order.
-# Usage: ./scripts/publish-crates.sh [--dry-run]
+# Publish all workspace crates to crates.io in topological (dependency) order.
+#
+# Usage:
+#   ./scripts/publish-crates.sh              # publish for real
+#   ./scripts/publish-crates.sh --dry-run    # package & verify only
+#
+# The script automatically discovers workspace members and resolves their
+# publish order using `cargo metadata`, so it never needs manual updates
+# when crates are added, removed, or re-wired.
 #
 # Requires CARGO_REGISTRY_TOKEN to be set (or `cargo login` already done).
 
@@ -12,31 +19,79 @@ if [[ "${1:-}" == "--dry-run" ]]; then
   echo "=== DRY RUN MODE ==="
 fi
 
-VERSION=$(grep -A2 '^\[workspace\.package\]' Cargo.toml | grep '^version' | sed 's/.*"\(.*\)".*/\1/')
+# ---------- extract workspace version ----------
+VERSION=$(cargo metadata --format-version 1 --no-deps \
+  | python3 -c "
+import json, sys
+meta = json.load(sys.stdin)
+# All workspace members share the same version; take the first.
+print(meta['packages'][0]['version'])
+")
 echo "Publishing workspace version: ${VERSION}"
 
-# Topological order — dependencies before dependents
-CRATES=(
-  nexus-memory-core
-  nexus-memory-storage
-  nexus-memory-llm
-  nexus-memory-embeddings
-  nexus-memory-lephase
-  nexus-memory-vectors
-  nexus-memory-hooks
-  nexus-memory-orchestrator
-  nexus-memory-agent
-  nexus-memory-mcp
-  nexus-memory-web
-  nexus-memory
-)
+# ---------- resolve topological publish order ----------
+# Uses `cargo metadata` to build a dependency graph of workspace-internal
+# crates and emits them in topological order (leaves first).
+CRATES=($(cargo metadata --format-version 1 --no-deps \
+  | python3 -c "
+import json, sys
+from collections import defaultdict, deque
 
+meta = json.load(sys.stdin)
+
+# Build set of workspace package ids
+ws_ids = set(meta.get('workspace_members', []))
+pkgs = {p['id']: p for p in meta['packages'] if p['id'] in ws_ids}
+name_by_id = {p['id']: p['name'] for p in pkgs.values()}
+id_by_name = {v: k for k, v in name_by_id.items()}
+
+# Build adjacency: pkg -> set of workspace deps it depends on
+deps_of = defaultdict(set)       # name -> set of dep names
+dependents_of = defaultdict(set) # name -> set of names that depend on it
+ws_names = set(name_by_id.values())
+
+for pkg in pkgs.values():
+    for dep in pkg.get('dependencies', []):
+        dep_pkg = dep.get('rename') or dep['name']
+        # Resolve the actual package name (handles renames like nexus-core -> nexus-memory-core)
+        actual = dep.get('name', dep_pkg)
+        if actual in ws_names:
+            deps_of[pkg['name']].add(actual)
+            dependents_of[actual].add(pkg['name'])
+
+# Kahn's algorithm for topological sort
+in_degree = {n: len(deps_of.get(n, set())) for n in ws_names}
+queue = deque(sorted(n for n in ws_names if in_degree[n] == 0))
+order = []
+
+while queue:
+    node = queue.popleft()
+    order.append(node)
+    for dependent in sorted(dependents_of.get(node, set())):
+        in_degree[dependent] -= 1
+        if in_degree[dependent] == 0:
+            queue.append(dependent)
+
+if len(order) != len(ws_names):
+    print('ERROR: cycle detected in workspace dependencies', file=sys.stderr)
+    sys.exit(1)
+
+for name in order:
+    print(name)
+"))
+
+echo "Publish order (${#CRATES[@]} crates):"
+for i in "${!CRATES[@]}"; do
+  echo "  $((i+1)). ${CRATES[$i]}"
+done
+echo ""
+
+# ---------- publish loop ----------
 PUBLISHED=0
 SKIPPED=0
 FAILED=0
 
 for CRATE in "${CRATES[@]}"; do
-  echo ""
   echo "━━━ ${CRATE} v${VERSION} ━━━"
 
   # Skip if already published (only in non-dry-run mode)
@@ -47,11 +102,12 @@ for CRATE in "${CRATES[@]}"; do
     if [[ "${HTTP_CODE}" == "200" ]]; then
       echo "  Already published — skipping"
       SKIPPED=$((SKIPPED + 1))
+      echo ""
       continue
     fi
   fi
 
-  # Publish (with retries for index propagation)
+  # Publish with retries for index propagation lag
   MAX_RETRIES=3
   RETRY=0
   SUCCESS=false
@@ -82,9 +138,9 @@ for CRATE in "${CRATES[@]}"; do
     echo "  Waiting 30s for index propagation..."
     sleep 30
   fi
+  echo ""
 done
 
-echo ""
 echo "━━━ Summary ━━━"
 echo "  Published: ${PUBLISHED}"
 echo "  Skipped:   ${SKIPPED}"
