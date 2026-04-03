@@ -347,6 +347,9 @@ impl MemoryRepository {
         limit: i64,
     ) -> Result<Vec<ClaimedMemoryJob>> {
         let claim_token = new_claim_token(lease_owner);
+        // SQLite's UPDATE ... RETURNING does not preserve CTE ordering.
+        // We must sort in Rust to guarantee priority-first delivery.
+        // This is O(n log n) but n is bounded by the `limit` parameter (typically small).
         let rows: Vec<MemoryJobRow> = sqlx::query_as::<_, MemoryJobRow>(
             r#"
             WITH candidates AS (

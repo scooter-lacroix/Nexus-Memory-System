@@ -196,7 +196,7 @@ async fn upgrade_pre_migration_databases(pool: &SqlitePool) -> crate::Result<()>
         }
         let mut all_exist = true;
         for t in tables {
-            if !table_exists(pool, t).await {
+            if !table_exists(pool, t).await? {
                 all_exist = false;
                 break;
             }
@@ -219,7 +219,7 @@ async fn upgrade_pre_migration_databases(pool: &SqlitePool) -> crate::Result<()>
     // exists the indexes may or may not exist.  The CREATE INDEX IF NOT EXISTS
     // statements in the migration itself handle idempotency, so we only
     // backfill if the memories table is present.
-    if table_exists(pool, "memories").await && !is_migration_applied(pool, 9).await? {
+    if table_exists(pool, "memories").await? && !is_migration_applied(pool, 9).await? {
         record_migration(pool, 9, MIGRATIONS[8].description).await?;
     }
 
@@ -227,14 +227,17 @@ async fn upgrade_pre_migration_databases(pool: &SqlitePool) -> crate::Result<()>
 }
 
 /// Check whether a table exists in the SQLite database.
-async fn table_exists(pool: &SqlitePool, name: &str) -> bool {
+///
+/// Returns `Err` on query failure so that real database problems are not
+/// silently treated as "table absent".
+async fn table_exists(pool: &SqlitePool, name: &str) -> crate::Result<bool> {
     let count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?")
             .bind(name)
             .fetch_one(pool)
             .await
-            .unwrap_or(0);
-    count > 0
+            .map_err(crate::db_error)?;
+    Ok(count > 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -602,7 +605,7 @@ mod tests {
             "memory_evidence",
             "processed_files",
         ] {
-            let exists = table_exists(&pool, table).await;
+            let exists = table_exists(&pool, table).await.unwrap();
             assert!(exists, "table {table} should exist after migrations");
         }
     }
@@ -640,7 +643,7 @@ mod tests {
         migration_010_processed_files(&pool).await.unwrap();
 
         // Verify schema_migrations does NOT exist yet.
-        let exists = table_exists(&pool, "schema_migrations").await;
+        let exists = table_exists(&pool, "schema_migrations").await.unwrap();
         assert!(!exists, "schema_migrations should not exist before upgrade");
 
         // Now run the versioned migration system — it should detect
@@ -676,10 +679,10 @@ mod tests {
         assert_eq!(count, 10);
 
         // Verify later tables now exist too.
-        assert!(table_exists(&pool, "memory_jobs").await);
-        assert!(table_exists(&pool, "session_digests").await);
-        assert!(table_exists(&pool, "memory_evidence").await);
-        assert!(table_exists(&pool, "processed_files").await);
+        assert!(table_exists(&pool, "memory_jobs").await.unwrap());
+        assert!(table_exists(&pool, "session_digests").await.unwrap());
+        assert!(table_exists(&pool, "memory_evidence").await.unwrap());
+        assert!(table_exists(&pool, "processed_files").await.unwrap());
     }
 
     /// Test: brand-new database with no pre-existing tables starts from 1.

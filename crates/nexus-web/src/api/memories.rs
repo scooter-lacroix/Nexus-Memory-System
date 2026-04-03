@@ -174,31 +174,35 @@ pub async fn update_memory(
         .await?
         .ok_or_else(|| WebError::NotFound(format!("Memory {} not found", id)))?;
 
-    // Build update query dynamically
-    let mut updates: Vec<String> = Vec::new();
+    // Build update query dynamically with parameterized values
+    let mut set_clauses: Vec<String> = Vec::new();
+    let mut bind_values: Vec<serde_json::Value> = Vec::new();
 
     if let Some(content) = request.content {
         if !content.trim().is_empty() {
-            updates.push(format!("content = '{}'", content.replace("'", "''")));
+            set_clauses.push("content = ?".to_string());
+            bind_values.push(serde_json::Value::String(content));
         }
     }
 
     if let Some(category) = request.category {
-        updates.push(format!("category = '{}'", category));
+        set_clauses.push("category = ?".to_string());
+        bind_values.push(serde_json::json!(category));
     }
 
     if let Some(memory_lane_type) = request.memory_lane_type {
-        updates.push(format!("memory_lane_type = '{}'", memory_lane_type));
+        set_clauses.push("memory_lane_type = ?".to_string());
+        bind_values.push(serde_json::json!(memory_lane_type));
     }
 
     if let Some(labels) = request.labels {
         match serde_json::to_string(&labels) {
             Ok(labels_json) => {
-                updates.push(format!("labels = '{}'", labels_json.replace("'", "''")));
+                set_clauses.push("labels = ?".to_string());
+                bind_values.push(serde_json::Value::String(labels_json));
             }
             Err(e) => {
                 warn!(error = %e, "Failed to serialize labels for memory update; labels omitted from SQL update");
-                // Do NOT push an empty-string assignment — that would corrupt the row.
             }
         }
     }
@@ -206,34 +210,44 @@ pub async fn update_memory(
     if let Some(metadata) = request.metadata {
         match serde_json::to_string(&metadata) {
             Ok(metadata_json) => {
-                updates.push(format!("metadata = '{}'", metadata_json.replace("'", "''")));
+                set_clauses.push("metadata = ?".to_string());
+                bind_values.push(serde_json::Value::String(metadata_json));
             }
             Err(e) => {
                 warn!(error = %e, "Failed to serialize metadata for memory update; metadata omitted from SQL update");
-                // Do NOT push an empty-string assignment — that would corrupt the row.
             }
         }
     }
 
     if let Some(is_active) = request.is_active {
-        updates.push(format!("is_active = {}", if is_active { 1 } else { 0 }));
+        set_clauses.push("is_active = ?".to_string());
+        bind_values.push(serde_json::json!(is_active));
     }
 
     if let Some(is_archived) = request.is_archived {
-        updates.push(format!("is_archived = {}", if is_archived { 1 } else { 0 }));
+        set_clauses.push("is_archived = ?".to_string());
+        bind_values.push(serde_json::json!(is_archived));
     }
 
-    if updates.is_empty() {
+    if set_clauses.is_empty() {
         return Ok(Json(MemoryResponse::from(existing)));
     }
 
-    updates.push(format!("updated_at = '{}'", Utc::now().to_rfc3339()));
+    set_clauses.push("updated_at = ?".to_string());
+    bind_values.push(serde_json::Value::String(Utc::now().to_rfc3339()));
 
-    let query = format!("UPDATE memories SET {} WHERE id = ?", updates.join(", "));
+    let query = format!(
+        "UPDATE memories SET {} WHERE id = ?",
+        set_clauses.join(", ")
+    );
 
-    sqlx::query(&query)
-        .bind(id)
-        .execute(state.pool())
+    let mut q = sqlx::query(&query);
+    for val in &bind_values {
+        q = q.bind(val);
+    }
+    q = q.bind(id);
+
+    q.execute(state.pool())
         .await
         .map_err(|e| WebError::Storage(e.to_string()))?;
 
