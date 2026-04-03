@@ -156,10 +156,7 @@ mod tests {
             .expect("run migrations");
 
         let mut storage = nexus_storage::StorageManager::new(pool.clone());
-        storage
-            .initialize()
-            .await
-            .expect("initialize storage");
+        storage.initialize().await.expect("initialize storage");
 
         let dashboard = WebDashboard::new(storage, nexus_orchestrator::Orchestrator::default())
             .await
@@ -202,14 +199,11 @@ mod tests {
             .expect("send ping from A");
 
         // Client A should receive the pong directly
-        let reply_a = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            ws_a.next(),
-        )
-        .await
-        .expect("timeout waiting for pong on A")
-        .expect("no message on A")
-        .expect("error on A");
+        let reply_a = tokio::time::timeout(std::time::Duration::from_secs(2), ws_a.next())
+            .await
+            .expect("timeout waiting for pong on A")
+            .expect("no message on A")
+            .expect("error on A");
 
         let reply_text = match reply_a {
             TungsteniteMessage::Text(t) => t.to_string(),
@@ -226,11 +220,8 @@ mod tests {
 
         // Client B should NOT receive the pong (it was a ping from A)
         // Wait a short period and verify no pong arrives on B
-        let b_reply = tokio::time::timeout(
-            std::time::Duration::from_millis(500),
-            ws_b.next(),
-        )
-        .await;
+        let b_reply =
+            tokio::time::timeout(std::time::Duration::from_millis(500), ws_b.next()).await;
 
         assert!(
             b_reply.is_err(),

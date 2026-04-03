@@ -321,7 +321,10 @@ pub async fn search_memories(
         .map_err(|e| WebError::Storage(e.to_string()))?;
 
     // Convert rows to memories
-    let memories: Vec<nexus_core::Memory> = rows.into_iter().map(row_to_memory).collect::<crate::error::Result<Vec<_>>>()?;
+    let memories: Vec<nexus_core::Memory> = rows
+        .into_iter()
+        .map(row_to_memory)
+        .collect::<crate::error::Result<Vec<_>>>()?;
 
     let results: Vec<MemoryResponse> = memories.into_iter().map(MemoryResponse::from).collect();
 
@@ -345,19 +348,20 @@ pub async fn search_memories(
 }
 
 /// Convert a database row to a Memory
-fn row_to_memory(row: nexus_storage::models::MemoryRow) -> crate::error::Result<nexus_core::Memory> {
+fn row_to_memory(
+    row: nexus_storage::models::MemoryRow,
+) -> crate::error::Result<nexus_core::Memory> {
     use nexus_core::{Memory, MemoryCategory, MemoryLaneType};
 
     let labels: Vec<String> = serde_json::from_str(&row.labels).map_err(|e| {
         crate::error::WebError::Storage(format!("corrupted labels JSON for memory {}: {e}", row.id))
     })?;
-    let metadata: serde_json::Value =
-        serde_json::from_str(&row.metadata).map_err(|e| {
-            crate::error::WebError::Storage(format!(
-                "corrupted metadata JSON for memory {}: {e}",
-                row.id
-            ))
-        })?;
+    let metadata: serde_json::Value = serde_json::from_str(&row.metadata).map_err(|e| {
+        crate::error::WebError::Storage(format!(
+            "corrupted metadata JSON for memory {}: {e}",
+            row.id
+        ))
+    })?;
     let embedding: Option<Vec<f32>> = row
         .content_embedding
         .map(|e| {

@@ -179,10 +179,12 @@ impl MemoryRepository {
                 content_length = params.content.len(),
                 "Insert returned id 0 but no matching duplicate found - treating as successful insert"
             );
-            
+
             // Return success anyway - the insert did happen, we just can't track the id
             // This prevents hook failures due to this edge case
-            return self.get_by_content(params.namespace_id, params.content).await;
+            return self
+                .get_by_content(params.namespace_id, params.content)
+                .await;
         }
 
         self.get_by_id(id).await?.ok_or_else(|| {
@@ -826,16 +828,15 @@ impl MemoryRepository {
         limit: i64,
     ) -> Result<Vec<Memory>> {
         let sql = if perspective.session_key.is_some() {
-            format!(
-                r#"
+            r#"
                 SELECT * FROM memories
                 WHERE namespace_id = ?
                   AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.level') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
+                  AND json_extract(COALESCE(metadata, '{}'), '$.cognitive.level') = ?
+                  AND json_extract(COALESCE(metadata, '{}'), '$.cognitive.observer') = ?
+                  AND json_extract(COALESCE(metadata, '{}'), '$.cognitive.subject') = ?
                   AND (
-                      json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.session_key') = ?
+                      json_extract(COALESCE(metadata, '{}'), '$.cognitive.session_key') = ?
                       OR EXISTS (
                           SELECT 1
                           FROM json_each(COALESCE(json_extract(metadata, '$.cognitive.session_keys'), '[]'))
@@ -844,21 +845,20 @@ impl MemoryRepository {
                   )
                 ORDER BY created_at DESC
                 LIMIT ?
-                "#,
-            )
+                "#
+            .to_string()
         } else {
-            format!(
-                r#"
+            r#"
                 SELECT * FROM memories
                 WHERE namespace_id = ?
                   AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.level') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
+                  AND json_extract(COALESCE(metadata, '{}'), '$.cognitive.level') = ?
+                  AND json_extract(COALESCE(metadata, '{}'), '$.cognitive.observer') = ?
+                  AND json_extract(COALESCE(metadata, '{}'), '$.cognitive.subject') = ?
                 ORDER BY created_at DESC
                 LIMIT ?
-                "#,
-            )
+                "#
+            .to_string()
         };
 
         let mut query = sqlx::query_as::<_, MemoryRow>(&sql)
@@ -2052,13 +2052,12 @@ impl MemoryRepository {
                 row.id
             ))
         })?;
-        let metadata: serde_json::Value =
-            serde_json::from_str(&row.metadata).map_err(|e| {
-                nexus_core::NexusError::Storage(format!(
-                    "corrupted metadata JSON for memory {}: {e}",
-                    row.id
-                ))
-            })?;
+        let metadata: serde_json::Value = serde_json::from_str(&row.metadata).map_err(|e| {
+            nexus_core::NexusError::Storage(format!(
+                "corrupted metadata JSON for memory {}: {e}",
+                row.id
+            ))
+        })?;
         let embedding: Option<Vec<f32>> = row
             .content_embedding
             .map(|e| {
@@ -2881,7 +2880,10 @@ fn parse_category(s: &str) -> Category {
     match MemoryCategory::parse(s) {
         Some(cat) => cat,
         None => {
-            warn!(category = s, "Unknown memory category in database row; defaulting to General");
+            warn!(
+                category = s,
+                "Unknown memory category in database row; defaulting to General"
+            );
             MemoryCategory::General
         }
     }
@@ -3077,11 +3079,17 @@ mod tests {
 
         // get_by_content must return the memory with matching content,
         // NOT the newest one.
-        let found_a = repo.get_by_content(ns_id, "first memory content").await.unwrap();
+        let found_a = repo
+            .get_by_content(ns_id, "first memory content")
+            .await
+            .unwrap();
         assert_eq!(found_a.id, mem_a.id);
         assert_eq!(found_a.content, "first memory content");
 
-        let found_b = repo.get_by_content(ns_id, "second memory content").await.unwrap();
+        let found_b = repo
+            .get_by_content(ns_id, "second memory content")
+            .await
+            .unwrap();
         assert_eq!(found_b.id, mem_b.id);
         assert_eq!(found_b.content, "second memory content");
 
@@ -4429,34 +4437,61 @@ mod tests {
 
         // Request 3 results for alice's perspective; should get exactly 3, not fewer.
         let alice_results = repo
-            .get_by_cognitive_level_with_perspective(ns_id, CognitiveLevel::Explicit, &perspective_a, 3)
+            .get_by_cognitive_level_with_perspective(
+                ns_id,
+                CognitiveLevel::Explicit,
+                &perspective_a,
+                3,
+            )
             .await
             .unwrap();
         assert_eq!(alice_results.len(), 3);
         assert!(alice_results.iter().all(|m| {
             let meta = &m.metadata;
-            let obs = meta.get("cognitive").and_then(|c| c.get("observer")).and_then(|v| v.as_str());
-            let sub = meta.get("cognitive").and_then(|c| c.get("subject")).and_then(|v| v.as_str());
+            let obs = meta
+                .get("cognitive")
+                .and_then(|c| c.get("observer"))
+                .and_then(|v| v.as_str());
+            let sub = meta
+                .get("cognitive")
+                .and_then(|c| c.get("subject"))
+                .and_then(|v| v.as_str());
             obs == Some("alice") && sub == Some("project-x")
         }));
 
         // Request 10 results for alice; there are only 5, so capped at 5.
         let alice_many = repo
-            .get_by_cognitive_level_with_perspective(ns_id, CognitiveLevel::Explicit, &perspective_a, 10)
+            .get_by_cognitive_level_with_perspective(
+                ns_id,
+                CognitiveLevel::Explicit,
+                &perspective_a,
+                10,
+            )
             .await
             .unwrap();
         assert_eq!(alice_many.len(), 5);
 
         // Bob gets a separate set.
         let bob_results = repo
-            .get_by_cognitive_level_with_perspective(ns_id, CognitiveLevel::Explicit, &perspective_b, 3)
+            .get_by_cognitive_level_with_perspective(
+                ns_id,
+                CognitiveLevel::Explicit,
+                &perspective_b,
+                3,
+            )
             .await
             .unwrap();
         assert_eq!(bob_results.len(), 3);
         assert!(bob_results.iter().all(|m| {
             let meta = &m.metadata;
-            let obs = meta.get("cognitive").and_then(|c| c.get("observer")).and_then(|v| v.as_str());
-            let sub = meta.get("cognitive").and_then(|c| c.get("subject")).and_then(|v| v.as_str());
+            let obs = meta
+                .get("cognitive")
+                .and_then(|c| c.get("observer"))
+                .and_then(|v| v.as_str());
+            let sub = meta
+                .get("cognitive")
+                .and_then(|c| c.get("subject"))
+                .and_then(|v| v.as_str());
             obs == Some("bob") && sub == Some("project-y")
         }));
     }
@@ -4503,14 +4538,24 @@ mod tests {
         }
 
         let s1_results = repo
-            .get_by_cognitive_level_with_perspective(ns_id, CognitiveLevel::Derived, &perspective_s1, 10)
+            .get_by_cognitive_level_with_perspective(
+                ns_id,
+                CognitiveLevel::Derived,
+                &perspective_s1,
+                10,
+            )
             .await
             .unwrap();
         assert_eq!(s1_results.len(), 3);
         assert!(s1_results.iter().all(|m| m.content.starts_with("s1")));
 
         let s2_results = repo
-            .get_by_cognitive_level_with_perspective(ns_id, CognitiveLevel::Derived, &perspective_s2, 10)
+            .get_by_cognitive_level_with_perspective(
+                ns_id,
+                CognitiveLevel::Derived,
+                &perspective_s2,
+                10,
+            )
             .await
             .unwrap();
         assert_eq!(s2_results.len(), 3);
@@ -4524,8 +4569,7 @@ mod tests {
         let ns_id = create_namespace(&pool, "session-keys-array").await;
         let repo = MemoryRepository::new(pool);
 
-        let perspective =
-            PerspectiveKey::new("alice", "project-x", Some("session-a".to_string()));
+        let perspective = PerspectiveKey::new("alice", "project-x", Some("session-a".to_string()));
 
         // Memory with session_key set to the same key as the perspective.
         repo.store(StoreMemoryParams {
@@ -4588,7 +4632,12 @@ mod tests {
         .unwrap();
 
         let results = repo
-            .get_by_cognitive_level_with_perspective(ns_id, CognitiveLevel::Explicit, &perspective, 10)
+            .get_by_cognitive_level_with_perspective(
+                ns_id,
+                CognitiveLevel::Explicit,
+                &perspective,
+                10,
+            )
             .await
             .unwrap();
         assert_eq!(results.len(), 2);
@@ -5143,13 +5192,11 @@ mod tests {
         repo.complete_job(&claimed[0]).await.unwrap();
 
         // Backdate the completed job to 30 days ago.
-        sqlx::query(
-            "UPDATE memory_jobs SET updated_at = datetime('now', '-30 days') WHERE id = ?",
-        )
-        .bind(old_job_id)
-        .execute(repo.pool())
-        .await
-        .unwrap();
+        sqlx::query("UPDATE memory_jobs SET updated_at = datetime('now', '-30 days') WHERE id = ?")
+            .bind(old_job_id)
+            .execute(repo.pool())
+            .await
+            .unwrap();
 
         // Enqueue and complete a second job that stays recent.
         repo.enqueue_job(EnqueueJobParams {
@@ -5235,17 +5282,12 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(claimed.len(), 1);
-            repo.fail_job(&claimed[0], "transient error")
-                .await
-                .unwrap();
+            repo.fail_job(&claimed[0], "transient error").await.unwrap();
         }
 
         // Purge with a cutoff of 7 days ago.
         let cutoff = Utc::now() - chrono::Duration::days(7);
-        let deleted = repo
-            .purge_permanently_failed_jobs(cutoff)
-            .await
-            .unwrap();
+        let deleted = repo.purge_permanently_failed_jobs(cutoff).await.unwrap();
         assert_eq!(deleted, 1);
 
         // The permanently failed job is gone; the re-queueable job remains as pending.
@@ -5278,13 +5320,11 @@ mod tests {
             .unwrap();
         repo.complete_job(&claimed[0]).await.unwrap();
 
-        sqlx::query(
-            "UPDATE memory_jobs SET updated_at = datetime('now', '-30 days') WHERE id = ?",
-        )
-        .bind(claimed[0].row.id)
-        .execute(repo.pool())
-        .await
-        .unwrap();
+        sqlx::query("UPDATE memory_jobs SET updated_at = datetime('now', '-30 days') WHERE id = ?")
+            .bind(claimed[0].row.id)
+            .execute(repo.pool())
+            .await
+            .unwrap();
 
         // Purge old completed jobs.
         let cutoff = Utc::now() - chrono::Duration::days(7);

@@ -25,32 +25,62 @@ struct MigrationMeta {
 }
 
 const MIGRATIONS: &[MigrationMeta] = &[
-    MigrationMeta { version: 1,  description: "agent_namespaces table" },
-    MigrationMeta { version: 2,  description: "memories table and basic indexes" },
-    MigrationMeta { version: 3,  description: "task_specifications table" },
-    MigrationMeta { version: 4,  description: "memory_relations table" },
-    MigrationMeta { version: 5,  description: "system_metrics table" },
-    MigrationMeta { version: 6,  description: "memory_jobs table and indexes" },
-    MigrationMeta { version: 7,  description: "session_digests table and indexes" },
-    MigrationMeta { version: 8,  description: "memory_evidence table and indexes" },
-    MigrationMeta { version: 9,  description: "cognitive indexes on memories" },
-    MigrationMeta { version: 10, description: "processed_files table and indexes" },
+    MigrationMeta {
+        version: 1,
+        description: "agent_namespaces table",
+    },
+    MigrationMeta {
+        version: 2,
+        description: "memories table and basic indexes",
+    },
+    MigrationMeta {
+        version: 3,
+        description: "task_specifications table",
+    },
+    MigrationMeta {
+        version: 4,
+        description: "memory_relations table",
+    },
+    MigrationMeta {
+        version: 5,
+        description: "system_metrics table",
+    },
+    MigrationMeta {
+        version: 6,
+        description: "memory_jobs table and indexes",
+    },
+    MigrationMeta {
+        version: 7,
+        description: "session_digests table and indexes",
+    },
+    MigrationMeta {
+        version: 8,
+        description: "memory_evidence table and indexes",
+    },
+    MigrationMeta {
+        version: 9,
+        description: "cognitive indexes on memories",
+    },
+    MigrationMeta {
+        version: 10,
+        description: "processed_files table and indexes",
+    },
 ];
 
 /// Dispatch a migration by version number.
 async fn apply_migration(pool: &SqlitePool, version: i64) -> crate::Result<()> {
     match version {
-        1  => migration_001_agent_namespaces(pool).await,
-        2  => migration_002_memories(pool).await,
-        3  => migration_003_task_specifications(pool).await,
-        4  => migration_004_memory_relations(pool).await,
-        5  => migration_005_system_metrics(pool).await,
-        6  => migration_006_memory_jobs(pool).await,
-        7  => migration_007_session_digests(pool).await,
-        8  => migration_008_memory_evidence(pool).await,
-        9  => migration_009_cognitive_indexes(pool).await,
+        1 => migration_001_agent_namespaces(pool).await,
+        2 => migration_002_memories(pool).await,
+        3 => migration_003_task_specifications(pool).await,
+        4 => migration_004_memory_relations(pool).await,
+        5 => migration_005_system_metrics(pool).await,
+        6 => migration_006_memory_jobs(pool).await,
+        7 => migration_007_session_digests(pool).await,
+        8 => migration_008_memory_evidence(pool).await,
+        9 => migration_009_cognitive_indexes(pool).await,
         10 => migration_010_processed_files(pool).await,
-        _  => panic!("unknown migration version: {version}"),
+        _ => panic!("unknown migration version: {version}"),
     }
 }
 
@@ -65,10 +95,17 @@ pub async fn run_migrations(pool: &SqlitePool) -> crate::Result<()> {
 
     for migration in MIGRATIONS {
         if is_migration_applied(pool, migration.version).await? {
-            debug!(version = migration.version, "migration already applied, skipping");
+            debug!(
+                version = migration.version,
+                "migration already applied, skipping"
+            );
             continue;
         }
-        debug!(version = migration.version, description = migration.description, "applying migration");
+        debug!(
+            version = migration.version,
+            description = migration.description,
+            "applying migration"
+        );
         apply_migration(pool, migration.version).await?;
         record_migration(pool, migration.version, migration.description).await?;
     }
@@ -97,29 +134,22 @@ async fn ensure_schema_migrations_table(pool: &SqlitePool) -> crate::Result<()> 
 }
 
 async fn is_migration_applied(pool: &SqlitePool, version: i64) -> crate::Result<bool> {
-    let row = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM schema_migrations WHERE version = ?",
-    )
-    .bind(version)
-    .fetch_one(pool)
-    .await
-    .map_err(db_error)?;
+    let row =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM schema_migrations WHERE version = ?")
+            .bind(version)
+            .fetch_one(pool)
+            .await
+            .map_err(db_error)?;
     Ok(row > 0)
 }
 
-async fn record_migration(
-    pool: &SqlitePool,
-    version: i64,
-    description: &str,
-) -> crate::Result<()> {
-    sqlx::query(
-        "INSERT INTO schema_migrations (version, description) VALUES (?, ?)",
-    )
-    .bind(version)
-    .bind(description)
-    .execute(pool)
-    .await
-    .map_err(db_error)?;
+async fn record_migration(pool: &SqlitePool, version: i64, description: &str) -> crate::Result<()> {
+    sqlx::query("INSERT INTO schema_migrations (version, description) VALUES (?, ?)")
+        .bind(version)
+        .bind(description)
+        .execute(pool)
+        .await
+        .map_err(db_error)?;
     Ok(())
 }
 
@@ -189,10 +219,8 @@ async fn upgrade_pre_migration_databases(pool: &SqlitePool) -> crate::Result<()>
     // exists the indexes may or may not exist.  The CREATE INDEX IF NOT EXISTS
     // statements in the migration itself handle idempotency, so we only
     // backfill if the memories table is present.
-    if table_exists(pool, "memories").await {
-        if !is_migration_applied(pool, 9).await? {
-            record_migration(pool, 9, MIGRATIONS[8].description).await?;
-        }
+    if table_exists(pool, "memories").await && !is_migration_applied(pool, 9).await? {
+        record_migration(pool, 9, MIGRATIONS[8].description).await?;
     }
 
     Ok(())
@@ -200,13 +228,12 @@ async fn upgrade_pre_migration_databases(pool: &SqlitePool) -> crate::Result<()>
 
 /// Check whether a table exists in the SQLite database.
 async fn table_exists(pool: &SqlitePool, name: &str) -> bool {
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
-    )
-    .bind(name)
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0);
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?")
+            .bind(name)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
     count > 0
 }
 

@@ -814,9 +814,8 @@ mod tests {
 
     #[test]
     fn test_request_with_params() {
-        let request =
-            JsonRpcRequest::request("tools/call", RequestId::from(1))
-                .with_params(serde_json::json!({"name": "store_memory"}));
+        let request = JsonRpcRequest::request("tools/call", RequestId::from(1))
+            .with_params(serde_json::json!({"name": "store_memory"}));
 
         assert_eq!(request.method, "tools/call");
         assert!(request.params.is_some());

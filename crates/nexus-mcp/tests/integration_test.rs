@@ -7,15 +7,14 @@ use serde_json::json;
 
 /// Helper to create a basic initialize request
 fn create_init_request() -> JsonRpcRequest {
-    JsonRpcRequest::request("initialize", RequestId::from(1))
-        .with_params(json!({
-            "protocol_version": "2024-11-05",
-            "capabilities": {},
-            "client_info": {
-                "name": "test-client",
-                "version": "1.0.0"
-            }
-        }))
+    JsonRpcRequest::request("initialize", RequestId::from(1)).with_params(json!({
+        "protocol_version": "2024-11-05",
+        "capabilities": {},
+        "client_info": {
+            "name": "test-client",
+            "version": "1.0.0"
+        }
+    }))
 }
 
 #[test]
@@ -152,8 +151,8 @@ mod protocol_conformance {
 
     #[test]
     fn test_message_roundtrip() {
-        let request = JsonRpcRequest::request("tools/call", RequestId::from(123))
-            .with_params(json!({
+        let request =
+            JsonRpcRequest::request("tools/call", RequestId::from(123)).with_params(json!({
                 "name": "store_memory",
                 "arguments": {
                     "content": "test content",

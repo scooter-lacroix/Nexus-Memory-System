@@ -506,10 +506,7 @@ impl VectorDatabase {
 /// Statistics about the vector database
 ///
 /// **Deprecated**: This type belongs to the deprecated `VectorDatabase`.
-#[deprecated(
-    since = "0.1.0",
-    note = "Belongs to the deprecated VectorDatabase."
-)]
+#[deprecated(since = "0.1.0", note = "Belongs to the deprecated VectorDatabase.")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorDatabaseStats {
     /// Total number of vectors

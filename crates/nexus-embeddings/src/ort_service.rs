@@ -146,9 +146,7 @@ impl OrtEmbeddingService {
             .map_err(|e: ort::Error| EmbeddingError::InferenceError(e.to_string()))?;
 
         // Lock the session and run inference (async-aware, won't block runtime)
-        let mut session = session
-            .lock()
-            .await;
+        let mut session = session.lock().await;
 
         // Run inference
         let outputs = session
