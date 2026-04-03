@@ -329,9 +329,12 @@ impl McpServer {
         &self,
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, JsonRpcError> {
-        let params: InitializeParams = params
-            .and_then(|p| serde_json::from_value(p).ok())
-            .ok_or_else(|| JsonRpcError::invalid_params("Missing initialize params"))?;
+        let params: InitializeParams = match params {
+            Some(p) => serde_json::from_value(p).map_err(|e| {
+                JsonRpcError::invalid_params(format!("Invalid initialize params: {e}"))
+            })?,
+            None => return Err(JsonRpcError::invalid_params("Missing initialize params")),
+        };
 
         tracing::info!(
             "Client connecting: {} v{} (protocol: {})",
@@ -364,9 +367,12 @@ impl McpServer {
         params: Option<serde_json::Value>,
         tool_handler: &ToolHandler,
     ) -> Result<serde_json::Value, JsonRpcError> {
-        let params: CallToolParams = params
-            .and_then(|p| serde_json::from_value(p).ok())
-            .ok_or_else(|| JsonRpcError::invalid_params("Missing tool call params"))?;
+        let params: CallToolParams = match params {
+            Some(p) => serde_json::from_value(p).map_err(|e| {
+                JsonRpcError::invalid_params(format!("Invalid tool call params: {e}"))
+            })?,
+            None => return Err(JsonRpcError::invalid_params("Missing tool call params")),
+        };
 
         tracing::info!("Calling tool: {}", params.name);
 
@@ -390,9 +396,12 @@ impl McpServer {
         params: Option<serde_json::Value>,
         handler: &ResourceHandler,
     ) -> Result<serde_json::Value, JsonRpcError> {
-        let params: ReadResourceParams = params
-            .and_then(|p| serde_json::from_value(p).ok())
-            .ok_or_else(|| JsonRpcError::invalid_params("Missing resource read params"))?;
+        let params: ReadResourceParams = match params {
+            Some(p) => serde_json::from_value(p).map_err(|e| {
+                JsonRpcError::invalid_params(format!("Invalid resource read params: {e}"))
+            })?,
+            None => return Err(JsonRpcError::invalid_params("Missing resource read params")),
+        };
 
         tracing::info!("Reading resource: {}", params.uri);
 
@@ -450,9 +459,12 @@ impl McpServer {
         &self,
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, JsonRpcError> {
-        let params: GetPromptParams = params
-            .and_then(|p| serde_json::from_value(p).ok())
-            .ok_or_else(|| JsonRpcError::invalid_params("Missing prompt get params"))?;
+        let params: GetPromptParams = match params {
+            Some(p) => serde_json::from_value(p).map_err(|e| {
+                JsonRpcError::invalid_params(format!("Invalid prompt get params: {e}"))
+            })?,
+            None => return Err(JsonRpcError::invalid_params("Missing prompt get params")),
+        };
 
         let result = match params.name.as_str() {
             "store_memory" => {

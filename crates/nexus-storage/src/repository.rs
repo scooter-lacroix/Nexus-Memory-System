@@ -824,16 +824,17 @@ impl MemoryRepository {
         level: CognitiveLevel,
         limit: i64,
     ) -> Result<Vec<Memory>> {
-        let rows = sqlx::query_as::<_, MemoryRow>(
+        let rows = sqlx::query_as::<_, MemoryRow>(&format!(
             r#"
             SELECT * FROM memories
             WHERE namespace_id = ?
               AND is_active = 1
-              AND json_extract(COALESCE(metadata, '{}'), '$.cognitive.level') = ?
+              AND {} = ?
             ORDER BY created_at DESC
             LIMIT ?
             "#,
-        )
+            COGNITIVE_LEVEL_EXPR,
+        ))
         .bind(namespace_id)
         .bind(level.as_str())
         .bind(limit)

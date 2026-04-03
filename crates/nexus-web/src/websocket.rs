@@ -9,21 +9,27 @@ use futures::{sink::SinkExt, stream::StreamExt};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{error, info, warn};
+use url::Url;
 
 use crate::{models::WebSocketMessage, state::AppState};
 
-/// Validate that the request Origin header matches a local-only origin.
+/// Validate that the request Origin header matches an exact local origin.
+/// Parses the Origin as a URL and compares scheme + host exactly to prevent
+/// prefix-spoofing attacks (e.g. http://localhost.evil.com).
+/// Missing Origin headers are rejected to enforce the local-only trust model.
 fn is_local_origin(headers: &HeaderMap) -> bool {
-    headers
-        .get("origin")
-        .and_then(|v| v.to_str().ok())
-        .map(|origin| {
-            origin.starts_with("http://127.0.0.1:")
-                || origin.starts_with("http://localhost:")
-                || origin.starts_with("http://127.0.0.1")
-                || origin.starts_with("http://localhost")
-        })
-        .unwrap_or(true) // Allow requests without an Origin (e.g., non-browser clients)
+    let origin_str = match headers.get("origin").and_then(|v| v.to_str().ok()) {
+        Some(s) => s,
+        None => return false, // Reject missing Origin — non-browser clients must send it
+    };
+    match Url::parse(origin_str) {
+        Ok(url) => {
+            let host = url.host_str().unwrap_or("");
+            let scheme = url.scheme();
+            scheme == "http" && (host == "127.0.0.1" || host == "localhost")
+        }
+        Err(_) => false, // Malformed origins are rejected
+    }
 }
 
 /// WebSocket connection handler
@@ -63,7 +69,10 @@ async fn handle_socket(socket: axum::extract::ws::WebSocket, state: Arc<RwLock<A
     // Handles both broadcast events and direct replies.
     let send_task = tokio::spawn(async move {
         loop {
+            // `biased` ensures direct replies (e.g. pong) always preempt
+            // broadcast events when both channels are ready simultaneously.
             tokio::select! {
+                biased;
                 // Priority: direct replies first (e.g. pong responses)
                 direct_msg = direct_rx.recv() => {
                     match direct_msg {

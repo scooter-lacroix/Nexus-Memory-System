@@ -2059,6 +2059,7 @@ dependencies = [
  "chrono",
  "futures",
  "futures-util",
+ "http",
  "nexus-memory-agent",
  "nexus-memory-core",
  "nexus-memory-embeddings",
@@ -2079,6 +2080,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

@@ -486,15 +486,23 @@ pub async fn dashboard(
                 Vec::new()
             });
         match recent.into_iter().next() {
-            Some(d) => {
-                let age = chrono::Utc::now()
-                    .signed_duration_since(
-                        chrono::DateTime::parse_from_rfc3339(&d.created_at)
-                            .unwrap_or_else(|_| chrono::Utc::now().into()),
-                    )
-                    .num_seconds();
-                (Some(d.created_at), Some(age.max(0)))
-            }
+            Some(d) => match chrono::DateTime::parse_from_rfc3339(&d.created_at) {
+                Ok(dt) => {
+                    let age = chrono::Utc::now()
+                        .signed_duration_since(dt)
+                        .num_seconds()
+                        .max(0);
+                    (Some(d.created_at), Some(age))
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        created_at = %d.created_at,
+                        "Malformed digest timestamp; returning None for age"
+                    );
+                    (None, None)
+                }
+            },
             None => (None, None),
         }
     };

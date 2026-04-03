@@ -32,6 +32,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use http::HeaderValue;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -39,6 +40,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing::info;
+use url::Url;
 
 pub use error::{Result, WebError};
 pub use models::*;
@@ -72,18 +74,22 @@ impl WebDashboard {
 
     /// Build the Axum router with all routes
     fn build_router(state: Arc<RwLock<AppState>>) -> Router {
-        // CORS Layer — restrict to same-origin / local-only origins.
-        // The dashboard is served from the same host, so legitimate requests
-        // will have an Origin matching http://127.0.0.1:* or http://localhost:*.
-        // Cross-origin browser requests from other hosts are rejected.
+        // CORS Layer — restrict to exact local-only origins.
+        // Parses the Origin header as a URL and compares host exactly
+        // to prevent prefix-spoofing attacks (e.g. http://localhost.evil.com).
         let cors = CorsLayer::new()
             .allow_origin(AllowOrigin::predicate(
-                |origin: &axum::http::HeaderValue, _request: &axum::http::request::Parts| {
+                |origin: &HeaderValue, _request: &http::request::Parts| {
                     let origin_str = origin.to_str().unwrap_or("");
-                    origin_str.starts_with("http://127.0.0.1:")
-                        || origin_str.starts_with("http://localhost:")
-                        || origin_str.starts_with("http://127.0.0.1")
-                        || origin_str.starts_with("http://localhost")
+                    match Url::parse(origin_str) {
+                        Ok(url) => {
+                            let host = url.host_str().unwrap_or("");
+                            let scheme = url.scheme();
+                            // Only allow exact localhost / 127.0.0.1 origins
+                            scheme == "http" && (host == "127.0.0.1" || host == "localhost")
+                        }
+                        Err(_) => false, // Malformed origins are rejected
+                    }
                 },
             ))
             .allow_methods([
