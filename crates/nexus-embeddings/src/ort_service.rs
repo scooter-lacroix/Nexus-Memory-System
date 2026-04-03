@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Value;
 use std::sync::Arc;
-use std::sync::Mutex;
 use tokenizers::Tokenizer;
+use tokio::sync::Mutex;
 use tracing::{debug, info};
 
 use crate::cache::EmbeddingCache;
@@ -19,8 +19,8 @@ use crate::{DEFAULT_MODEL_NAME, EMBEDDING_DIMENSION};
 /// all-MiniLM-L6-v2 model. It produces 384-dimensional vectors compatible
 /// with the sentence-transformers reference implementation.
 pub struct OrtEmbeddingService {
-    /// ONNX Runtime session (wrapped in Mutex for thread safety)
-    session: Mutex<Session>,
+    /// ONNX Runtime session (wrapped in async-aware Mutex)
+    session: Arc<Mutex<Session>>,
     /// Tokenizer for text preprocessing
     tokenizer: Tokenizer,
     /// Configuration
@@ -95,7 +95,7 @@ impl OrtEmbeddingService {
         info!("Embedding service initialized successfully");
 
         Ok(Self {
-            session: Mutex::new(session),
+            session: Arc::new(Mutex::new(session)),
             tokenizer,
             config,
             cache,
@@ -129,7 +129,12 @@ impl OrtEmbeddingService {
     }
 
     /// Run inference on the ONNX model
-    fn run_inference(&self, input_ids: Vec<i64>, attention_mask: Vec<i64>) -> Result<Vec<f32>> {
+    async fn run_inference(
+        session: &Arc<Mutex<Session>>,
+        normalize: bool,
+        input_ids: Vec<i64>,
+        attention_mask: Vec<i64>,
+    ) -> Result<Vec<f32>> {
         let seq_length = input_ids.len();
 
         // Create input values using ort's API
@@ -140,11 +145,10 @@ impl OrtEmbeddingService {
         let attention_mask_value = Value::from_array((vec![1usize, seq_length], attention_mask))
             .map_err(|e: ort::Error| EmbeddingError::InferenceError(e.to_string()))?;
 
-        // Lock the session and run inference
-        let mut session = self
-            .session
+        // Lock the session and run inference (async-aware, won't block runtime)
+        let mut session = session
             .lock()
-            .map_err(|_| EmbeddingError::InferenceError("Failed to lock session".to_string()))?;
+            .await;
 
         // Run inference
         let outputs = session
@@ -190,7 +194,7 @@ impl OrtEmbeddingService {
         };
 
         // Normalize if configured
-        let embedding = if self.config.normalize {
+        let embedding = if normalize {
             Self::normalize_embedding(&embedding)
         } else {
             embedding
@@ -209,8 +213,8 @@ impl OrtEmbeddingService {
         }
     }
 
-    /// Encode a single text (internal, non-async)
-    fn encode_sync(&self, text: &str) -> Result<Vec<f32>> {
+    /// Encode a single text (async)
+    async fn encode(&self, text: &str) -> Result<Vec<f32>> {
         // Check cache first
         if let Some(ref cache) = self.cache {
             if let Some(cached) = cache.get(text) {
@@ -223,7 +227,13 @@ impl OrtEmbeddingService {
         let (input_ids, attention_mask) = self.tokenize(text)?;
 
         // Run inference
-        let embedding = self.run_inference(input_ids, attention_mask)?;
+        let embedding = Self::run_inference(
+            &self.session,
+            self.config.normalize,
+            input_ids,
+            attention_mask,
+        )
+        .await?;
 
         // Store in cache
         if let Some(ref cache) = self.cache {
@@ -233,9 +243,13 @@ impl OrtEmbeddingService {
         Ok(embedding)
     }
 
-    /// Encode multiple texts (internal, non-async)
-    fn encode_batch_sync(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        texts.iter().map(|text| self.encode_sync(text)).collect()
+    /// Encode multiple texts (async)
+    async fn encode_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let mut results = Vec::with_capacity(texts.len());
+        for text in texts {
+            results.push(self.encode(text).await?);
+        }
+        Ok(results)
     }
 
     /// Get cache statistics
@@ -265,7 +279,8 @@ impl nexus_core::traits::EmbeddingService for OrtEmbeddingService {
             ));
         }
 
-        self.encode_sync(text)
+        self.encode(text)
+            .await
             .map_err(|e| nexus_core::NexusError::Embedding(e.to_string()))
     }
 
@@ -282,7 +297,8 @@ impl nexus_core::traits::EmbeddingService for OrtEmbeddingService {
             }
         }
 
-        self.encode_batch_sync(texts)
+        self.encode_batch(texts)
+            .await
             .map_err(|e| nexus_core::NexusError::Embedding(e.to_string()))
     }
 
@@ -292,26 +308,6 @@ impl nexus_core::traits::EmbeddingService for OrtEmbeddingService {
 
     fn model_name(&self) -> &str {
         &self.model_name
-    }
-}
-
-impl OrtEmbeddingService {
-    /// Synchronous embedding generation (for use in blocking contexts)
-    pub fn embed_sync(&self, text: &str) -> Result<Vec<f32>> {
-        if text.trim().is_empty() {
-            return Err(EmbeddingError::InvalidInput(
-                "Cannot embed empty text".to_string(),
-            ));
-        }
-        self.encode_sync(text)
-    }
-
-    /// Synchronous batch embedding generation
-    pub fn embed_batch_sync(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        self.encode_batch_sync(texts)
     }
 }
 

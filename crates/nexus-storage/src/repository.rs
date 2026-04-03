@@ -2189,6 +2189,46 @@ impl MemoryRepository {
         Ok(rows)
     }
 
+    /// Delete completed jobs that were last updated before the given timestamp.
+    ///
+    /// Returns the number of rows removed.
+    pub async fn purge_completed_jobs(&self, older_than: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM memory_jobs
+            WHERE status = ? AND updated_at < ?
+            "#,
+        )
+        .bind(memory_job_status::COMPLETED)
+        .bind(older_than.format("%Y-%m-%d %H:%M:%S").to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(result.rows_affected())
+    }
+
+    /// Delete permanently failed jobs (attempts >= 5) that were last updated
+    /// before the given timestamp.
+    ///
+    /// Returns the number of rows removed.
+    pub async fn purge_permanently_failed_jobs(&self, older_than: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM memory_jobs
+            WHERE status = ? AND attempts >= ? AND updated_at < ?
+            "#,
+        )
+        .bind(memory_job_status::FAILED)
+        .bind(MAX_JOB_ATTEMPTS)
+        .bind(older_than.format("%Y-%m-%d %H:%M:%S").to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(result.rows_affected())
+    }
+
     /// List session digests with optional session_key filter.
     pub async fn list_digests(
         &self,
@@ -5071,5 +5111,212 @@ mod tests {
             msg.contains("corrupted perspective JSON"),
             "expected perspective corruption error, got: {msg}"
         );
+    }
+
+    // ---- Lifecycle management: purge tests ----
+
+    /// Purge should remove old completed jobs but keep recently completed ones.
+    #[tokio::test]
+    async fn test_purge_completed_jobs_removes_old_keeps_recent() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "purge-test").await;
+        let repo = MemoryRepository::new(pool);
+
+        // Enqueue and complete a job, then backdate its updated_at.
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 10,
+            perspective: None,
+            payload: &serde_json::json!({"old": true}),
+        })
+        .await
+        .unwrap();
+
+        let claimed = repo
+            .claim_jobs(ns_id, "derive_memory", "w", 60, 10)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        let old_job_id = claimed[0].row.id;
+
+        repo.complete_job(&claimed[0]).await.unwrap();
+
+        // Backdate the completed job to 30 days ago.
+        sqlx::query(
+            "UPDATE memory_jobs SET updated_at = datetime('now', '-30 days') WHERE id = ?",
+        )
+        .bind(old_job_id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+        // Enqueue and complete a second job that stays recent.
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 10,
+            perspective: None,
+            payload: &serde_json::json!({"new": true}),
+        })
+        .await
+        .unwrap();
+
+        let claimed2 = repo
+            .claim_jobs(ns_id, "derive_memory", "w", 60, 10)
+            .await
+            .unwrap();
+        assert_eq!(claimed2.len(), 1);
+        repo.complete_job(&claimed2[0]).await.unwrap();
+
+        // Purge with a cutoff of 7 days ago.
+        let cutoff = Utc::now() - chrono::Duration::days(7);
+        let deleted = repo.purge_completed_jobs(cutoff).await.unwrap();
+        assert_eq!(deleted, 1);
+
+        // Verify: old job is gone, recent job remains.
+        let remaining = repo.list_jobs(ns_id, None, None, 50, 0).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, claimed2[0].row.id);
+    }
+
+    /// Purge permanently failed jobs should only remove those with attempts >= 5.
+    #[tokio::test]
+    async fn test_purge_permanently_failed_jobs_removes_old_keeps_recent() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "purge-failed").await;
+        let repo = MemoryRepository::new(pool);
+
+        // Enqueue a job and fail it 5 times to make it permanently failed.
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 10,
+            perspective: None,
+            payload: &serde_json::json!({"fail_me": true}),
+        })
+        .await
+        .unwrap();
+
+        for _ in 0..5 {
+            let claimed = repo
+                .claim_jobs(ns_id, "derive_memory", "w", 60, 10)
+                .await
+                .unwrap();
+            assert_eq!(claimed.len(), 1);
+            repo.fail_job(&claimed[0], "persistent error")
+                .await
+                .unwrap();
+        }
+
+        // Backdate to 30 days ago.
+        sqlx::query(
+            "UPDATE memory_jobs SET updated_at = datetime('now', '-30 days') WHERE status = ?",
+        )
+        .bind(memory_job_status::FAILED)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+        // Enqueue a second job and fail it only 2 times (still re-queueable).
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 10,
+            perspective: None,
+            payload: &serde_json::json!({"retry_me": true}),
+        })
+        .await
+        .unwrap();
+
+        for _ in 0..2 {
+            let claimed = repo
+                .claim_jobs(ns_id, "derive_memory", "w", 60, 10)
+                .await
+                .unwrap();
+            assert_eq!(claimed.len(), 1);
+            repo.fail_job(&claimed[0], "transient error")
+                .await
+                .unwrap();
+        }
+
+        // Purge with a cutoff of 7 days ago.
+        let cutoff = Utc::now() - chrono::Duration::days(7);
+        let deleted = repo
+            .purge_permanently_failed_jobs(cutoff)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1);
+
+        // The permanently failed job is gone; the re-queueable job remains as pending.
+        let remaining = repo.list_jobs(ns_id, None, None, 50, 0).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].status, memory_job_status::PENDING);
+    }
+
+    /// Active leasing should still work after purging old completed/failed jobs.
+    #[tokio::test]
+    async fn test_active_leasing_works_after_purge() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "purge-lease").await;
+        let repo = MemoryRepository::new(pool);
+
+        // Create and complete an old job.
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 10,
+            perspective: None,
+            payload: &serde_json::json!({"old": true}),
+        })
+        .await
+        .unwrap();
+
+        let claimed = repo
+            .claim_jobs(ns_id, "derive_memory", "w", 60, 10)
+            .await
+            .unwrap();
+        repo.complete_job(&claimed[0]).await.unwrap();
+
+        sqlx::query(
+            "UPDATE memory_jobs SET updated_at = datetime('now', '-30 days') WHERE id = ?",
+        )
+        .bind(claimed[0].row.id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+        // Purge old completed jobs.
+        let cutoff = Utc::now() - chrono::Duration::days(7);
+        repo.purge_completed_jobs(cutoff).await.unwrap();
+
+        // Enqueue a fresh job and verify the full claim/complete/fail cycle still works.
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 20,
+            perspective: None,
+            payload: &serde_json::json!({"fresh": true}),
+        })
+        .await
+        .unwrap();
+
+        let fresh_claimed = repo
+            .claim_jobs(ns_id, "derive_memory", "worker-2", 120, 10)
+            .await
+            .unwrap();
+        assert_eq!(fresh_claimed.len(), 1);
+        assert_eq!(fresh_claimed[0].row.status, "running");
+        assert_eq!(fresh_claimed[0].payload["fresh"], true);
+
+        // Complete it.
+        repo.complete_job(&fresh_claimed[0]).await.unwrap();
+
+        // Verify no more claimable jobs.
+        let empty = repo
+            .claim_jobs(ns_id, "derive_memory", "worker-3", 60, 10)
+            .await
+            .unwrap();
+        assert!(empty.is_empty());
     }
 }
