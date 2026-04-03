@@ -1,24 +1,220 @@
-//! Database migrations
+//! Database migrations — versioned, idempotent, forward-only.
+//!
+//! Each migration records its version in the `schema_migrations` table before
+//! returning.  On startup `run_migrations()` skips any version that is already
+//! recorded, so calling it multiple times is safe.
+//!
+//! **Pre-migration upgrade path**: if the `schema_migrations` table does not
+//! exist we probe the database for tables that belong to each migration.
+//! Tables that are already present cause the corresponding migration to be
+//! recorded as applied without re-running the DDL.  This preserves existing
+//! user databases while still allowing new databases to start from migration 1.
 
 use crate::db_error;
 use sqlx::SqlitePool;
+use tracing::debug;
 
-/// Run all migrations
+// ---------------------------------------------------------------------------
+// Migration registry
+// ---------------------------------------------------------------------------
+
+/// Metadata for a single migration.
+struct MigrationMeta {
+    version: i64,
+    description: &'static str,
+}
+
+const MIGRATIONS: &[MigrationMeta] = &[
+    MigrationMeta { version: 1,  description: "agent_namespaces table" },
+    MigrationMeta { version: 2,  description: "memories table and basic indexes" },
+    MigrationMeta { version: 3,  description: "task_specifications table" },
+    MigrationMeta { version: 4,  description: "memory_relations table" },
+    MigrationMeta { version: 5,  description: "system_metrics table" },
+    MigrationMeta { version: 6,  description: "memory_jobs table and indexes" },
+    MigrationMeta { version: 7,  description: "session_digests table and indexes" },
+    MigrationMeta { version: 8,  description: "memory_evidence table and indexes" },
+    MigrationMeta { version: 9,  description: "cognitive indexes on memories" },
+    MigrationMeta { version: 10, description: "processed_files table and indexes" },
+];
+
+/// Dispatch a migration by version number.
+async fn apply_migration(pool: &SqlitePool, version: i64) -> crate::Result<()> {
+    match version {
+        1  => migration_001_agent_namespaces(pool).await,
+        2  => migration_002_memories(pool).await,
+        3  => migration_003_task_specifications(pool).await,
+        4  => migration_004_memory_relations(pool).await,
+        5  => migration_005_system_metrics(pool).await,
+        6  => migration_006_memory_jobs(pool).await,
+        7  => migration_007_session_digests(pool).await,
+        8  => migration_008_memory_evidence(pool).await,
+        9  => migration_009_cognitive_indexes(pool).await,
+        10 => migration_010_processed_files(pool).await,
+        _  => panic!("unknown migration version: {version}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+/// Run all pending migrations in order.
 pub async fn run_migrations(pool: &SqlitePool) -> crate::Result<()> {
-    create_namespaces_table(pool).await?;
-    create_memories_table(pool).await?;
-    create_task_specifications_table(pool).await?;
-    create_memory_relations_table(pool).await?;
-    create_system_metrics_table(pool).await?;
-    create_memory_jobs_table(pool).await?;
-    create_session_digests_table(pool).await?;
-    create_memory_evidence_table(pool).await?;
-    create_cognitive_indexes(pool).await?;
-    create_processed_files_table(pool).await?;
+    ensure_schema_migrations_table(pool).await?;
+    upgrade_pre_migration_databases(pool).await?;
+
+    for migration in MIGRATIONS {
+        if is_migration_applied(pool, migration.version).await? {
+            debug!(version = migration.version, "migration already applied, skipping");
+            continue;
+        }
+        debug!(version = migration.version, description = migration.description, "applying migration");
+        apply_migration(pool, migration.version).await?;
+        record_migration(pool, migration.version, migration.description).await?;
+    }
+
     Ok(())
 }
 
-async fn create_namespaces_table(pool: &SqlitePool) -> crate::Result<()> {
+// ---------------------------------------------------------------------------
+// schema_migrations bookkeeping
+// ---------------------------------------------------------------------------
+
+async fn ensure_schema_migrations_table(pool: &SqlitePool) -> crate::Result<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            description TEXT
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(db_error)?;
+    Ok(())
+}
+
+async fn is_migration_applied(pool: &SqlitePool, version: i64) -> crate::Result<bool> {
+    let row = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = ?",
+    )
+    .bind(version)
+    .fetch_one(pool)
+    .await
+    .map_err(db_error)?;
+    Ok(row > 0)
+}
+
+async fn record_migration(
+    pool: &SqlitePool,
+    version: i64,
+    description: &str,
+) -> crate::Result<()> {
+    sqlx::query(
+        "INSERT INTO schema_migrations (version, description) VALUES (?, ?)",
+    )
+    .bind(version)
+    .bind(description)
+    .execute(pool)
+    .await
+    .map_err(db_error)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Pre-migration upgrade detection
+// ---------------------------------------------------------------------------
+
+/// If the database was created by a previous version that did not use versioned
+/// migrations, detect the existing schema and record every migration whose
+/// table(s) are already present.  This is forward-only: once recorded, a
+/// migration is never un-recorded.
+async fn upgrade_pre_migration_databases(pool: &SqlitePool) -> crate::Result<()> {
+    // If the migrations table is empty we still need to check whether tables
+    // exist — the table might have been created above but have zero rows.
+    let any_applied = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM schema_migrations")
+        .fetch_one(pool)
+        .await
+        .map_err(db_error)?;
+    if any_applied > 0 {
+        // Already running in versioned mode; nothing to backfill.
+        return Ok(());
+    }
+
+    // Probe each migration's defining table(s).  We check tables in reverse
+    // order (newest first) so that if a database is partially migrated we
+    // still record the right subset.
+    let probes: &[(i64, &[&str])] = &[
+        (10, &["processed_files"]),
+        (9, &[]), // indexes only; covered by migration 2's table
+        (8, &["memory_evidence"]),
+        (7, &["session_digests"]),
+        (6, &["memory_jobs"]),
+        (5, &["system_metrics"]),
+        (4, &["memory_relations"]),
+        (3, &["task_specifications"]),
+        (2, &["memories"]),
+        (1, &["agent_namespaces"]),
+    ];
+
+    for &(version, tables) in probes {
+        if tables.is_empty() {
+            // Migration 9 adds indexes only — safe to re-run via IF NOT EXISTS.
+            continue;
+        }
+        let mut all_exist = true;
+        for t in tables {
+            if !table_exists(pool, t).await {
+                all_exist = false;
+                break;
+            }
+        }
+        if all_exist {
+            record_migration(
+                pool,
+                version,
+                MIGRATIONS
+                    .iter()
+                    .find(|m| m.version == version)
+                    .map(|m| m.description)
+                    .unwrap_or("unknown"),
+            )
+            .await?;
+        }
+    }
+
+    // Migration 9 (cognitive indexes) is purely additive; if memories table
+    // exists the indexes may or may not exist.  The CREATE INDEX IF NOT EXISTS
+    // statements in the migration itself handle idempotency, so we only
+    // backfill if the memories table is present.
+    if table_exists(pool, "memories").await {
+        if !is_migration_applied(pool, 9).await? {
+            record_migration(pool, 9, MIGRATIONS[8].description).await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Check whether a table exists in the SQLite database.
+async fn table_exists(pool: &SqlitePool, name: &str) -> bool {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
+    )
+    .bind(name)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    count > 0
+}
+
+// ---------------------------------------------------------------------------
+// Individual migrations (ordered, forward-only)
+// ---------------------------------------------------------------------------
+
+async fn migration_001_agent_namespaces(pool: &SqlitePool) -> crate::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS agent_namespaces (
@@ -37,7 +233,7 @@ async fn create_namespaces_table(pool: &SqlitePool) -> crate::Result<()> {
     Ok(())
 }
 
-async fn create_memories_table(pool: &SqlitePool) -> crate::Result<()> {
+async fn migration_002_memories(pool: &SqlitePool) -> crate::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS memories (
@@ -85,7 +281,7 @@ async fn create_memories_table(pool: &SqlitePool) -> crate::Result<()> {
     Ok(())
 }
 
-async fn create_task_specifications_table(pool: &SqlitePool) -> crate::Result<()> {
+async fn migration_003_task_specifications(pool: &SqlitePool) -> crate::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS task_specifications (
@@ -110,7 +306,7 @@ async fn create_task_specifications_table(pool: &SqlitePool) -> crate::Result<()
     Ok(())
 }
 
-async fn create_memory_relations_table(pool: &SqlitePool) -> crate::Result<()> {
+async fn migration_004_memory_relations(pool: &SqlitePool) -> crate::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS memory_relations (
@@ -133,7 +329,7 @@ async fn create_memory_relations_table(pool: &SqlitePool) -> crate::Result<()> {
     Ok(())
 }
 
-async fn create_system_metrics_table(pool: &SqlitePool) -> crate::Result<()> {
+async fn migration_005_system_metrics(pool: &SqlitePool) -> crate::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS system_metrics (
@@ -151,8 +347,7 @@ async fn create_system_metrics_table(pool: &SqlitePool) -> crate::Result<()> {
     Ok(())
 }
 
-/// Create the memory_jobs table for bounded cognitive job queue
-async fn create_memory_jobs_table(pool: &SqlitePool) -> crate::Result<()> {
+async fn migration_006_memory_jobs(pool: &SqlitePool) -> crate::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS memory_jobs (
@@ -184,8 +379,7 @@ async fn create_memory_jobs_table(pool: &SqlitePool) -> crate::Result<()> {
     Ok(())
 }
 
-/// Create the session_digests table for rolling session summaries
-async fn create_session_digests_table(pool: &SqlitePool) -> crate::Result<()> {
+async fn migration_007_session_digests(pool: &SqlitePool) -> crate::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS session_digests (
@@ -210,8 +404,7 @@ async fn create_session_digests_table(pool: &SqlitePool) -> crate::Result<()> {
     Ok(())
 }
 
-/// Create the memory_evidence table for derivation lineage
-async fn create_memory_evidence_table(pool: &SqlitePool) -> crate::Result<()> {
+async fn migration_008_memory_evidence(pool: &SqlitePool) -> crate::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS memory_evidence (
@@ -236,8 +429,7 @@ async fn create_memory_evidence_table(pool: &SqlitePool) -> crate::Result<()> {
     Ok(())
 }
 
-/// Create expression indexes over memories.metadata cognitive JSON fields
-async fn create_cognitive_indexes(pool: &SqlitePool) -> crate::Result<()> {
+async fn migration_009_cognitive_indexes(pool: &SqlitePool) -> crate::Result<()> {
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_memories_cognitive_level ON memories(json_extract(metadata, '$.cognitive.level'))"
     )
@@ -277,28 +469,7 @@ async fn create_cognitive_indexes(pool: &SqlitePool) -> crate::Result<()> {
     Ok(())
 }
 
-async fn ensure_column_exists(
-    pool: &SqlitePool,
-    table: &str,
-    column: &str,
-    definition: &str,
-) -> crate::Result<()> {
-    let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {definition}");
-    match sqlx::query(&sql).execute(pool).await {
-        Ok(_) => Ok(()),
-        Err(error) => {
-            let message = error.to_string().to_lowercase();
-            if message.contains("duplicate column name") {
-                Ok(())
-            } else {
-                Err(db_error(error))
-            }
-        }
-    }
-}
-
-/// Create the processed_files table for inbox file tracking
-pub async fn create_processed_files_table(pool: &SqlitePool) -> crate::Result<()> {
+async fn migration_010_processed_files(pool: &SqlitePool) -> crate::Result<()> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS processed_files (
@@ -326,4 +497,176 @@ pub async fn create_processed_files_table(pool: &SqlitePool) -> crate::Result<()
     .map_err(db_error)?;
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+async fn ensure_column_exists(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> crate::Result<()> {
+    let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {definition}");
+    match sqlx::query(&sql).execute(pool).await {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            let message = error.to_string().to_lowercase();
+            if message.contains("duplicate column name") {
+                Ok(())
+            } else {
+                Err(db_error(error))
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Backward-compatible public exports
+// ---------------------------------------------------------------------------
+
+/// Create the processed_files table (legacy public entry point).
+/// Calls the full migration suite so that all dependencies are in place.
+pub async fn create_processed_files_table(pool: &SqlitePool) -> crate::Result<()> {
+    run_migrations(pool).await
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn new_empty_pool() -> SqlitePool {
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap()
+    }
+
+    /// Test: fresh database — all migrations apply in order.
+    #[tokio::test]
+    async fn test_fresh_database_all_migrations_apply() {
+        let pool = new_empty_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        // All 10 migrations should be recorded.
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 10);
+
+        // Verify every expected table exists.
+        for table in &[
+            "agent_namespaces",
+            "memories",
+            "task_specifications",
+            "memory_relations",
+            "system_metrics",
+            "memory_jobs",
+            "session_digests",
+            "memory_evidence",
+            "processed_files",
+        ] {
+            let exists = table_exists(&pool, table).await;
+            assert!(exists, "table {table} should exist after migrations");
+        }
+    }
+
+    /// Test: running migrations twice is idempotent.
+    #[tokio::test]
+    async fn test_migrations_idempotent() {
+        let pool = new_empty_pool().await;
+        run_migrations(&pool).await.unwrap();
+        run_migrations(&pool).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 10);
+    }
+
+    /// Test: pre-migration database — existing tables detected and backfilled.
+    #[tokio::test]
+    async fn test_upgrade_from_pre_migration_database() {
+        let pool = new_empty_pool().await;
+
+        // Simulate the old ad-hoc schema creation (exactly what the previous
+        // run_migrations did, but WITHOUT a schema_migrations table).
+        migration_001_agent_namespaces(&pool).await.unwrap();
+        migration_002_memories(&pool).await.unwrap();
+        migration_003_task_specifications(&pool).await.unwrap();
+        migration_004_memory_relations(&pool).await.unwrap();
+        migration_005_system_metrics(&pool).await.unwrap();
+        migration_006_memory_jobs(&pool).await.unwrap();
+        migration_007_session_digests(&pool).await.unwrap();
+        migration_008_memory_evidence(&pool).await.unwrap();
+        migration_009_cognitive_indexes(&pool).await.unwrap();
+        migration_010_processed_files(&pool).await.unwrap();
+
+        // Verify schema_migrations does NOT exist yet.
+        let exists = table_exists(&pool, "schema_migrations").await;
+        assert!(!exists, "schema_migrations should not exist before upgrade");
+
+        // Now run the versioned migration system — it should detect
+        // existing tables and backfill without errors.
+        run_migrations(&pool).await.unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 10);
+    }
+
+    /// Test: partially migrated database — only pending migrations run.
+    #[tokio::test]
+    async fn test_partially_migrated_database() {
+        let pool = new_empty_pool().await;
+
+        // Simulate old ad-hoc creation of just the first 5 tables.
+        migration_001_agent_namespaces(&pool).await.unwrap();
+        migration_002_memories(&pool).await.unwrap();
+        migration_003_task_specifications(&pool).await.unwrap();
+        migration_004_memory_relations(&pool).await.unwrap();
+        migration_005_system_metrics(&pool).await.unwrap();
+
+        run_migrations(&pool).await.unwrap();
+
+        // Migrations 1-5 should be backfilled, 6-10 newly applied.
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 10);
+
+        // Verify later tables now exist too.
+        assert!(table_exists(&pool, "memory_jobs").await);
+        assert!(table_exists(&pool, "session_digests").await);
+        assert!(table_exists(&pool, "memory_evidence").await);
+        assert!(table_exists(&pool, "processed_files").await);
+    }
+
+    /// Test: brand-new database with no pre-existing tables starts from 1.
+    #[tokio::test]
+    async fn test_new_database_starts_from_scratch() {
+        let pool = new_empty_pool().await;
+        run_migrations(&pool).await.unwrap();
+
+        // Verify migration versions are 1..=10 in order.
+        let versions: Vec<i64> =
+            sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    }
 }
