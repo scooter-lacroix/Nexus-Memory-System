@@ -192,25 +192,27 @@ pub async fn update_memory(
     }
 
     if let Some(labels) = request.labels {
-        let labels_json = match serde_json::to_string(&labels) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!(error = %e, "Failed to serialize labels for memory update; labels will be omitted from SQL update");
-                String::new()
+        match serde_json::to_string(&labels) {
+            Ok(labels_json) => {
+                updates.push(format!("labels = '{}'", labels_json.replace("'", "''")));
             }
-        };
-        updates.push(format!("labels = '{}'", labels_json.replace("'", "''")));
+            Err(e) => {
+                warn!(error = %e, "Failed to serialize labels for memory update; labels omitted from SQL update");
+                // Do NOT push an empty-string assignment — that would corrupt the row.
+            }
+        }
     }
 
     if let Some(metadata) = request.metadata {
-        let metadata_json = match serde_json::to_string(&metadata) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!(error = %e, "Failed to serialize metadata for memory update; metadata will be omitted from SQL update");
-                String::new()
+        match serde_json::to_string(&metadata) {
+            Ok(metadata_json) => {
+                updates.push(format!("metadata = '{}'", metadata_json.replace("'", "''")));
             }
-        };
-        updates.push(format!("metadata = '{}'", metadata_json.replace("'", "''")));
+            Err(e) => {
+                warn!(error = %e, "Failed to serialize metadata for memory update; metadata omitted from SQL update");
+                // Do NOT push an empty-string assignment — that would corrupt the row.
+            }
+        }
     }
 
     if let Some(is_active) = request.is_active {
@@ -378,11 +380,21 @@ fn row_to_memory(
         id: row.id,
         namespace_id: row.namespace_id,
         content: row.content,
-        category: MemoryCategory::parse(&row.category).unwrap_or(MemoryCategory::General),
-        memory_lane_type: row
-            .memory_lane_type
-            .as_deref()
-            .and_then(MemoryLaneType::parse),
+        category: MemoryCategory::parse(&row.category).ok_or_else(|| {
+            WebError::Storage(format!(
+                "Unknown memory category '{}' persisted in database; row may be corrupted",
+                row.category
+            ))
+        })?,
+        memory_lane_type: match &row.memory_lane_type {
+            Some(s) => Some(MemoryLaneType::parse(s).ok_or_else(|| {
+                WebError::Storage(format!(
+                    "Unknown memory_lane_type '{}' persisted in database; row may be corrupted",
+                    s
+                ))
+            })?),
+            None => None,
+        },
         labels,
         metadata,
         similarity_score: row.similarity_score,

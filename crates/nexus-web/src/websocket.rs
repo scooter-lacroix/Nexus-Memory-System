@@ -2,7 +2,8 @@
 
 use axum::{
     extract::{State, WebSocketUpgrade},
-    response::Response,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
 };
 use futures::{sink::SinkExt, stream::StreamExt};
 use std::sync::Arc;
@@ -11,11 +12,35 @@ use tracing::{error, info, warn};
 
 use crate::{models::WebSocketMessage, state::AppState};
 
+/// Validate that the request Origin header matches a local-only origin.
+fn is_local_origin(headers: &HeaderMap) -> bool {
+    headers
+        .get("origin")
+        .and_then(|v| v.to_str().ok())
+        .map(|origin| {
+            origin.starts_with("http://127.0.0.1:")
+                || origin.starts_with("http://localhost:")
+                || origin.starts_with("http://127.0.0.1")
+                || origin.starts_with("http://localhost")
+        })
+        .unwrap_or(true) // Allow requests without an Origin (e.g., non-browser clients)
+}
+
 /// WebSocket connection handler
 pub async fn websocket_handler(
     ws: WebSocketUpgrade,
+    headers: HeaderMap,
     State(state): State<Arc<RwLock<AppState>>>,
 ) -> Response {
+    // Reject cross-origin WebSocket upgrades
+    if !is_local_origin(&headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            "WebSocket connections are only allowed from local origins",
+        )
+            .into_response();
+    }
+
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 

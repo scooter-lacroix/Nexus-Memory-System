@@ -226,18 +226,20 @@ impl McpServer {
                 }
                 Err(e) => {
                     tracing::error!("Failed to parse request: {}", e);
-                    JsonRpcMessage::Error(JsonRpcErrorResponse {
+                    Some(JsonRpcMessage::Error(JsonRpcErrorResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         error: JsonRpcError::parse_error(e.to_string()),
                         id: None,
-                    })
+                    }))
                 }
             };
 
-            // Serialize and write response
-            let response_json = serde_json::to_string(&response)?;
-            writeln!(stdout_lock, "{}", response_json)?;
-            stdout_lock.flush()?;
+            // Only write when there is a response (notifications produce no output)
+            if let Some(response) = response {
+                let response_json = serde_json::to_string(&response)?;
+                writeln!(stdout_lock, "{}", response_json)?;
+                stdout_lock.flush()?;
+            }
         }
 
         Ok(())
@@ -257,13 +259,17 @@ impl McpServer {
         ))
     }
 
-    /// Handle an incoming JSON-RPC request
+    /// Handle an incoming JSON-RPC request.
+    ///
+    /// Returns `None` when the incoming message is a notification (no `id`),
+    /// because the JSON-RPC 2.0 spec mandates that notifications MUST NOT
+    /// elicit a response.
     async fn handle_request(
         &self,
         request: JsonRpcRequest,
         tool_handler: &ToolHandler,
         resource_handler: &ResourceHandler,
-    ) -> JsonRpcMessage {
+    ) -> Option<JsonRpcMessage> {
         let total_requests = self.request_counter.load(Ordering::Relaxed);
         tracing::debug!(
             method = %request.method,
@@ -271,13 +277,10 @@ impl McpServer {
             "Handling MCP request"
         );
 
-        // Handle notifications (no response needed)
+        // Handle notifications (no response needed per JSON-RPC 2.0 spec)
         if request.is_notification() {
             tracing::debug!("Received notification: {}", request.method);
-            return JsonRpcMessage::Response(JsonRpcResponse::new(
-                RequestId::Number(0),
-                serde_json::json!(null),
-            ));
+            return None;
         }
 
         let id = request.id.clone().unwrap_or_default();
@@ -311,14 +314,14 @@ impl McpServer {
             }
         };
 
-        match result {
+        Some(match result {
             Ok(value) => JsonRpcMessage::Response(JsonRpcResponse::new(id, value)),
             Err(error) => JsonRpcMessage::Error(JsonRpcErrorResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 error,
                 id: Some(id),
             }),
-        }
+        })
     }
 
     /// Handle initialize request

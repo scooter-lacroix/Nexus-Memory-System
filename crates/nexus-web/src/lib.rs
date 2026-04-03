@@ -35,7 +35,7 @@ use axum::{
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -72,11 +72,31 @@ impl WebDashboard {
 
     /// Build the Axum router with all routes
     fn build_router(state: Arc<RwLock<AppState>>) -> Router {
-        // CORS layer
+        // CORS Layer — restrict to same-origin / local-only origins.
+        // The dashboard is served from the same host, so legitimate requests
+        // will have an Origin matching http://127.0.0.1:* or http://localhost:*.
+        // Cross-origin browser requests from other hosts are rejected.
         let cors = CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any);
+            .allow_origin(AllowOrigin::predicate(
+                |origin: &axum::http::HeaderValue, _request: &axum::http::request::Parts| {
+                    let origin_str = origin.to_str().unwrap_or("");
+                    origin_str.starts_with("http://127.0.0.1:")
+                        || origin_str.starts_with("http://localhost:")
+                        || origin_str.starts_with("http://127.0.0.1")
+                        || origin_str.starts_with("http://localhost")
+                },
+            ))
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::PUT,
+                axum::http::Method::DELETE,
+            ])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::ACCEPT,
+                axum::http::header::ORIGIN,
+            ]);
 
         // API routes
         let api_routes = Router::new()

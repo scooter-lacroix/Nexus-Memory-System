@@ -137,11 +137,6 @@ const PERSPECTIVE_IDENTITY_FILTER: &str = "json_extract(METADATA, '$.cognitive.o
 /// Cognitive-level extraction expression (no comparison — yields the raw string).
 const COGNITIVE_LEVEL_EXPR: &str = "json_extract(METADATA, '$.cognitive.level')";
 
-/// WHERE-clause fragment that filters by a specific cognitive level.
-fn cognitive_level_eq(level: CognitiveLevel) -> String {
-    format!("{} = '{}'", COGNITIVE_LEVEL_EXPR, level.as_str())
-}
-
 /// Assembles the full perspective WHERE clause (observer, subject, and optional
 /// session key) for use in SQL templates.
 ///
@@ -162,7 +157,7 @@ fn perspective_where_clause(perspective: &PerspectiveKey) -> String {
 
 /// Bind values for a perspective WHERE clause.
 /// Order: observer, subject, [session_key, session_key]
-fn bind_perspective<'a>(perspective: &'a PerspectiveKey) -> Vec<&'a str> {
+fn bind_perspective(perspective: &PerspectiveKey) -> Vec<&str> {
     let mut vals = vec![perspective.observer.as_str(), perspective.subject.as_str()];
     if let Some(ref sk) = perspective.session_key {
         vals.push(sk.as_str());
@@ -2023,11 +2018,11 @@ impl MemoryRepository {
             id: row.id,
             namespace_id: row.namespace_id,
             content: row.content,
-            category: parse_category(&row.category),
-            memory_lane_type: row
-                .memory_lane_type
-                .as_deref()
-                .and_then(parse_memory_lane_type),
+            category: parse_category(&row.category)?,
+            memory_lane_type: match &row.memory_lane_type {
+                Some(s) => parse_memory_lane_type(s)?,
+                None => None,
+            },
             labels,
             metadata,
             similarity_score: row.similarity_score,
@@ -2825,21 +2820,22 @@ impl<'a> MemoryRelationRepository<'a> {
     }
 }
 
-fn parse_category(s: &str) -> Category {
+fn parse_category(s: &str) -> Result<Category> {
     match MemoryCategory::parse(s) {
-        Some(cat) => cat,
-        None => {
-            warn!(
-                category = s,
-                "Unknown memory category in database row; defaulting to General"
-            );
-            MemoryCategory::General
-        }
+        Some(cat) => Ok(cat),
+        None => Err(nexus_core::NexusError::Storage(format!(
+            "Unknown memory category '{s}' persisted in database; row may be corrupted"
+        ))),
     }
 }
 
-fn parse_memory_lane_type(s: &str) -> Option<MemoryLaneType> {
-    MemoryLaneType::parse(s)
+fn parse_memory_lane_type(s: &str) -> Result<Option<MemoryLaneType>> {
+    match MemoryLaneType::parse(s) {
+        Some(t) => Ok(Some(t)),
+        None => Err(nexus_core::NexusError::Storage(format!(
+            "Unknown memory_lane_type '{s}' persisted in database; row may be corrupted"
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -2871,12 +2867,12 @@ mod tests {
 
     #[test]
     fn test_parse_category() {
-        assert!(matches!(parse_category("facts"), Category::Facts));
+        assert!(matches!(parse_category("facts"), Ok(Category::Facts)));
         assert!(matches!(
             parse_category("preferences"),
-            Category::Preferences
+            Ok(Category::Preferences)
         ));
-        assert!(matches!(parse_category("unknown"), Category::General));
+        assert!(parse_category("unknown").is_err());
     }
 
     #[test]
@@ -2884,37 +2880,39 @@ mod tests {
         let correction = parse_memory_lane_type("correction");
         assert!(matches!(
             correction,
-            Some(MemoryLaneType::Priority(MemoryLanePriorityType::Correction))
+            Ok(Some(MemoryLaneType::Priority(
+                MemoryLanePriorityType::Correction
+            )))
         ));
 
         let pattern_seed = parse_memory_lane_type("pattern_seed");
         assert!(matches!(
             pattern_seed,
-            Some(MemoryLaneType::Priority(
+            Ok(Some(MemoryLaneType::Priority(
                 MemoryLanePriorityType::PatternSeed
-            ))
+            )))
         ));
 
-        assert!(parse_memory_lane_type("unknown").is_none());
+        assert!(parse_memory_lane_type("unknown").is_err());
     }
 
     #[test]
     fn test_parse_category_all_variants() {
-        assert!(matches!(parse_category("general"), Category::General));
-        assert!(matches!(parse_category("session"), Category::Session));
-        assert!(matches!(parse_category("context"), Category::Context));
+        assert!(matches!(parse_category("general"), Ok(Category::General)));
+        assert!(matches!(parse_category("session"), Ok(Category::Session)));
+        assert!(matches!(parse_category("context"), Ok(Category::Context)));
         assert!(matches!(
             parse_category("specifications"),
-            Category::Specifications
+            Ok(Category::Specifications)
         ));
-        assert!(matches!(parse_category("facts"), Category::Facts));
+        assert!(matches!(parse_category("facts"), Ok(Category::Facts)));
         assert!(matches!(
             parse_category("preferences"),
-            Category::Preferences
+            Ok(Category::Preferences)
         ));
-        // Unknown falls back to General
-        assert!(matches!(parse_category("bogus"), Category::General));
-        assert!(matches!(parse_category(""), Category::General));
+        // Unknown values are rejected (fail-closed)
+        assert!(parse_category("bogus").is_err());
+        assert!(parse_category("").is_err());
     }
 
     #[test]
