@@ -1293,7 +1293,12 @@ async fn run_migration(
     // Run the migration using sqlite3 commands
     // Step 1: Ensure target has the right schema
     let target_url = format!("sqlite:{}", target_path.display());
-    let pool = sqlx::SqlitePool::connect(&target_url)
+    let options = target_url
+        .parse::<sqlx::sqlite::SqliteConnectOptions>()?
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .busy_timeout(std::time::Duration::from_secs(5));
+    let pool = sqlx::SqlitePool::connect_with(options)
         .await
         .context("Failed to connect to target database")?;
 
