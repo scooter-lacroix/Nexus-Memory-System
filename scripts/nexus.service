@@ -9,7 +9,7 @@ User=nexus
 Group=nexus
 WorkingDirectory=/opt/nexus
 Environment="PATH=/opt/nexus/venv/bin"
-ExecStart=/opt/nexus/venv/bin/nexus serve --transport http
+ExecStart=/opt/nexus/venv/bin/nexus serve --transport web
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=10

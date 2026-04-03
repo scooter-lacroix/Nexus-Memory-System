@@ -21,7 +21,7 @@ check:
 	cargo test --workspace
 
 run-http:
-	cargo run -p nexus-cli -- serve --transport http --port 8768
+	cargo run -p nexus-cli -- serve --transport web --port 8768
 
 run-stdio:
 	cargo run -p nexus-cli -- serve --transport stdio

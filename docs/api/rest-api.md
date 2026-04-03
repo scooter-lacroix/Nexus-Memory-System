@@ -34,7 +34,7 @@ The web/API surface is provided by the `nexus-web` crate and mounted under `/api
 ## Starting the Server
 
 ```bash
-nexus serve --transport http --port 8768
+nexus serve --transport web --port 8768
 ```
 
 ## Example Requests

@@ -35,7 +35,7 @@ enum Commands {
 
     /// Start the server
     Serve {
-        /// Transport type (stdio, http, web)
+        /// Transport type (stdio, web). Note: "http" is a deprecated alias for "web" that serves the dashboard, not MCP.
         #[arg(short = 't', long, default_value = "stdio")]
         transport: String,
 

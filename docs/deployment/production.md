@@ -8,7 +8,7 @@ For production-style deployments, treat Nexus as a Rust service with a persisten
 - install or deploy the exact release binary you built
 - set a stable `NEXUS_DATABASE_PATH`
 - run `nexus init` during provisioning
-- expose `nexus serve --transport http`
+- expose `nexus serve --transport web`
 - monitor process health and database disk usage
 
 ## Example Startup
@@ -16,5 +16,5 @@ For production-style deployments, treat Nexus as a Rust service with a persisten
 ```bash
 export NEXUS_DATABASE_PATH=/var/lib/nexus/nexus.db
 nexus init
-nexus serve --transport http --port 8768
+nexus serve --transport web --port 8768
 ```

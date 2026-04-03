@@ -89,7 +89,7 @@ nexus stats
 ### Serve the API and dashboard
 
 ```bash
-nexus serve --transport http --port 8768
+nexus serve --transport web --port 8768
 nexus serve --transport web --port 8768 --agent
 nexus serve --transport stdio
 ```

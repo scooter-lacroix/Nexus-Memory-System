@@ -460,7 +460,7 @@ pub struct ServerConfig {
     /// Web dashboard port
     pub web_port: u16,
 
-    /// Transport type (stdio, http, web)
+    /// Transport type (stdio, web)
     pub transport: String,
 }
 
@@ -549,6 +549,7 @@ impl Default for SyncConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_default_config() {
@@ -586,6 +587,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cognition_config_from_env() {
         std::env::set_var("NEXUS_COGNITION_DERIVE_ENABLED", "false");
         std::env::set_var("NEXUS_COGNITION_MAX_JOB_BATCH", "16");
@@ -605,6 +607,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_embedding_config_from_env() {
         std::env::set_var("NEXUS_EMBEDDINGS_ENABLED", "true");
         std::env::set_var("NEXUS_EMBEDDING_BACKEND", "openai-compatible");

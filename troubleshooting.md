@@ -20,6 +20,6 @@
 
 ## HTTP server does not respond
 
-- start it with `nexus serve --transport http --port 8768`
+- start it with `nexus serve --transport web --port 8768`
 - check for port conflicts
 - verify the process can read the configured database path

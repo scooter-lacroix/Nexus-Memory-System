@@ -721,16 +721,23 @@ function appendArg(args, flag, value) {
   const result = spawnSync(
     "NEXUS_BIN_PATH",
     args,
-    { input: rawInput, encoding: "utf8", env: process.env },
+    { input: rawInput, encoding: "utf8", env: process.env, timeout: 25000, maxBuffer: 50 * 1024 * 1024 },
   );
   if (result.status !== 0) {
+    const errorMsg = result.stderr || result.stdout || `exit ${result.status}`;
     logFailure(
-      `${agent}/${eventName} failed: ${result.stderr || result.stdout || `exit ${result.status}`}`,
+      `${agent}/${eventName} failed: ${errorMsg}`,
     );
+    console.error(`[nexus-hook] ${agent}/${eventName}: ${errorMsg}`);
+  } else if (result.signal === "SIGTERM") {
+    logFailure(`${agent}/${eventName} timed out after 25s`);
+    console.error(`[nexus-hook] ${agent}/${eventName}: timed out`);
   }
+  // Always exit 0 to prevent hook failures from blocking the agent
   process.exit(0);
 })().catch((error) => {
   logFailure(`${agent}/${eventName} crashed: ${error.stack || error.message}`);
+  console.error(`[nexus-hook] ${agent}/${eventName} crashed: ${error.stack || error.message}`);
   process.exit(0);
 });
 SHIM_EOF
@@ -742,6 +749,33 @@ SHIM_EOF
     mv "${temp_shim}" "${shim_path}"
     chmod +x "${shim_path}"
     ok "Installed hook shim at ${shim_path}"
+}
+
+# ── Session start hook script ─────────────────────────────────────────
+install_session_start_hook() {
+    step "Installing session start hook"
+    local hooks_dir="${CONFIG_DIR}/hooks"
+    mkdir -p "${hooks_dir}"
+
+    local hook_path="${hooks_dir}/session-start-delayed.sh"
+
+    cat > "${hook_path}" <<'HOOK_EOF'
+#!/bin/bash
+# SessionStart hook - initializes nexus runtime for the session
+# Executes immediately to prevent Claude Code timeout
+
+# Execute nexus session start - always succeeds
+/home/scooter/.cargo/bin/nexus session start \
+  --agent claude-code \
+  --mode session \
+  "$@" >/dev/null 2>&1 || true
+
+# Always exit 0 to prevent hook failures
+exit 0
+HOOK_EOF
+
+    chmod +x "${hook_path}"
+    ok "Installed session start hook at ${hook_path}"
 }
 
 # ── Claude Code hooks ─────────────────────────────────────────────────
@@ -776,9 +810,15 @@ if 'hooks' not in s:
 legacy_markers = [
     'NEXUS_SERVER_URL',
     'nexus serve',
-    'claude-code PostToolUse',
-    'session start --agent claude-code',
-    'event-ingest.js claude-code',
+]
+
+# Specific legacy commands to remove (exact or partial match)
+legacy_commands = [
+    "'nexus' session start",
+    '"nexus" session start',
+    'nexus session start --agent',
+    'event-ingest-delayed.js',
+    'event-ingest.js claude-code SessionStart',
 ]
 
 def normalize_entry(entry):
@@ -837,16 +877,19 @@ for hook_name, entries in list(s['hooks'].items()):
         if normalized is None:
             continue
         commands = entry_commands(normalized)
-        if any(
+        is_legacy = any(
             any(marker in command for marker in legacy_markers)
             for command in commands
-        ):
+        ) or any(
+            any(legacy_cmd in command for legacy_cmd in legacy_commands)
+            for command in commands
+        )
+        if is_legacy:
             continue
         cleaned.append(normalized)
     s['hooks'][hook_name] = cleaned
 
 required_hooks = {
-    'SessionStart': ('SessionStart', 10000),
     'PostToolUse': ('PostToolUse', 30000),
     'PreCompact': ('PreCompact', 5000),
     'Stop': ('Stop', 30000),
@@ -870,12 +913,12 @@ for hook_name, (event_name, timeout) in required_hooks.items():
 with open(settings_path, 'w') as f:
     json.dump(s, f, indent=2)
     f.write('\n')
-" 2>/dev/null
+"
 
     if [[ $? -eq 0 ]]; then
         ok "Configured Claude Code lifecycle hooks"
     else
-        warn "Failed to configure Claude Code hooks"
+        warn "Failed to configure Claude Code lifecycle hooks"
     fi
 }
 
@@ -890,6 +933,7 @@ main() {
     install_binaries
     install_tool_wrappers
     install_hook_shim
+    install_session_start_hook
     configure_profiles
     initialize_database
     configure_claude_code

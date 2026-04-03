@@ -281,6 +281,7 @@ pub async fn execute(command: HooksCommands) -> Result<()> {
 mod tests {
     use super::*;
     use nexus_hooks::SupportTier;
+    use serial_test::serial;
     use std::sync::{Mutex, OnceLock};
 
     fn home_lock() -> &'static Mutex<()> {
@@ -369,6 +370,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_status_inspection_does_not_install_pi_family_skills() {
         let _guard = home_lock().lock().unwrap();
         let original_home = std::env::var_os("HOME");
