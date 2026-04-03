@@ -1,7 +1,18 @@
-//! Nexus Vectors - Vector database with graph tree structure
+//! Nexus Vectors - Semantic search over storage-backed embeddings
 //!
-//! This crate provides vector storage and semantic search capabilities
-//! with a graph tree structure for hierarchical memory organization.
+//! This crate provides semantic search capabilities for vector embeddings,
+//! used by the cognition engine (`nexus-agent`) to retrieve relevant memories.
+//!
+//! ## Runtime Retrieval Path
+//! The live cognition path uses **`SemanticSearch`** over `VectorEntry` slices
+//! fetched from `nexus-storage`. `SemanticSearch` performs cosine similarity
+//! ranking with optional graph-tree-based score boosting.
+//!
+//! ## Internal/Test Abstractions
+//! `VectorDatabase` is an in-memory vector store with its own HashMap-based
+//! storage. It is **not** used by the shipped retrieval path and exists for
+//! testing and development. It is deprecated and should not be used for
+//! runtime retrieval.
 //!
 //! ## Features
 //! - **384-dimensional embeddings**: Compatible with all-MiniLM-L6-v2
@@ -13,22 +24,22 @@
 //! - Search latency: <10ms for 1k vectors
 //! - Memory efficiency: In-memory storage with indexing
 //!
-//! ## Usage
+//! ## Usage (Runtime Path)
 //! ```ignore
-//! use nexus_memory_vectors::{VectorDatabase, VectorEntry, EMBEDDING_DIMENSION};
+//! use nexus_memory_vectors::{SemanticSearch, SearchOptions, VectorEntry};
 //!
-//! let mut db = VectorDatabase::new();
-//! let entry = VectorEntry::new(1, vec![0.1; EMBEDDING_DIMENSION], "general".to_string(), 1);
-//! db.insert(entry).unwrap();
-//!
-//! let query = vec![0.1; EMBEDDING_DIMENSION];
-//! let (results, latency) = db.search(&query, 1, 10, 0.5).unwrap();
+//! // Vectors come from storage, not an in-memory DB
+//! let vectors: Vec<VectorEntry> = /* fetched from nexus-storage */;
+//! let search = SemanticSearch::new();
+//! let options = SearchOptions::with_limit(10).with_threshold(0.5);
+//! let (results, latency) = search.search(&query_embedding, &vectors, &options).unwrap();
 //! ```
 
 pub mod database;
 pub mod graph;
 pub mod search;
 
+#[allow(deprecated)]
 pub use database::{
     batch_cosine_similarity, cosine_similarity, dot_product, euclidean_distance, normalize_vector,
     top_k_similar, VectorDatabase, VectorDatabaseStats, VectorSearchResult, DEFAULT_SEARCH_LIMIT,

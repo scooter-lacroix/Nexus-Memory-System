@@ -7,6 +7,13 @@
 //! - Search latency: <10ms for 1k vectors
 //! - Embedding dimension: 384 (all-MiniLM-L6-v2)
 //! - Cosine similarity for semantic search
+//!
+//! ## Status
+//! **This module is deprecated.** The live cognition path uses `SemanticSearch`
+//! (in `crate::search`) over storage-backed `VectorEntry` slices. `VectorDatabase`
+//! is an in-memory test/development abstraction not used by the shipped retrieval path.
+
+#![allow(deprecated)]
 
 use crate::graph::GraphTree;
 use crate::{SearchLatency, VectorEntry, EMBEDDING_DIMENSION};
@@ -21,6 +28,15 @@ pub const DEFAULT_SEARCH_LIMIT: usize = 10;
 pub const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.0;
 
 /// Vector database for storing and searching embeddings
+///
+/// **Deprecated**: `VectorDatabase` is an in-memory test/development abstraction.
+/// The live retrieval path uses `SemanticSearch` over storage-backed `VectorEntry`
+/// slices (see `crate::search::SemanticSearch`). `SemanticSearch` is the actual
+/// runtime retrieval path used by `RepresentationService`.
+#[deprecated(
+    since = "0.1.0",
+    note = "Use SemanticSearch over storage-backed VectorEntry slices for runtime retrieval. VectorDatabase is an internal/test abstraction."
+)]
 #[derive(Debug, Default)]
 pub struct VectorDatabase {
     /// In-memory vector storage
@@ -40,6 +56,13 @@ pub struct VectorDatabase {
 }
 
 /// Result of a vector search
+///
+/// **Deprecated**: This type is only used by the deprecated `VectorDatabase`.
+/// Runtime retrieval uses `SearchResult` from `crate::search`.
+#[deprecated(
+    since = "0.1.0",
+    note = "Use search::SearchResult instead. This type belongs to the deprecated VectorDatabase."
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorSearchResult {
     /// Memory ID
@@ -481,6 +504,12 @@ impl VectorDatabase {
 }
 
 /// Statistics about the vector database
+///
+/// **Deprecated**: This type belongs to the deprecated `VectorDatabase`.
+#[deprecated(
+    since = "0.1.0",
+    note = "Belongs to the deprecated VectorDatabase."
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorDatabaseStats {
     /// Total number of vectors
@@ -578,6 +607,7 @@ pub fn top_k_similar(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::VectorEntry;
