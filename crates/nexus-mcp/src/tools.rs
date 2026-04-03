@@ -1182,33 +1182,10 @@ impl ToolHandler {
                 }
             };
             match mem_repo
-                .get_by_cognitive_level(namespace.id, level, limit)
+                .get_by_cognitive_level_with_perspective(namespace.id, level, &perspective, limit)
                 .await
             {
-                Ok(mems) => mems
-                    .into_iter()
-                    .filter(|m| {
-                        let meta = &m.metadata;
-                        let obs = meta
-                            .get("cognitive")
-                            .and_then(|c| c.get("observer"))
-                            .and_then(|v| v.as_str());
-                        let sub = meta
-                            .get("cognitive")
-                            .and_then(|c| c.get("subject"))
-                            .and_then(|v| v.as_str());
-                        let sess = meta
-                            .get("cognitive")
-                            .and_then(|c| c.get("session_key"))
-                            .and_then(|v| v.as_str());
-                        obs == Some(observer)
-                            && sub == Some(subject)
-                            && match session_key {
-                                Some(expected) => sess == Some(expected),
-                                None => true,
-                            }
-                    })
-                    .collect::<Vec<_>>(),
+                Ok(mems) => mems,
                 Err(e) => {
                     return CallToolResult::error(format!(
                         "Failed to search by cognitive level: {}",

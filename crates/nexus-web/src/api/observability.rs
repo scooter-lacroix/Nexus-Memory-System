@@ -7,6 +7,7 @@ use axum::{
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::warn;
 
 use crate::error::{Result, WebError};
 use crate::models::{
@@ -443,6 +444,7 @@ pub async fn dashboard(
                 0,
             )
             .await
+            .inspect_err(|e| warn!(error = %e, "Failed to list reflection jobs for dashboard"))
             .unwrap_or_default();
         let digest_jobs = state
             .memory_repo
@@ -454,6 +456,7 @@ pub async fn dashboard(
                 0,
             )
             .await
+            .inspect_err(|e| warn!(error = %e, "Failed to list digest jobs for dashboard"))
             .unwrap_or_default();
         let most_recent = reflect_jobs
             .iter()
@@ -474,6 +477,7 @@ pub async fn dashboard(
             .memory_repo
             .list_digests(namespace.id, None, 1, 0)
             .await
+            .inspect_err(|e| warn!(error = %e, "Failed to list digests for dashboard"))
             .unwrap_or_default();
         match recent.into_iter().next() {
             Some(d) => {

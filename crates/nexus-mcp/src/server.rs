@@ -11,6 +11,7 @@ use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::warn;
 
 /// Server state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -341,7 +342,7 @@ impl McpServer {
 
         // Return server capabilities
         let result = InitializeResult::default();
-        Ok(serde_json::to_value(result).unwrap_or_default())
+        Ok(serialize_result("initialize", &result))
     }
 
     /// Handle tools/list request
@@ -351,7 +352,7 @@ impl McpServer {
             tools,
             next_cursor: None,
         };
-        Ok(serde_json::to_value(result).unwrap_or_default())
+        Ok(serialize_result("tools/list", &result))
     }
 
     /// Handle tools/call request
@@ -368,7 +369,7 @@ impl McpServer {
 
         let result = tool_handler.handle(&params.name, &params.arguments).await;
 
-        Ok(serde_json::to_value(result).unwrap_or_default())
+        Ok(serialize_result(&params.name, &result))
     }
 
     /// Handle resources/list request
@@ -377,7 +378,7 @@ impl McpServer {
         handler: &ResourceHandler,
     ) -> Result<serde_json::Value, JsonRpcError> {
         let result = handler.list_resources();
-        Ok(serde_json::to_value(result).unwrap_or_default())
+        Ok(serialize_result("resources/list", &result))
     }
 
     /// Handle resources/read request
@@ -393,7 +394,7 @@ impl McpServer {
         tracing::info!("Reading resource: {}", params.uri);
 
         let result = handler.read_resource(&params.uri).await;
-        Ok(serde_json::to_value(result).unwrap_or_default())
+        Ok(serialize_result("resources/read", &result))
     }
 
     /// Handle prompts/list request
@@ -438,7 +439,7 @@ impl McpServer {
             next_cursor: None,
         };
 
-        Ok(serde_json::to_value(result).unwrap_or_default())
+        Ok(serialize_result("prompts/list", &result))
     }
 
     /// Handle prompts/get request
@@ -501,7 +502,22 @@ impl McpServer {
             }
         };
 
-        Ok(serde_json::to_value(result).unwrap_or_default())
+        Ok(serialize_result("prompts/get", &result))
+    }
+}
+
+/// Serialize a response value to JSON, logging a warning on failure.
+///
+/// Returns an empty object on serialization error so the MCP client
+/// receives a valid JSON-RPC response rather than a malformed one,
+/// but the warning makes the failure visible in logs.
+fn serialize_result<T: serde::Serialize>(method: &str, value: &T) -> serde_json::Value {
+    match serde_json::to_value(value) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, method, "Failed to serialize MCP response; returning empty object");
+            serde_json::Value::Object(serde_json::Map::new())
+        }
     }
 }
 

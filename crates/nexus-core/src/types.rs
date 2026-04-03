@@ -371,11 +371,23 @@ impl CognitiveMetadata {
         metadata
             .get("cognitive")
             .cloned()
-            .and_then(|value| serde_json::from_value(value).ok())
+            .and_then(|value| match serde_json::from_value(value) {
+                Ok(parsed) => Some(parsed),
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to deserialize CognitiveMetadata from memory metadata; cognitive state will be treated as missing");
+                    None
+                }
+            })
     }
 
     pub fn to_value(&self) -> serde_json::Value {
-        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+        match serde_json::to_value(self) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to serialize CognitiveMetadata to JSON; cognitive metadata will be stored as null");
+                serde_json::Value::Null
+            }
+        }
     }
 
     pub fn merge_into(&self, metadata: &serde_json::Value) -> serde_json::Value {

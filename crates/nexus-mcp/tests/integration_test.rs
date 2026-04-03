@@ -7,7 +7,7 @@ use serde_json::json;
 
 /// Helper to create a basic initialize request
 fn create_init_request() -> JsonRpcRequest {
-    JsonRpcRequest::new("initialize")
+    JsonRpcRequest::request("initialize", RequestId::from(1))
         .with_params(json!({
             "protocol_version": "2024-11-05",
             "capabilities": {},
@@ -16,7 +16,6 @@ fn create_init_request() -> JsonRpcRequest {
                 "version": "1.0.0"
             }
         }))
-        .with_id(RequestId::from(1))
 }
 
 #[test]
@@ -84,10 +83,10 @@ fn test_request_id_variants() {
 
 #[test]
 fn test_notification_detection() {
-    let request_with_id = JsonRpcRequest::new("test").with_id(RequestId::from(1));
+    let request_with_id = JsonRpcRequest::request("test", RequestId::from(1));
     assert!(!request_with_id.is_notification());
 
-    let notification = JsonRpcRequest::new("test");
+    let notification = JsonRpcRequest::notification("test");
     assert!(notification.is_notification());
 }
 
@@ -153,15 +152,14 @@ mod protocol_conformance {
 
     #[test]
     fn test_message_roundtrip() {
-        let request = JsonRpcRequest::new("tools/call")
+        let request = JsonRpcRequest::request("tools/call", RequestId::from(123))
             .with_params(json!({
                 "name": "store_memory",
                 "arguments": {
                     "content": "test content",
                     "agent_type": "test"
                 }
-            }))
-            .with_id(RequestId::from(123));
+            }));
 
         let json = serde_json::to_string(&request).unwrap();
         let parsed: JsonRpcRequest = serde_json::from_str(&json).unwrap();
