@@ -527,9 +527,13 @@ pub async fn dashboard(
     let total = raw + explicit + derived + summary_short + summary_long + contradiction;
 
     // --- Adaptive dream state ---
-    let cognition_config = nexus_core::Config::from_env()
-        .map(|c| c.cognition)
-        .unwrap_or_default();
+    let cognition_config = match nexus_core::Config::from_env() {
+        Ok(c) => c.cognition,
+        Err(e) => {
+            warn!(error = %e, "Failed to load cognition config for dashboard; using defaults");
+            nexus_core::config::CognitionConfig::default()
+        }
+    };
     let contradiction_density = if total > 0 {
         contradiction as f64 / total as f64
     } else {

@@ -1291,16 +1291,31 @@ async fn run_migration(
     );
 
     // Run the migration using sqlite3 commands
-    // Step 1: Ensure target has the right schema
+    // Step 1: Ensure target has the right schema and production-grade pragmas
     let target_url = format!("sqlite:{}", target_path.display());
     let options = target_url
         .parse::<sqlx::sqlite::SqliteConnectOptions>()?
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-        .busy_timeout(std::time::Duration::from_secs(5));
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
     let pool = sqlx::SqlitePool::connect_with(options)
         .await
         .context("Failed to connect to target database")?;
+
+    // Apply the same runtime pragma bundle as StorageManager::from_url()
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .context("Failed to enable foreign keys on migration target")?;
+    sqlx::query("PRAGMA cache_size = -2000")
+        .execute(&pool)
+        .await
+        .context("Failed to set cache size on migration target")?;
+    sqlx::query("PRAGMA temp_store = MEMORY")
+        .execute(&pool)
+        .await
+        .context("Failed to set temp store on migration target")?;
 
     // Run migrations on target
     nexus_storage::migrations::run_migrations(&pool).await?;

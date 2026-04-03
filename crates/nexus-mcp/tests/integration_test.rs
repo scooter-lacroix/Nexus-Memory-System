@@ -166,4 +166,51 @@ mod protocol_conformance {
         assert_eq!(parsed.method, "tools/call");
         assert_eq!(parsed.id, Some(RequestId::from(123)));
     }
+
+    /// Protocol-level test: notifications MUST produce zero response bytes.
+    /// This test verifies that a notification request:
+    /// 1. Has no id field
+    /// 2. Serializes without an id
+    /// 3. Roundtrips while preserving the no-id property
+    ///
+    /// The server's handle_request() returns None for notifications,
+    /// and start_stdio skips writes when response is None.
+    #[test]
+    fn test_notification_produces_no_response() {
+        // Create a notification (no id, no response expected)
+        let notification =
+            JsonRpcRequest::notification("notifications/initialized").with_params(json!({
+                "client_info": {"name": "test", "version": "1.0"}
+            }));
+
+        // Must be marked as a notification
+        assert!(
+            notification.is_notification(),
+            "notification must have is_notification() == true"
+        );
+
+        // Must NOT have an id
+        assert!(
+            notification.id.is_none(),
+            "notification must NOT have an id field"
+        );
+
+        // Serializing must NOT include an id field
+        let json = serde_json::to_string(&notification).unwrap();
+        assert!(
+            !json.contains("\"id\""),
+            "serialized notification must not contain 'id': {json}"
+        );
+
+        // Roundtrip must preserve the no-id property
+        let parsed: JsonRpcRequest = serde_json::from_str(&json).unwrap();
+        assert!(
+            parsed.is_notification(),
+            "roundtrip must preserve notification status"
+        );
+        assert!(
+            parsed.id.is_none(),
+            "roundtrip must preserve no-id property"
+        );
+    }
 }

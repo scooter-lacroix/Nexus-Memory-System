@@ -1,6 +1,6 @@
 //! Repository implementations for database operations
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::models::{
     memory_job_status, AgentNamespaceRow, ClaimedMemoryJob, EnqueueJobParams, MemoryEvidenceRow,
@@ -13,7 +13,6 @@ use nexus_core::{
     AgentNamespace, CognitiveLevel, Memory, MemoryCategory, MemoryLaneType, PerspectiveKey,
 };
 use sqlx::SqlitePool;
-use tracing::warn;
 
 /// Type alias for backward compatibility
 type Category = MemoryCategory;
@@ -1183,6 +1182,7 @@ impl MemoryRepository {
         }
 
         let rows = query.fetch_all(&self.pool).await.map_err(db_error)?;
+        let id_set: HashSet<i64> = memory_ids.iter().copied().collect();
         let mut grouped: HashMap<i64, Vec<MemoryLineageEntry>> = HashMap::new();
 
         for row in rows {
@@ -1192,13 +1192,13 @@ impl MemoryRepository {
                 evidence_role: row.evidence_role,
             };
 
-            if memory_ids.contains(&entry.derived_memory_id) {
+            if id_set.contains(&entry.derived_memory_id) {
                 grouped
                     .entry(entry.derived_memory_id)
                     .or_default()
                     .push(entry.clone());
             }
-            if memory_ids.contains(&entry.source_memory_id) {
+            if id_set.contains(&entry.source_memory_id) {
                 grouped
                     .entry(entry.source_memory_id)
                     .or_default()
