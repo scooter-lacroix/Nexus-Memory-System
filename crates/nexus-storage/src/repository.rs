@@ -103,6 +103,74 @@ const MAX_JOB_ATTEMPTS: i64 = 5;
 const RAW_ACTIVITY_FILTER_SQL: &str =
     "labels NOT LIKE '%raw-activity%' AND json_extract(COALESCE(metadata, '{}'), '$.raw_activity') IS NULL";
 
+// ---------------------------------------------------------------------------
+// Shared cognitive-metadata query fragments
+// ---------------------------------------------------------------------------
+// These constants are the single source of truth for how the repository
+// extracts values from the `metadata` JSON column.  Every query that touches
+// cognitive fields (observer, subject, session_key, session_keys, level,
+// times_reinforced, times_contradicted) MUST use these fragments so that
+// schema-level changes propagate consistently and cannot drift.
+// ---------------------------------------------------------------------------
+
+/// SQL expression that safely extracts a value from the metadata JSON column,
+/// defaulting to the given JSON literal when metadata is NULL.
+///
+/// Usage in a format! SQL template: `{METADATA}`
+/// Example: `json_extract({METADATA}, '$.cognitive.level')`
+const METADATA: &str = "COALESCE(metadata, '{}')";
+
+/// WHERE-clause fragment that matches a memory whose session context equals the
+/// given session key via either the scalar `session_key` field or the
+/// `session_keys` array.  The fragment expects TWO bound parameters (same value
+/// for both).
+const SESSION_KEY_FILTER: &str =
+    "(json_extract(METADATA, '$.cognitive.session_key') = ? \
+     OR EXISTS (SELECT 1 FROM json_each(COALESCE(json_extract(metadata, '$.cognitive.session_keys'), '[]')) WHERE value = ?))";
+
+/// WHERE-clause fragment that filters by perspective observer and subject.
+/// Does NOT include session_key filtering — combine with [`SESSION_KEY_FILTER`]
+/// when the perspective has a session_key.
+const PERSPECTIVE_IDENTITY_FILTER: &str = "json_extract(METADATA, '$.cognitive.observer') = ? \
+     AND json_extract(METADATA, '$.cognitive.subject') = ?";
+
+/// Cognitive-level extraction expression (no comparison — yields the raw string).
+const COGNITIVE_LEVEL_EXPR: &str = "json_extract(METADATA, '$.cognitive.level')";
+
+/// WHERE-clause fragment that filters by a specific cognitive level.
+fn cognitive_level_eq(level: CognitiveLevel) -> String {
+    format!("{} = '{}'", COGNITIVE_LEVEL_EXPR, level.as_str())
+}
+
+/// Assembles the full perspective WHERE clause (observer, subject, and optional
+/// session key) for use in SQL templates.
+///
+/// Returns `(sql_fragment, bind_count)`. The caller must bind:
+/// - observer, subject (always)
+/// - session_key × 2 (if present)
+fn perspective_where_clause(perspective: &PerspectiveKey) -> String {
+    if perspective.session_key.is_some() {
+        format!(
+            "{} AND {}",
+            PERSPECTIVE_IDENTITY_FILTER.replace("METADATA", METADATA),
+            SESSION_KEY_FILTER.replace("METADATA", METADATA),
+        )
+    } else {
+        PERSPECTIVE_IDENTITY_FILTER.replace("METADATA", METADATA)
+    }
+}
+
+/// Bind values for a perspective WHERE clause.
+/// Order: observer, subject, [session_key, session_key]
+fn bind_perspective<'a>(perspective: &'a PerspectiveKey) -> Vec<&'a str> {
+    let mut vals = vec![perspective.observer.as_str(), perspective.subject.as_str()];
+    if let Some(ref sk) = perspective.session_key {
+        vals.push(sk.as_str());
+        vals.push(sk.as_str());
+    }
+    vals
+}
+
 /// Repository for memory operations
 pub struct MemoryRepository {
     pool: SqlitePool,
@@ -540,19 +608,13 @@ impl MemoryRepository {
         } else {
             format!("AND {}", RAW_ACTIVITY_FILTER_SQL)
         };
+        let session_filter = SESSION_KEY_FILTER.replace("METADATA", METADATA);
         let rows = sqlx::query_as::<_, MemoryRow>(&format!(
             r#"
             SELECT * FROM memories
             WHERE namespace_id = ?
               AND is_active = 1
-              AND (
-                  json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.session_key') = ?
-                  OR EXISTS (
-                      SELECT 1
-                      FROM json_each(COALESCE(json_extract(metadata, '$.cognitive.session_keys'), '[]'))
-                      WHERE value = ?
-                  )
-              )
+              AND {session_filter}
               {noise_sql}
             ORDER BY created_at DESC
             LIMIT ?
@@ -729,50 +791,22 @@ impl MemoryRepository {
             format!("AND {}", RAW_ACTIVITY_FILTER_SQL)
         };
 
-        let sql = if perspective.session_key.is_some() {
-            format!(
-                r#"
-                SELECT * FROM memories
-                WHERE namespace_id = ?
-                  AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
-                  AND (
-                      json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.session_key') = ?
-                      OR EXISTS (
-                          SELECT 1
-                          FROM json_each(COALESCE(json_extract(metadata, '$.cognitive.session_keys'), '[]'))
-                          WHERE value = ?
-                      )
-                  )
-                  {noise_sql}
-                ORDER BY created_at DESC
-                LIMIT ?
-                "#,
-            )
-        } else {
-            format!(
-                r#"
-                SELECT * FROM memories
-                WHERE namespace_id = ?
-                  AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
-                  {noise_sql}
-                ORDER BY created_at DESC
-                LIMIT ?
-                "#,
-            )
-        };
+        let perspective_sql = perspective_where_clause(perspective);
+        let sql = format!(
+            r#"
+            SELECT * FROM memories
+            WHERE namespace_id = ?
+              AND is_active = 1
+              AND {perspective_sql}
+              {noise_sql}
+            ORDER BY created_at DESC
+            LIMIT ?
+            "#
+        );
+        let mut query = sqlx::query_as::<_, MemoryRow>(&sql).bind(namespace_id);
 
-        let mut query = sqlx::query_as::<_, MemoryRow>(&sql)
-            .bind(namespace_id)
-            .bind(&perspective.observer)
-            .bind(&perspective.subject);
-
-        if let Some(session_key) = &perspective.session_key {
-            query = query.bind(session_key);
-            query = query.bind(session_key);
+        for val in bind_perspective(perspective) {
+            query = query.bind(val);
         }
 
         let rows = query
@@ -827,49 +861,24 @@ impl MemoryRepository {
         perspective: &PerspectiveKey,
         limit: i64,
     ) -> Result<Vec<Memory>> {
-        let sql = if perspective.session_key.is_some() {
+        let perspective_sql = perspective_where_clause(perspective);
+        let sql = format!(
             r#"
-                SELECT * FROM memories
-                WHERE namespace_id = ?
-                  AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{}'), '$.cognitive.level') = ?
-                  AND json_extract(COALESCE(metadata, '{}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{}'), '$.cognitive.subject') = ?
-                  AND (
-                      json_extract(COALESCE(metadata, '{}'), '$.cognitive.session_key') = ?
-                      OR EXISTS (
-                          SELECT 1
-                          FROM json_each(COALESCE(json_extract(metadata, '$.cognitive.session_keys'), '[]'))
-                          WHERE value = ?
-                      )
-                  )
-                ORDER BY created_at DESC
-                LIMIT ?
-                "#
-            .to_string()
-        } else {
-            r#"
-                SELECT * FROM memories
-                WHERE namespace_id = ?
-                  AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{}'), '$.cognitive.level') = ?
-                  AND json_extract(COALESCE(metadata, '{}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{}'), '$.cognitive.subject') = ?
-                ORDER BY created_at DESC
-                LIMIT ?
-                "#
-            .to_string()
-        };
-
+            SELECT * FROM memories
+            WHERE namespace_id = ?
+              AND is_active = 1
+              AND {COGNITIVE_LEVEL_EXPR} = ?
+              AND {perspective_sql}
+            ORDER BY created_at DESC
+            LIMIT ?
+            "#
+        );
         let mut query = sqlx::query_as::<_, MemoryRow>(&sql)
             .bind(namespace_id)
-            .bind(level.as_str())
-            .bind(&perspective.observer)
-            .bind(&perspective.subject);
+            .bind(level.as_str());
 
-        if let Some(session_key) = &perspective.session_key {
-            query = query.bind(session_key);
-            query = query.bind(session_key);
+        for val in bind_perspective(perspective) {
+            query = query.bind(val);
         }
 
         let rows = query
@@ -911,54 +920,24 @@ impl MemoryRepository {
             format!("AND {}", RAW_ACTIVITY_FILTER_SQL)
         };
 
-        let sql = if perspective.session_key.is_some() {
-            format!(
-                r#"
-                SELECT * FROM memories
-                WHERE namespace_id = ?
-                  AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
-                  AND (
-                      json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.session_key') = ?
-                      OR EXISTS (
-                          SELECT 1
-                          FROM json_each(COALESCE(json_extract(metadata, '$.cognitive.session_keys'), '[]'))
-                          WHERE value = ?
-                      )
-                  )
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.level') != ?
-                  {noise_sql}
-                ORDER BY COALESCE(json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.times_reinforced'), 0) DESC,
-                         created_at DESC
-                LIMIT ?
-                "#,
-            )
-        } else {
-            format!(
-                r#"
-                SELECT * FROM memories
-                WHERE namespace_id = ?
-                  AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.level') != ?
-                  {noise_sql}
-                ORDER BY COALESCE(json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.times_reinforced'), 0) DESC,
-                         created_at DESC
-                LIMIT ?
-                "#,
-            )
-        };
+        let perspective_sql = perspective_where_clause(perspective);
+        let sql = format!(
+            r#"
+            SELECT * FROM memories
+            WHERE namespace_id = ?
+              AND is_active = 1
+              AND {perspective_sql}
+              AND {COGNITIVE_LEVEL_EXPR} != ?
+              {noise_sql}
+            ORDER BY COALESCE(json_extract({METADATA}, '$.cognitive.times_reinforced'), 0) DESC,
+                     created_at DESC
+            LIMIT ?
+            "#
+        );
+        let mut query = sqlx::query_as::<_, MemoryRow>(&sql).bind(namespace_id);
 
-        let mut query = sqlx::query_as::<_, MemoryRow>(&sql)
-            .bind(namespace_id)
-            .bind(&perspective.observer)
-            .bind(&perspective.subject);
-
-        if let Some(session_key) = &perspective.session_key {
-            query = query.bind(session_key);
-            query = query.bind(session_key);
+        for val in bind_perspective(perspective) {
+            query = query.bind(val);
         }
 
         let rows = query
@@ -1001,54 +980,24 @@ impl MemoryRepository {
             format!("AND {}", RAW_ACTIVITY_FILTER_SQL)
         };
 
-        let sql = if perspective.session_key.is_some() {
-            format!(
-                r#"
-                SELECT * FROM memories
-                WHERE namespace_id = ?
-                  AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
-                  AND (
-                      json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.session_key') = ?
-                      OR EXISTS (
-                          SELECT 1
-                          FROM json_each(COALESCE(json_extract(metadata, '$.cognitive.session_keys'), '[]'))
-                          WHERE value = ?
-                      )
-                  )
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.level') = ?
-                  {noise_sql}
-                ORDER BY COALESCE(json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.times_contradicted'), 0) DESC,
-                         created_at DESC
-                LIMIT ?
-                "#,
-            )
-        } else {
-            format!(
-                r#"
-                SELECT * FROM memories
-                WHERE namespace_id = ?
-                  AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.level') = ?
-                  {noise_sql}
-                ORDER BY COALESCE(json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.times_contradicted'), 0) DESC,
-                         created_at DESC
-                LIMIT ?
-                "#,
-            )
-        };
+        let perspective_sql = perspective_where_clause(perspective);
+        let sql = format!(
+            r#"
+            SELECT * FROM memories
+            WHERE namespace_id = ?
+              AND is_active = 1
+              AND {perspective_sql}
+              AND {COGNITIVE_LEVEL_EXPR} = ?
+              {noise_sql}
+            ORDER BY COALESCE(json_extract({METADATA}, '$.cognitive.times_contradicted'), 0) DESC,
+                     created_at DESC
+            LIMIT ?
+            "#
+        );
+        let mut query = sqlx::query_as::<_, MemoryRow>(&sql).bind(namespace_id);
 
-        let mut query = sqlx::query_as::<_, MemoryRow>(&sql)
-            .bind(namespace_id)
-            .bind(&perspective.observer)
-            .bind(&perspective.subject);
-
-        if let Some(session_key) = &perspective.session_key {
-            query = query.bind(session_key);
-            query = query.bind(session_key);
+        for val in bind_perspective(perspective) {
+            query = query.bind(val);
         }
 
         let rows = query
