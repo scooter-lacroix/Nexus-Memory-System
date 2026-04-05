@@ -189,7 +189,7 @@ Thumbs.db
 .code_indexer_data/
 .leindex/
 nexus/
-tests/
+/tests/
 maestro/
 docs/plans/
 docs/AUTO_STAR.md

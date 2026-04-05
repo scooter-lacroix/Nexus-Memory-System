@@ -86,7 +86,8 @@ impl WebDashboard {
                             let host = url.host_str().unwrap_or("");
                             let scheme = url.scheme();
                             // Only allow exact localhost / 127.0.0.1 origins
-                            scheme == "http" && (host == "127.0.0.1" || host == "localhost")
+                            (scheme == "http" || scheme == "https")
+                                && (host == "127.0.0.1" || host == "localhost")
                         }
                         Err(_) => false, // Malformed origins are rejected
                     }
@@ -194,10 +195,16 @@ pub async fn run_default(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use nexus_orchestrator::Orchestrator;
+    use serde_json::{json, Value};
     use tower::ServiceExt;
+
+    fn body_to_json(body: axum::body::Bytes) -> Value {
+        serde_json::from_slice(&body).expect("valid JSON")
+    }
 
     #[test]
     fn test_web_error_display() {
@@ -264,5 +271,99 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_update_memory_persists_native_sql_values() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect to in-memory db");
+        nexus_storage::migrations::run_migrations(&pool)
+            .await
+            .expect("run migrations");
+
+        let mut storage = nexus_storage::StorageManager::new(pool.clone());
+        storage.initialize().await.expect("initialize storage");
+
+        let dashboard = WebDashboard::new(storage, Orchestrator::default())
+            .await
+            .expect("create dashboard");
+
+        let memory_id = {
+            let state = dashboard.state.read().await;
+            let namespace = state
+                .namespace_repo
+                .get_or_create("web-update-test", "test-agent")
+                .await
+                .expect("create namespace");
+            state
+                .memory_repo
+                .store(nexus_storage::StoreMemoryParams {
+                    namespace_id: namespace.id,
+                    content: "original content",
+                    category: &nexus_core::MemoryCategory::General,
+                    memory_lane_type: None,
+                    labels: &["initial".to_string()],
+                    metadata: &json!({"before": true}),
+                    embedding: None,
+                    embedding_model: None,
+                })
+                .await
+                .expect("store memory")
+                .id
+        };
+
+        let resp = dashboard
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/memories/{memory_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "content": "updated content",
+                            "category": "facts",
+                            "memory_lane_type": "decision",
+                            "labels": ["updated", "native-bindings"],
+                            "metadata": {"source": "test"},
+                            "is_active": true,
+                            "is_archived": false
+                        }))
+                        .expect("serialize request"),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let status = resp.status();
+        let body = to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unexpected response body: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let json = body_to_json(body);
+        assert_eq!(json["content"], "updated content");
+        assert_eq!(json["category"], "facts");
+        assert_eq!(json["memory_lane_type"], "decision");
+        assert_eq!(json["metadata"]["source"], "test");
+
+        let row: (String, String, String, i64, i64) = sqlx::query_as(
+            "SELECT category, memory_lane_type, metadata, is_active, is_archived FROM memories WHERE id = ?",
+        )
+        .bind(memory_id)
+        .fetch_one(&pool)
+        .await
+        .expect("fetch updated row");
+
+        assert_eq!(row.0, "facts");
+        assert_eq!(row.1, "decision");
+        assert_eq!(row.2, r#"{"source":"test"}"#);
+        assert_eq!(row.3, 1);
+        assert_eq!(row.4, 0);
     }
 }

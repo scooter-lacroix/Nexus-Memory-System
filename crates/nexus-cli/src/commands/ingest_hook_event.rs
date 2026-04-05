@@ -30,6 +30,15 @@ pub(crate) enum IngestOutcome {
     Persisted { stored: usize, skipped: usize },
 }
 
+fn parse_stdin_json_or_empty(raw_input: &str) -> Result<serde_json::Value> {
+    let trimmed = raw_input.trim();
+    if trimmed.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+
+    serde_json::from_str(trimmed).context("Failed to parse stdin as JSON")
+}
+
 /// Execute the ingest-hook-event command
 pub async fn execute(
     agent: String,
@@ -44,8 +53,7 @@ pub async fn execute(
         .read_to_string(&mut raw_input)
         .context("Failed to read stdin")?;
 
-    let raw: serde_json::Value =
-        serde_json::from_str(&raw_input).context("Failed to parse stdin as JSON")?;
+    let raw = parse_stdin_json_or_empty(&raw_input)?;
 
     tracing::info!(agent = %agent, event = %event, format = %format, "Processing hook event");
 
@@ -366,4 +374,17 @@ pub(crate) async fn enqueue_enriched_cognition_jobs(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_parse_stdin_json_or_empty_treats_blank_input_as_empty_object() {
+        let parsed = parse_stdin_json_or_empty("").expect("parse blank stdin");
+
+        assert_eq!(parsed, json!({}));
+    }
 }

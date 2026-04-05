@@ -690,6 +690,7 @@ function appendArg(args, flag, value) {
 (async () => {
   const rawInput = await readStdin();
   const payload = parsePayload(rawInput);
+  const forwardedInput = rawInput && rawInput.trim() ? rawInput : "{}";
   const sessionKey = getSessionKey(payload);
   const cwd = getCwd(payload);
 
@@ -702,8 +703,12 @@ function appendArg(args, flag, value) {
       break;
     case "PreCompact":
     case "SessionCompact":
-    case "Stop":
       args = ["session", "event", "--agent", agent, "--kind", "compact"];
+      appendArg(args, "--session-key", sessionKey);
+      appendArg(args, "--cwd", cwd);
+      break;
+    case "Stop":
+      args = ["session", "event", "--agent", agent, "--kind", "stop"];
       appendArg(args, "--session-key", sessionKey);
       appendArg(args, "--cwd", cwd);
       break;
@@ -722,7 +727,7 @@ function appendArg(args, flag, value) {
   const result = spawnSync(
     "NEXUS_BIN_PATH",
     args,
-    { input: rawInput, encoding: "utf8", env: process.env, timeout: 25000, maxBuffer: 50 * 1024 * 1024 },
+    { input: forwardedInput, encoding: "utf8", env: process.env, timeout: 25000, maxBuffer: 50 * 1024 * 1024 },
   );
   if (result.status !== 0) {
     const errorMsg = result.stderr || result.stdout || `exit ${result.status}`;
@@ -795,6 +800,7 @@ configure_claude_hooks() {
 
     local settings_file="${HOME}/.claude/settings.json"
     local shim_path="${CONFIG_DIR}/hooks/event-ingest.js"
+    local session_start_hook_path="${CONFIG_DIR}/hooks/session-start-delayed.sh"
 
     if [[ ! -f "${settings_file}" ]]; then
         warn "Claude Code settings not found at ${settings_file}"
@@ -806,6 +812,7 @@ import json
 
 settings_path = '${settings_file}'
 shim_path = '${shim_path}'
+session_start_hook_path = '${session_start_hook_path}'
 
 with open(settings_path) as f:
     s = json.load(f)
@@ -896,16 +903,16 @@ for hook_name, entries in list(s['hooks'].items()):
     s['hooks'][hook_name] = cleaned
 
 required_hooks = {
-    'PostToolUse': ('PostToolUse', 30000),
-    'PreCompact': ('PreCompact', 5000),
-    'Stop': ('Stop', 30000),
-    'SessionEnd': ('SessionEnd', 30000),
+    'SessionStart': (session_start_hook_path, 10000),
+    'PostToolUse': (f'node {shim_path} claude-code PostToolUse', 30000),
+    'PreCompact': (f'node {shim_path} claude-code PreCompact', 5000),
+    'Stop': (f'node {shim_path} claude-code Stop', 30000),
+    'SessionEnd': (f'node {shim_path} claude-code SessionEnd', 30000),
 }
 
-for hook_name, (event_name, timeout) in required_hooks.items():
+for hook_name, (command, timeout) in required_hooks.items():
     if hook_name not in s['hooks']:
         s['hooks'][hook_name] = []
-    command = f'node {shim_path} claude-code {event_name}'
     if not any(command in candidate for entry in s['hooks'][hook_name] for candidate in entry_commands(entry)):
         s['hooks'][hook_name].append({
             'matcher': '',

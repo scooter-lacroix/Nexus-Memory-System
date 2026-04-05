@@ -26,7 +26,7 @@ fn is_local_origin(headers: &HeaderMap) -> bool {
         Ok(url) => {
             let host = url.host_str().unwrap_or("");
             let scheme = url.scheme();
-            scheme == "http" && (host == "127.0.0.1" || host == "localhost")
+            (scheme == "http" || scheme == "https") && (host == "127.0.0.1" || host == "localhost")
         }
         Err(_) => false, // Malformed origins are rejected
     }
@@ -175,8 +175,17 @@ mod tests {
     use crate::models::WebSocketMessageType;
     use crate::WebDashboard;
     use futures_util::StreamExt;
+    use http::HeaderValue;
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite::protocol::Message as TungsteniteMessage;
+
+    #[test]
+    fn test_is_local_origin_accepts_https_localhost() {
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", HeaderValue::from_static("https://localhost:8768"));
+
+        assert!(is_local_origin(&headers));
+    }
 
     /// Verifies that a WebSocket `ping` from one client receives a direct `pong`
     /// reply to that client only, and is NOT broadcast to other connected clients.

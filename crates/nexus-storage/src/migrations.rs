@@ -215,14 +215,6 @@ async fn upgrade_pre_migration_databases(pool: &SqlitePool) -> crate::Result<()>
         }
     }
 
-    // Migration 9 (cognitive indexes) is purely additive; if memories table
-    // exists the indexes may or may not exist.  The CREATE INDEX IF NOT EXISTS
-    // statements in the migration itself handle idempotency, so we only
-    // backfill if the memories table is present.
-    if table_exists(pool, "memories").await? && !is_migration_applied(pool, 9).await? {
-        record_migration(pool, 9, MIGRATIONS[8].description).await?;
-    }
-
     Ok(())
 }
 
@@ -683,6 +675,39 @@ mod tests {
         assert!(table_exists(&pool, "session_digests").await.unwrap());
         assert!(table_exists(&pool, "memory_evidence").await.unwrap());
         assert!(table_exists(&pool, "processed_files").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_existing_memories_table_still_runs_cognitive_index_migration() {
+        let pool = new_empty_pool().await;
+
+        migration_001_agent_namespaces(&pool).await.unwrap();
+        migration_002_memories(&pool).await.unwrap();
+
+        let index_count_before: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_memories_cognitive_level'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(index_count_before, 0);
+
+        run_migrations(&pool).await.unwrap();
+
+        let index_count_after: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_memories_cognitive_level'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(index_count_after, 1);
+
+        let recorded: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations WHERE version = 9")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(recorded, 1);
     }
 
     /// Test: brand-new database with no pre-existing tables starts from 1.
