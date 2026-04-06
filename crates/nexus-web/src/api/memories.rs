@@ -238,7 +238,9 @@ pub async fn update_memory(
     }
 
     set_clauses.push("updated_at = ?".to_string());
-    bind_values.push(UpdateBindValue::Text(Utc::now().to_rfc3339()));
+    bind_values.push(UpdateBindValue::Text(
+        Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+    ));
 
     let query = format!(
         "UPDATE memories SET {} WHERE id = ?",

@@ -1004,7 +1004,7 @@ uninstall_components() {
         local settings_file="${HOME}/.claude/settings.json"
         if [[ -f "${settings_file}" ]]; then
             python3 << PYTHON_EOF
-import json, os
+import json, os, re
 
 settings_path = '${settings_file}'
 
@@ -1029,9 +1029,12 @@ for hook_name, entries in list(s['hooks'].items()):
     cleaned = []
     for entry in entries:
         commands = entry_commands(entry)
-        # Remove entries that reference our shim or nexus commands
+        # Remove entries that reference our shim or nexus commands.
+        # Use word-boundary matching to avoid overmatching unrelated hooks
+        # that happen to contain "nexus" or "session" as substrings.
         is_ours = any(
-            'event-ingest' in c or ('nexus' in c and 'session' in c)
+            'event-ingest' in c
+            or re.search(r'\bnexus\b', c) and re.search(r'\bsession\b', c)
             for c in commands
         )
         if not is_ours:

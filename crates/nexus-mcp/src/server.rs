@@ -189,25 +189,22 @@ impl McpServer {
         let tool_handler = ToolHandler::new(pool.clone());
         let resource_handler = ResourceHandler::new(pool);
 
-        // Read lines from stdin asynchronously
+        // Read lines from stdin asynchronously.
+        // NOTE: We do NOT use tokio::select! here because Lines::next_line() is
+        // not cancel-safe — dropping the future after partial reads loses buffered
+        // bytes.  Instead, we await each line directly and check the shutdown flag
+        // between messages.  For an MCP stdio server, EOF from the client is the
+        // primary shutdown signal.
         let mut lines = stdin.lines();
         loop {
-            // Check for shutdown
+            // Check for shutdown between messages (not while awaiting input).
             if self.shutdown.load(Ordering::SeqCst) {
                 break;
             }
 
-            let line: std::result::Result<Option<String>, std::io::Error> = tokio::select! {
-                line = lines.next_line() => line,
-                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
-                    // Periodically re-check the shutdown flag
-                    continue;
-                }
-            };
-
-            let line = match line {
+            let line = match lines.next_line().await {
                 Ok(Some(l)) => l,
-                Ok(None) => break, // EOF
+                Ok(None) => break, // EOF — client disconnected
                 Err(e) => {
                     tracing::error!("Failed to read from stdin: {}", e);
                     continue;
