@@ -7,9 +7,9 @@ use crate::resources::ResourceHandler;
 use crate::tools::ToolHandler;
 use crate::McpConfig;
 use nexus_storage::StorageManager;
-use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use tokio::io::AsyncBufReadExt;
 use tokio::sync::RwLock;
 use tracing::warn;
 
@@ -174,11 +174,9 @@ impl McpServer {
     async fn start_stdio(&mut self) -> crate::Result<()> {
         tracing::info!("Starting MCP server with stdio transport");
 
-        let stdin = io::stdin();
-        let stdout = io::stdout();
-
-        // Lock stdout for writing
-        let mut stdout_lock = stdout.lock();
+        let stdin = tokio::io::BufReader::new(tokio::io::stdin());
+        let stdout = tokio::io::stdout();
+        let mut stdout_lock = tokio::io::BufWriter::new(stdout);
 
         // Get pool from storage
         let pool = self
@@ -191,15 +189,25 @@ impl McpServer {
         let tool_handler = ToolHandler::new(pool.clone());
         let resource_handler = ResourceHandler::new(pool);
 
-        // Read lines from stdin
-        for line in stdin.lock().lines() {
+        // Read lines from stdin asynchronously
+        let mut lines = stdin.lines();
+        loop {
             // Check for shutdown
             if self.shutdown.load(Ordering::SeqCst) {
                 break;
             }
 
+            let line: std::result::Result<Option<String>, std::io::Error> = tokio::select! {
+                line = lines.next_line() => line,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                    // Periodically re-check the shutdown flag
+                    continue;
+                }
+            };
+
             let line = match line {
-                Ok(l) => l,
+                Ok(Some(l)) => l,
+                Ok(None) => break, // EOF
                 Err(e) => {
                     tracing::error!("Failed to read from stdin: {}", e);
                     continue;
@@ -237,8 +245,11 @@ impl McpServer {
             // Only write when there is a response (notifications produce no output)
             if let Some(response) = response {
                 let response_json = serde_json::to_string(&response)?;
-                writeln!(stdout_lock, "{}", response_json)?;
-                stdout_lock.flush()?;
+                use tokio::io::AsyncWriteExt;
+                stdout_lock
+                    .write_all(format!("{}\n", response_json).as_bytes())
+                    .await?;
+                stdout_lock.flush().await?;
             }
         }
 
@@ -251,9 +262,6 @@ impl McpServer {
             "Starting MCP server with HTTP transport on port {}",
             self.config.port
         );
-
-        // HTTP transport is more complex and would typically use axum or hyper
-        // For now, we'll return an error suggesting stdio transport
         Err(nexus_core::NexusError::InvalidConfig(
             "HTTP transport not yet implemented. Use stdio transport for now.".to_string(),
         ))

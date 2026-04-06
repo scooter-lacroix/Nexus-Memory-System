@@ -486,17 +486,16 @@ pub async fn dashboard(
                 Vec::new()
             });
         match recent.into_iter().next() {
-            Some(d) => match chrono::DateTime::parse_from_rfc3339(&d.created_at) {
-                Ok(dt) => {
+            Some(d) => match parse_timestamp(&d.created_at) {
+                Some(dt) => {
                     let age = chrono::Utc::now()
                         .signed_duration_since(dt)
                         .num_seconds()
                         .max(0);
                     (Some(d.created_at), Some(age))
                 }
-                Err(e) => {
+                None => {
                     warn!(
-                        error = %e,
                         created_at = %d.created_at,
                         "Malformed digest timestamp; returning None for age"
                     );
@@ -590,6 +589,26 @@ pub async fn dashboard(
             contradiction_density,
         },
     }))
+}
+
+/// Parse a timestamp string that may be in RFC3339 or SQLite `datetime('now')` format.
+///
+/// SQLite `datetime('now')` produces `YYYY-MM-DD HH:MM:SS` (no timezone suffix),
+/// which is assumed to be UTC.  RFC3339 timestamps (if any exist) are tried first.
+fn parse_timestamp(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    // Try RFC3339 first (explicitly timezone-annotated timestamps).
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    // Fall back to SQLite datetime('now') format: "YYYY-MM-DD HH:MM:SS"
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Some(naive.and_utc());
+    }
+    // Try with fractional seconds: "YYYY-MM-DD HH:MM:SS.fff"
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f") {
+        return Some(naive.and_utc());
+    }
+    None
 }
 
 #[cfg(test)]

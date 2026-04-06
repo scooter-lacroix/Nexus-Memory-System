@@ -202,6 +202,15 @@ async fn upgrade_pre_migration_databases(pool: &SqlitePool) -> crate::Result<()>
             }
         }
         if all_exist {
+            // For migration 6, also heal the claim_token column that was
+            // added in a later revision.  Pre-versioned databases may have
+            // the memory_jobs table but lack this column, and recording v6
+            // as applied would skip the migration that calls
+            // ensure_column_exists.
+            if version == 6 {
+                ensure_column_exists(pool, "memory_jobs", "claim_token", "TEXT").await?;
+            }
+
             record_migration(
                 pool,
                 version,
