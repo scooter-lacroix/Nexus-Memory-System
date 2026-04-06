@@ -42,8 +42,17 @@ impl StorageManager {
         let options = url
             .parse::<SqliteConnectOptions>()
             .map_err(|err| nexus_core::NexusError::Database(err.to_string()))?
-            .create_if_missing(true);
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+            // Per-connection pragmas — these are applied to every pooled connection.
+            .foreign_keys(true)
+            .pragma("cache_size", "-2000")
+            .pragma("temp_store", "MEMORY");
+
         let pool = SqlitePool::connect_with(options).await.map_err(db_error)?;
+
         Ok(Self::new(pool))
     }
 

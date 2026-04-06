@@ -62,13 +62,6 @@ pub use protocol::{
     ListPromptsResult,
     ListResourcesResult,
     ListToolsResult,
-    McpError,
-    // Legacy compatibility types
-    McpRequest,
-    McpResource,
-
-    McpResponse,
-    McpTool,
     Prompt,
     PromptArgument,
     PromptMessage,

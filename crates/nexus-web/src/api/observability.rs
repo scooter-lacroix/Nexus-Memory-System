@@ -7,6 +7,7 @@ use axum::{
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::warn;
 
 use crate::error::{Result, WebError};
 use crate::models::{
@@ -443,7 +444,10 @@ pub async fn dashboard(
                 0,
             )
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to list reflection jobs for dashboard");
+                Vec::new()
+            });
         let digest_jobs = state
             .memory_repo
             .list_jobs(
@@ -454,7 +458,10 @@ pub async fn dashboard(
                 0,
             )
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to list digest jobs for dashboard");
+                Vec::new()
+            });
         let most_recent = reflect_jobs
             .iter()
             .chain(digest_jobs.iter())
@@ -474,17 +481,27 @@ pub async fn dashboard(
             .memory_repo
             .list_digests(namespace.id, None, 1, 0)
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to list digests for dashboard");
+                Vec::new()
+            });
         match recent.into_iter().next() {
-            Some(d) => {
-                let age = chrono::Utc::now()
-                    .signed_duration_since(
-                        chrono::DateTime::parse_from_rfc3339(&d.created_at)
-                            .unwrap_or_else(|_| chrono::Utc::now().into()),
-                    )
-                    .num_seconds();
-                (Some(d.created_at), Some(age.max(0)))
-            }
+            Some(d) => match parse_timestamp(&d.created_at) {
+                Some(dt) => {
+                    let age = chrono::Utc::now()
+                        .signed_duration_since(dt)
+                        .num_seconds()
+                        .max(0);
+                    (Some(d.created_at), Some(age))
+                }
+                None => {
+                    warn!(
+                        created_at = %d.created_at,
+                        "Malformed digest timestamp; returning None for age"
+                    );
+                    (None, None)
+                }
+            },
             None => (None, None),
         }
     };
@@ -517,9 +534,13 @@ pub async fn dashboard(
     let total = raw + explicit + derived + summary_short + summary_long + contradiction;
 
     // --- Adaptive dream state ---
-    let cognition_config = nexus_core::Config::from_env()
-        .map(|c| c.cognition)
-        .unwrap_or_default();
+    let cognition_config = match nexus_core::Config::from_env() {
+        Ok(c) => c.cognition,
+        Err(e) => {
+            warn!(error = %e, "Failed to load cognition config for dashboard; using defaults");
+            nexus_core::config::CognitionConfig::default()
+        }
+    };
     let contradiction_density = if total > 0 {
         contradiction as f64 / total as f64
     } else {
@@ -568,6 +589,26 @@ pub async fn dashboard(
             contradiction_density,
         },
     }))
+}
+
+/// Parse a timestamp string that may be in RFC3339 or SQLite `datetime('now')` format.
+///
+/// SQLite `datetime('now')` produces `YYYY-MM-DD HH:MM:SS` (no timezone suffix),
+/// which is assumed to be UTC.  RFC3339 timestamps (if any exist) are tried first.
+fn parse_timestamp(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    // Try RFC3339 first (explicitly timezone-annotated timestamps).
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    // Fall back to SQLite datetime('now') format: "YYYY-MM-DD HH:MM:SS"
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Some(naive.and_utc());
+    }
+    // Try with fractional seconds: "YYYY-MM-DD HH:MM:SS.fff"
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f") {
+        return Some(naive.and_utc());
+    }
+    None
 }
 
 #[cfg(test)]

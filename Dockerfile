@@ -7,4 +7,4 @@ FROM debian:bookworm-slim
 WORKDIR /app
 COPY --from=builder /app/target/release/nexus /usr/local/bin/nexus
 EXPOSE 8768
-CMD ["nexus", "serve", "--transport", "http", "--port", "8768"]
+CMD ["nexus", "serve", "--transport", "web", "--port", "8768"]

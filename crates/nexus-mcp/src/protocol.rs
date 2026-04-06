@@ -4,6 +4,7 @@
 //! communication between MCP clients and servers.
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 // =============================================================================
 // JSON-RPC Base Types
@@ -304,11 +305,18 @@ impl ContentBlock {
 
     /// Create a JSON resource content block
     pub fn resource_json(uri: impl Into<String>, value: serde_json::Value) -> Self {
+        let text = match serde_json::to_string(&value) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                warn!(error = %e, "Failed to serialize JSON for MCP resource content");
+                None
+            }
+        };
         Self::Resource {
             resource: ResourceContents {
                 uri: uri.into(),
                 mime_type: Some("application/json".to_string()),
-                text: Some(serde_json::to_string(&value).unwrap_or_default()),
+                text,
                 blob: None,
             },
         }
@@ -426,10 +434,17 @@ impl ResourceContents {
 
     /// Create JSON resource contents
     pub fn json(uri: impl Into<String>, value: &serde_json::Value) -> Self {
+        let text = match serde_json::to_string_pretty(value) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                warn!(error = %e, "Failed to serialize JSON for MCP resource contents");
+                None
+            }
+        };
         Self {
             uri: uri.into(),
             mime_type: Some("application/json".to_string()),
-            text: Some(serde_json::to_string_pretty(value).unwrap_or_default()),
+            text,
             blob: None,
         }
     }
@@ -542,17 +557,22 @@ pub struct JsonRpcRequest {
 }
 
 impl JsonRpcRequest {
-    /// Create a new request
-    pub fn new(method: impl Into<String>) -> Self {
+    /// Create a JSON-RPC request that expects a response.
+    ///
+    /// The request carries an `id`, so the receiver will send a matching
+    /// `JsonRpcResponse` or `JsonRpcErrorResponse` back.
+    pub fn request(method: impl Into<String>, id: RequestId) -> Self {
         Self {
             jsonrpc: JSONRPC_VERSION.to_string(),
             method: method.into(),
             params: None,
-            id: None,
+            id: Some(id),
         }
     }
 
-    /// Create a notification (no ID)
+    /// Create a JSON-RPC notification (no response expected).
+    ///
+    /// Notifications do not carry an `id` and the receiver MUST NOT reply.
     pub fn notification(method: impl Into<String>) -> Self {
         Self {
             jsonrpc: JSONRPC_VERSION.to_string(),
@@ -562,19 +582,19 @@ impl JsonRpcRequest {
         }
     }
 
-    /// Add parameters
+    /// Add parameters to this request or notification.
     pub fn with_params(mut self, params: serde_json::Value) -> Self {
         self.params = Some(params);
         self
     }
 
-    /// Add request ID
+    /// Assign an ID, turning a notification into a request.
     pub fn with_id(mut self, id: RequestId) -> Self {
         self.id = Some(id);
         self
     }
 
-    /// Check if this is a notification (no response expected)
+    /// Returns `true` when this message is a notification (no `id`, no response expected).
     pub fn is_notification(&self) -> bool {
         self.id.is_none()
     }
@@ -684,162 +704,6 @@ pub enum JsonRpcMessage {
     Error(JsonRpcErrorResponse),
 }
 
-// =============================================================================
-// Legacy Compatibility Types (for backward compatibility)
-// =============================================================================
-
-/// MCP request (legacy)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpRequest {
-    /// Request method
-    pub method: String,
-    /// Request parameters
-    #[serde(default)]
-    pub params: serde_json::Value,
-    /// Request ID
-    #[serde(default)]
-    pub id: Option<i64>,
-}
-
-impl McpRequest {
-    /// Create a new request
-    pub fn new(method: impl Into<String>) -> Self {
-        Self {
-            method: method.into(),
-            params: serde_json::Value::Null,
-            id: None,
-        }
-    }
-
-    /// Add parameters
-    pub fn with_params(mut self, params: serde_json::Value) -> Self {
-        self.params = params;
-        self
-    }
-
-    /// Add request ID
-    pub fn with_id(mut self, id: i64) -> Self {
-        self.id = Some(id);
-        self
-    }
-}
-
-/// MCP response (legacy)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpResponse {
-    /// Response result (if successful)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<serde_json::Value>,
-    /// Response error (if failed)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<McpError>,
-    /// Request ID (echoed back)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<i64>,
-}
-
-impl McpResponse {
-    /// Create a successful response
-    pub fn success(result: serde_json::Value) -> Self {
-        Self {
-            result: Some(result),
-            error: None,
-            id: None,
-        }
-    }
-
-    /// Create an error response
-    pub fn error(error: McpError) -> Self {
-        Self {
-            result: None,
-            error: Some(error),
-            id: None,
-        }
-    }
-
-    /// Add request ID
-    pub fn with_id(mut self, id: i64) -> Self {
-        self.id = Some(id);
-        self
-    }
-
-    /// Check if response is successful
-    pub fn is_success(&self) -> bool {
-        self.error.is_none()
-    }
-}
-
-/// MCP error (legacy)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpError {
-    /// Error code
-    pub code: i32,
-    /// Error message
-    pub message: String,
-    /// Additional error data
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<serde_json::Value>,
-}
-
-impl McpError {
-    /// Create a new error
-    pub fn new(code: i32, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-            data: None,
-        }
-    }
-
-    /// Add error data
-    pub fn with_data(mut self, data: serde_json::Value) -> Self {
-        self.data = Some(data);
-        self
-    }
-
-    /// Parse error (-32700)
-    pub fn parse_error(message: impl Into<String>) -> Self {
-        Self::new(-32700, message)
-    }
-
-    /// Invalid request (-32600)
-    pub fn invalid_request(message: impl Into<String>) -> Self {
-        Self::new(-32600, message)
-    }
-
-    /// Method not found (-32601)
-    pub fn method_not_found(method: impl Into<String>) -> Self {
-        Self::new(-32601, format!("Method not found: {}", method.into()))
-    }
-
-    /// Invalid params (-32602)
-    pub fn invalid_params(message: impl Into<String>) -> Self {
-        Self::new(-32602, message)
-    }
-
-    /// Internal error (-32603)
-    pub fn internal_error(message: impl Into<String>) -> Self {
-        Self::new(-32603, message)
-    }
-
-    /// Not found (-32001)
-    pub fn not_found(message: impl Into<String>) -> Self {
-        Self::new(-32001, message)
-    }
-}
-
-impl std::fmt::Display for McpError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "McpError(code={}, message={})", self.code, self.message)
-    }
-}
-
-impl std::error::Error for McpError {}
-
-// Legacy type aliases
-pub type McpTool = Tool;
-pub type McpResource = Resource;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -905,10 +769,67 @@ mod tests {
     }
 
     #[test]
-    fn test_json_rpc_request_new() {
-        let request = JsonRpcRequest::new("test_method");
+    fn test_json_rpc_request_has_id() {
+        let request = JsonRpcRequest::request("test_method", RequestId::Number(1));
         assert_eq!(request.method, "test_method");
-        assert!(request.is_notification());
+        assert!(!request.is_notification());
+        assert_eq!(request.id, Some(RequestId::Number(1)));
+    }
+
+    #[test]
+    fn test_json_rpc_notification_has_no_id() {
+        let notification = JsonRpcRequest::notification("notify_method");
+        assert_eq!(notification.method, "notify_method");
+        assert!(notification.is_notification());
+        assert_eq!(notification.id, None);
+    }
+
+    #[test]
+    fn test_request_and_notification_are_distinguishable() {
+        let request = JsonRpcRequest::request("ping", RequestId::from(42));
+        let notification = JsonRpcRequest::notification("initialized");
+
+        // Request has an ID; notification does not
+        assert!(!request.is_notification());
+        assert!(notification.is_notification());
+
+        // Serializing a request includes the id field
+        let req_json = serde_json::to_string(&request).unwrap();
+        assert!(req_json.contains("\"id\":42"));
+
+        // Serializing a notification omits the id field
+        let notif_json = serde_json::to_string(&notification).unwrap();
+        assert!(!notif_json.contains("\"id\""));
+    }
+
+    #[test]
+    fn test_notification_to_request_via_with_id() {
+        let notification = JsonRpcRequest::notification("some_method");
+        assert!(notification.is_notification());
+
+        let request = notification.with_id(RequestId::from(99));
+        assert!(!request.is_notification());
+        assert_eq!(request.id, Some(RequestId::Number(99)));
+    }
+
+    #[test]
+    fn test_request_with_params() {
+        let request = JsonRpcRequest::request("tools/call", RequestId::from(1))
+            .with_params(serde_json::json!({"name": "store_memory"}));
+
+        assert_eq!(request.method, "tools/call");
+        assert!(request.params.is_some());
+        assert!(!request.is_notification());
+    }
+
+    #[test]
+    fn test_notification_with_params() {
+        let notification = JsonRpcRequest::notification("notifications/initialized")
+            .with_params(serde_json::json!({"client_info": {"name": "test"}}));
+
+        assert_eq!(notification.method, "notifications/initialized");
+        assert!(notification.params.is_some());
+        assert!(notification.is_notification());
     }
 
     #[test]
@@ -918,38 +839,6 @@ mod tests {
 
         let method = JsonRpcError::method_not_found("unknown");
         assert_eq!(method.code, -32601);
-    }
-
-    #[test]
-    fn test_legacy_mcp_request_new() {
-        let request = McpRequest::new("test_method");
-        assert_eq!(request.method, "test_method");
-        assert!(request.id.is_none());
-    }
-
-    #[test]
-    fn test_legacy_mcp_response_success() {
-        let response = McpResponse::success(serde_json::json!({"result": "ok"}));
-        assert!(response.is_success());
-        assert!(response.result.is_some());
-        assert!(response.error.is_none());
-    }
-
-    #[test]
-    fn test_legacy_mcp_response_error() {
-        let response = McpResponse::error(McpError::invalid_params("Missing parameter"));
-        assert!(!response.is_success());
-        assert!(response.result.is_none());
-        assert!(response.error.is_some());
-    }
-
-    #[test]
-    fn test_legacy_mcp_error_codes() {
-        let parse = McpError::parse_error("test");
-        assert_eq!(parse.code, -32700);
-
-        let not_found = McpError::not_found("test");
-        assert_eq!(not_found.code, -32001);
     }
 
     #[test]
@@ -973,12 +862,37 @@ mod tests {
 
     #[test]
     fn test_serialization() {
-        let request = JsonRpcRequest::new("initialize")
-            .with_params(serde_json::json!({"protocolVersion": "2024-11-05"}))
-            .with_id(RequestId::from(1));
+        let request = JsonRpcRequest::request("initialize", RequestId::from(1))
+            .with_params(serde_json::json!({"protocolVersion": "2024-11-05"}));
 
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"method\":\"initialize\""));
         assert!(json.contains("\"jsonrpc\":\"2.0\""));
+    }
+
+    #[test]
+    fn test_serialization_roundtrip_request() {
+        let original = JsonRpcRequest::request("tools/call", RequestId::from(7))
+            .with_params(serde_json::json!({"name": "search"}));
+
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: JsonRpcRequest = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.method, "tools/call");
+        assert_eq!(parsed.id, Some(RequestId::Number(7)));
+        assert!(!parsed.is_notification());
+    }
+
+    #[test]
+    fn test_serialization_roundtrip_notification() {
+        let original = JsonRpcRequest::notification("notifications/cancelled")
+            .with_params(serde_json::json!({"id": 3}));
+
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: JsonRpcRequest = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.method, "notifications/cancelled");
+        assert_eq!(parsed.id, None);
+        assert!(parsed.is_notification());
     }
 }

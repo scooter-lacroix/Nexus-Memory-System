@@ -16,7 +16,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::broadcast;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 use uuid::Uuid;
 
 use crate::error::{OrchestratorError, Result};
@@ -169,7 +169,17 @@ impl Event {
     pub fn get<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Option<T> {
         self.data
             .get(key)
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .and_then(|v| match serde_json::from_value(v.clone()) {
+                Ok(parsed) => Some(parsed),
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        key,
+                        "Failed to deserialize event data field; field will be treated as missing"
+                    );
+                    None
+                }
+            })
     }
 }
 

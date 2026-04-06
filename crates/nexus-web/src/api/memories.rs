@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     error::{Result, WebError},
@@ -174,50 +174,88 @@ pub async fn update_memory(
         .await?
         .ok_or_else(|| WebError::NotFound(format!("Memory {} not found", id)))?;
 
-    // Build update query dynamically
-    let mut updates: Vec<String> = Vec::new();
+    enum UpdateBindValue {
+        Text(String),
+        Bool(bool),
+    }
+
+    let mut set_clauses: Vec<String> = Vec::new();
+    let mut bind_values: Vec<UpdateBindValue> = Vec::new();
 
     if let Some(content) = request.content {
         if !content.trim().is_empty() {
-            updates.push(format!("content = '{}'", content.replace("'", "''")));
+            set_clauses.push("content = ?".to_string());
+            bind_values.push(UpdateBindValue::Text(content));
         }
     }
 
     if let Some(category) = request.category {
-        updates.push(format!("category = '{}'", category));
+        set_clauses.push("category = ?".to_string());
+        bind_values.push(UpdateBindValue::Text(category.to_string()));
     }
 
     if let Some(memory_lane_type) = request.memory_lane_type {
-        updates.push(format!("memory_lane_type = '{}'", memory_lane_type));
+        set_clauses.push("memory_lane_type = ?".to_string());
+        bind_values.push(UpdateBindValue::Text(memory_lane_type.to_string()));
     }
 
     if let Some(labels) = request.labels {
-        let labels_json = serde_json::to_string(&labels).unwrap_or_default();
-        updates.push(format!("labels = '{}'", labels_json.replace("'", "''")));
+        match serde_json::to_string(&labels) {
+            Ok(labels_json) => {
+                set_clauses.push("labels = ?".to_string());
+                bind_values.push(UpdateBindValue::Text(labels_json));
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to serialize labels for memory update; labels omitted from SQL update");
+            }
+        }
     }
 
     if let Some(metadata) = request.metadata {
-        let metadata_json = serde_json::to_string(&metadata).unwrap_or_default();
-        updates.push(format!("metadata = '{}'", metadata_json.replace("'", "''")));
+        match serde_json::to_string(&metadata) {
+            Ok(metadata_json) => {
+                set_clauses.push("metadata = ?".to_string());
+                bind_values.push(UpdateBindValue::Text(metadata_json));
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to serialize metadata for memory update; metadata omitted from SQL update");
+            }
+        }
     }
 
     if let Some(is_active) = request.is_active {
-        updates.push(format!("is_active = {}", if is_active { 1 } else { 0 }));
+        set_clauses.push("is_active = ?".to_string());
+        bind_values.push(UpdateBindValue::Bool(is_active));
     }
 
     if let Some(is_archived) = request.is_archived {
-        updates.push(format!("is_archived = {}", if is_archived { 1 } else { 0 }));
+        set_clauses.push("is_archived = ?".to_string());
+        bind_values.push(UpdateBindValue::Bool(is_archived));
     }
 
-    if updates.is_empty() {
+    if set_clauses.is_empty() {
         return Ok(Json(MemoryResponse::from(existing)));
     }
 
-    updates.push(format!("updated_at = '{}'", Utc::now().to_rfc3339()));
+    set_clauses.push("updated_at = ?".to_string());
+    bind_values.push(UpdateBindValue::Text(
+        Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+    ));
 
-    let query = format!("UPDATE memories SET {} WHERE id = ?", updates.join(", "));
+    let query = format!(
+        "UPDATE memories SET {} WHERE id = ?",
+        set_clauses.join(", ")
+    );
 
-    sqlx::query(&query)
+    let mut query = sqlx::query(&query);
+    for bind_value in bind_values {
+        query = match bind_value {
+            UpdateBindValue::Text(value) => query.bind(value),
+            UpdateBindValue::Bool(value) => query.bind(value),
+        };
+    }
+
+    query
         .bind(id)
         .execute(state.pool())
         .await
@@ -309,7 +347,10 @@ pub async fn search_memories(
         .map_err(|e| WebError::Storage(e.to_string()))?;
 
     // Convert rows to memories
-    let memories: Vec<nexus_core::Memory> = rows.into_iter().map(row_to_memory).collect();
+    let memories: Vec<nexus_core::Memory> = rows
+        .into_iter()
+        .map(row_to_memory)
+        .collect::<crate::error::Result<Vec<_>>>()?;
 
     let results: Vec<MemoryResponse> = memories.into_iter().map(MemoryResponse::from).collect();
 
@@ -333,25 +374,51 @@ pub async fn search_memories(
 }
 
 /// Convert a database row to a Memory
-fn row_to_memory(row: nexus_storage::models::MemoryRow) -> nexus_core::Memory {
+fn row_to_memory(
+    row: nexus_storage::models::MemoryRow,
+) -> crate::error::Result<nexus_core::Memory> {
     use nexus_core::{Memory, MemoryCategory, MemoryLaneType};
 
-    let labels: Vec<String> = serde_json::from_str(&row.labels).unwrap_or_default();
-    let metadata: serde_json::Value =
-        serde_json::from_str(&row.metadata).unwrap_or(serde_json::Value::Null);
+    let labels: Vec<String> = serde_json::from_str(&row.labels).map_err(|e| {
+        crate::error::WebError::Storage(format!("corrupted labels JSON for memory {}: {e}", row.id))
+    })?;
+    let metadata: serde_json::Value = serde_json::from_str(&row.metadata).map_err(|e| {
+        crate::error::WebError::Storage(format!(
+            "corrupted metadata JSON for memory {}: {e}",
+            row.id
+        ))
+    })?;
     let embedding: Option<Vec<f32>> = row
         .content_embedding
-        .and_then(|e| serde_json::from_str(&e).ok());
+        .map(|e| {
+            serde_json::from_str(&e).map_err(|err| {
+                crate::error::WebError::Storage(format!(
+                    "corrupted embedding JSON for memory {}: {err}",
+                    row.id
+                ))
+            })
+        })
+        .transpose()?;
 
-    Memory {
+    Ok(Memory {
         id: row.id,
         namespace_id: row.namespace_id,
         content: row.content,
-        category: MemoryCategory::parse(&row.category).unwrap_or(MemoryCategory::General),
-        memory_lane_type: row
-            .memory_lane_type
-            .as_deref()
-            .and_then(MemoryLaneType::parse),
+        category: MemoryCategory::parse(&row.category).ok_or_else(|| {
+            WebError::Storage(format!(
+                "Unknown memory category '{}' persisted in database; row may be corrupted",
+                row.category
+            ))
+        })?,
+        memory_lane_type: match &row.memory_lane_type {
+            Some(s) => Some(MemoryLaneType::parse(s).ok_or_else(|| {
+                WebError::Storage(format!(
+                    "Unknown memory_lane_type '{}' persisted in database; row may be corrupted",
+                    s
+                ))
+            })?),
+            None => None,
+        },
         labels,
         metadata,
         similarity_score: row.similarity_score,
@@ -364,5 +431,5 @@ fn row_to_memory(row: nexus_storage::models::MemoryRow) -> nexus_core::Memory {
         is_active: row.is_active,
         is_archived: row.is_archived,
         access_count: row.access_count,
-    }
+    })
 }

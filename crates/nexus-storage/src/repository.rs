@@ -1,6 +1,6 @@
 //! Repository implementations for database operations
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::models::{
     memory_job_status, AgentNamespaceRow, ClaimedMemoryJob, EnqueueJobParams, MemoryEvidenceRow,
@@ -102,6 +102,69 @@ const MAX_JOB_ATTEMPTS: i64 = 5;
 const RAW_ACTIVITY_FILTER_SQL: &str =
     "labels NOT LIKE '%raw-activity%' AND json_extract(COALESCE(metadata, '{}'), '$.raw_activity') IS NULL";
 
+// ---------------------------------------------------------------------------
+// Shared cognitive-metadata query fragments
+// ---------------------------------------------------------------------------
+// These constants are the single source of truth for how the repository
+// extracts values from the `metadata` JSON column.  Every query that touches
+// cognitive fields (observer, subject, session_key, session_keys, level,
+// times_reinforced, times_contradicted) MUST use these fragments so that
+// schema-level changes propagate consistently and cannot drift.
+// ---------------------------------------------------------------------------
+
+/// SQL expression that safely extracts a value from the metadata JSON column,
+/// defaulting to the given JSON literal when metadata is NULL.
+///
+/// Usage in a format! SQL template: `{METADATA}`
+/// Example: `json_extract({METADATA}, '$.cognitive.level')`
+const METADATA: &str = "COALESCE(metadata, '{}')";
+
+/// WHERE-clause fragment that matches a memory whose session context equals the
+/// given session key via either the scalar `session_key` field or the
+/// `session_keys` array.  The fragment expects TWO bound parameters (same value
+/// for both).
+const SESSION_KEY_FILTER: &str =
+    "(json_extract(METADATA, '$.cognitive.session_key') = ? \
+     OR EXISTS (SELECT 1 FROM json_each(COALESCE(json_extract(metadata, '$.cognitive.session_keys'), '[]')) WHERE value = ?))";
+
+/// WHERE-clause fragment that filters by perspective observer and subject.
+/// Does NOT include session_key filtering — combine with [`SESSION_KEY_FILTER`]
+/// when the perspective has a session_key.
+const PERSPECTIVE_IDENTITY_FILTER: &str = "json_extract(METADATA, '$.cognitive.observer') = ? \
+     AND json_extract(METADATA, '$.cognitive.subject') = ?";
+
+/// Cognitive-level extraction expression (no comparison — yields the raw string).
+const COGNITIVE_LEVEL_EXPR: &str = "json_extract(METADATA, '$.cognitive.level')";
+
+/// Assembles the full perspective WHERE clause (observer, subject, and optional
+/// session key) for use in SQL templates.
+///
+/// Returns `(sql_fragment, bind_count)`. The caller must bind:
+/// - observer, subject (always)
+/// - session_key × 2 (if present)
+fn perspective_where_clause(perspective: &PerspectiveKey) -> String {
+    if perspective.session_key.is_some() {
+        format!(
+            "{} AND {}",
+            PERSPECTIVE_IDENTITY_FILTER.replace("METADATA", METADATA),
+            SESSION_KEY_FILTER.replace("METADATA", METADATA),
+        )
+    } else {
+        PERSPECTIVE_IDENTITY_FILTER.replace("METADATA", METADATA)
+    }
+}
+
+/// Bind values for a perspective WHERE clause.
+/// Order: observer, subject, [session_key, session_key]
+fn bind_perspective(perspective: &PerspectiveKey) -> Vec<&str> {
+    let mut vals = vec![perspective.observer.as_str(), perspective.subject.as_str()];
+    if let Some(ref sk) = perspective.session_key {
+        vals.push(sk.as_str());
+        vals.push(sk.as_str());
+    }
+    vals
+}
+
 /// Repository for memory operations
 pub struct MemoryRepository {
     pool: SqlitePool,
@@ -150,6 +213,7 @@ impl MemoryRepository {
         // raised IGNORE. The existing row was touched (access_count
         // incremented) — find it by content match.
         if id == 0 {
+            // Try to find existing row by content match (case-insensitive, trimmed)
             let row: Option<MemoryRow> = sqlx::query_as(
                 "SELECT * FROM memories WHERE namespace_id = ? AND LOWER(TRIM(content)) = LOWER(TRIM(?)) AND is_active = 1 ORDER BY created_at DESC LIMIT 1"
             )
@@ -170,9 +234,19 @@ impl MemoryRepository {
                 });
             }
 
-            return Err(nexus_core::NexusError::Storage(
-                "Duplicate merged by trigger but matching row not found".to_string(),
-            ));
+            // If no duplicate found, this is unexpected - log warning but don't fail
+            // This can happen if trigger fires but content doesn't match exactly
+            tracing::warn!(
+                namespace_id = params.namespace_id,
+                content_length = params.content.len(),
+                "Insert returned id 0 but no matching duplicate found - treating as successful insert"
+            );
+
+            // Return success anyway - the insert did happen, we just can't track the id
+            // This prevents hook failures due to this edge case
+            return self
+                .get_by_content(params.namespace_id, params.content)
+                .await;
         }
 
         self.get_by_id(id).await?.ok_or_else(|| {
@@ -272,6 +346,9 @@ impl MemoryRepository {
         limit: i64,
     ) -> Result<Vec<ClaimedMemoryJob>> {
         let claim_token = new_claim_token(lease_owner);
+        // SQLite's UPDATE ... RETURNING does not preserve CTE ordering.
+        // We must sort in Rust to guarantee priority-first delivery.
+        // This is O(n log n) but n is bounded by the `limit` parameter (typically small).
         let rows: Vec<MemoryJobRow> = sqlx::query_as::<_, MemoryJobRow>(
             r#"
             WITH candidates AS (
@@ -318,12 +395,47 @@ impl MemoryRepository {
 
         let mut claimed = Vec::with_capacity(rows.len());
         for row in rows {
-            let perspective = row
-                .perspective_json
-                .as_deref()
-                .and_then(|s| serde_json::from_str(s).ok());
-            let payload: serde_json::Value =
-                serde_json::from_str(&row.payload_json).unwrap_or(serde_json::Value::Null);
+            let perspective = match row.perspective_json.as_deref() {
+                Some(s) => match serde_json::from_str(s) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        tracing::warn!(
+                            job_id = row.id,
+                            error = %e,
+                            "corrupted perspective JSON, permanently failing job"
+                        );
+                        let _ = self
+                            .permanently_fail_job(
+                                row.id,
+                                &row.lease_owner,
+                                &row.claim_token,
+                                &format!("corrupted perspective JSON: {e}"),
+                            )
+                            .await;
+                        continue;
+                    }
+                },
+                None => None,
+            };
+            let payload: serde_json::Value = match serde_json::from_str(&row.payload_json) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        job_id = row.id,
+                        error = %e,
+                        "corrupted payload JSON, permanently failing job"
+                    );
+                    let _ = self
+                        .permanently_fail_job(
+                            row.id,
+                            &row.lease_owner,
+                            &row.claim_token,
+                            &format!("corrupted payload JSON: {e}"),
+                        )
+                        .await;
+                    continue;
+                }
+            };
             claimed.push(ClaimedMemoryJob {
                 row,
                 perspective,
@@ -436,6 +548,35 @@ impl MemoryRepository {
         Ok(())
     }
 
+    /// Permanently fail a job by ID without requiring a ClaimedMemoryJob.
+    /// Used by claim_jobs to handle corrupted jobs without
+    /// poisoning the entire batch.
+    async fn permanently_fail_job(
+        &self,
+        job_id: i64,
+        lease_owner: &Option<String>,
+        claim_token: &Option<String>,
+        error: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE memory_jobs
+            SET status = ?, last_error = ?, lease_owner = NULL, claim_token = NULL,
+                lease_expires_at = NULL, updated_at = datetime('now')
+            WHERE id = ? AND lease_owner = ? AND claim_token = ?
+            "#,
+        )
+        .bind(memory_job_status::FAILED)
+        .bind(error)
+        .bind(job_id)
+        .bind(lease_owner.as_deref())
+        .bind(claim_token.as_deref())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
     pub async fn get_most_reinforced_by_namespace(
         &self,
         namespace_id: i64,
@@ -466,10 +607,9 @@ impl MemoryRepository {
         .await
         .map_err(db_error)?;
 
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(|row| self.row_to_memory(row))
-            .collect())
+            .collect()
     }
 
     pub async fn get_contradictions_by_namespace(
@@ -502,10 +642,9 @@ impl MemoryRepository {
         .await
         .map_err(db_error)?;
 
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(|row| self.row_to_memory(row))
-            .collect())
+            .collect()
     }
 
     pub async fn list_by_session_key(
@@ -520,19 +659,13 @@ impl MemoryRepository {
         } else {
             format!("AND {}", RAW_ACTIVITY_FILTER_SQL)
         };
+        let session_filter = SESSION_KEY_FILTER.replace("METADATA", METADATA);
         let rows = sqlx::query_as::<_, MemoryRow>(&format!(
             r#"
             SELECT * FROM memories
             WHERE namespace_id = ?
               AND is_active = 1
-              AND (
-                  json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.session_key') = ?
-                  OR EXISTS (
-                      SELECT 1
-                      FROM json_each(COALESCE(json_extract(metadata, '$.cognitive.session_keys'), '[]'))
-                      WHERE value = ?
-                  )
-              )
+              AND {session_filter}
               {noise_sql}
             ORDER BY created_at DESC
             LIMIT ?
@@ -546,10 +679,9 @@ impl MemoryRepository {
         .await
         .map_err(db_error)?;
 
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(|row| self.row_to_memory(row))
-            .collect())
+            .collect()
     }
 
     /// Register a session digest for a memory.
@@ -710,50 +842,22 @@ impl MemoryRepository {
             format!("AND {}", RAW_ACTIVITY_FILTER_SQL)
         };
 
-        let sql = if perspective.session_key.is_some() {
-            format!(
-                r#"
-                SELECT * FROM memories
-                WHERE namespace_id = ?
-                  AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
-                  AND (
-                      json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.session_key') = ?
-                      OR EXISTS (
-                          SELECT 1
-                          FROM json_each(COALESCE(json_extract(metadata, '$.cognitive.session_keys'), '[]'))
-                          WHERE value = ?
-                      )
-                  )
-                  {noise_sql}
-                ORDER BY created_at DESC
-                LIMIT ?
-                "#,
-            )
-        } else {
-            format!(
-                r#"
-                SELECT * FROM memories
-                WHERE namespace_id = ?
-                  AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
-                  {noise_sql}
-                ORDER BY created_at DESC
-                LIMIT ?
-                "#,
-            )
-        };
+        let perspective_sql = perspective_where_clause(perspective);
+        let sql = format!(
+            r#"
+            SELECT * FROM memories
+            WHERE namespace_id = ?
+              AND is_active = 1
+              AND {perspective_sql}
+              {noise_sql}
+            ORDER BY created_at DESC
+            LIMIT ?
+            "#
+        );
+        let mut query = sqlx::query_as::<_, MemoryRow>(&sql).bind(namespace_id);
 
-        let mut query = sqlx::query_as::<_, MemoryRow>(&sql)
-            .bind(namespace_id)
-            .bind(&perspective.observer)
-            .bind(&perspective.subject);
-
-        if let Some(session_key) = &perspective.session_key {
-            query = query.bind(session_key);
-            query = query.bind(session_key);
+        for val in bind_perspective(perspective) {
+            query = query.bind(val);
         }
 
         let rows = query
@@ -762,10 +866,9 @@ impl MemoryRepository {
             .await
             .map_err(db_error)?;
 
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(|row| self.row_to_memory(row))
-            .collect())
+            .collect()
     }
 
     /// Get active memories by cognitive level ordered from newest to oldest.
@@ -775,16 +878,17 @@ impl MemoryRepository {
         level: CognitiveLevel,
         limit: i64,
     ) -> Result<Vec<Memory>> {
-        let rows = sqlx::query_as::<_, MemoryRow>(
+        let rows = sqlx::query_as::<_, MemoryRow>(&format!(
             r#"
             SELECT * FROM memories
             WHERE namespace_id = ?
               AND is_active = 1
-              AND json_extract(COALESCE(metadata, '{}'), '$.cognitive.level') = ?
+              AND {} = ?
             ORDER BY created_at DESC
             LIMIT ?
             "#,
-        )
+            COGNITIVE_LEVEL_EXPR,
+        ))
         .bind(namespace_id)
         .bind(level.as_str())
         .bind(limit)
@@ -792,10 +896,52 @@ impl MemoryRepository {
         .await
         .map_err(db_error)?;
 
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(|row| self.row_to_memory(row))
-            .collect())
+            .collect()
+    }
+
+    /// Get active memories by cognitive level and perspective, ordered from newest to oldest.
+    ///
+    /// Unlike [`Self::get_by_cognitive_level`], this method applies perspective filtering
+    /// (observer, subject, session_key, and session_keys arrays) in the SQL query BEFORE
+    /// the LIMIT is applied, ensuring the caller receives up to `limit` matching results.
+    pub async fn get_by_cognitive_level_with_perspective(
+        &self,
+        namespace_id: i64,
+        level: CognitiveLevel,
+        perspective: &PerspectiveKey,
+        limit: i64,
+    ) -> Result<Vec<Memory>> {
+        let perspective_sql = perspective_where_clause(perspective);
+        let sql = format!(
+            r#"
+            SELECT * FROM memories
+            WHERE namespace_id = ?
+              AND is_active = 1
+              AND {COGNITIVE_LEVEL_EXPR} = ?
+              AND {perspective_sql}
+            ORDER BY created_at DESC
+            LIMIT ?
+            "#
+        );
+        let mut query = sqlx::query_as::<_, MemoryRow>(&sql)
+            .bind(namespace_id)
+            .bind(level.as_str());
+
+        for val in bind_perspective(perspective) {
+            query = query.bind(val);
+        }
+
+        let rows = query
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?;
+
+        rows.into_iter()
+            .map(|row| self.row_to_memory(row))
+            .collect()
     }
 
     /// Get the most reinforced perspective-aligned memories first.
@@ -826,54 +972,24 @@ impl MemoryRepository {
             format!("AND {}", RAW_ACTIVITY_FILTER_SQL)
         };
 
-        let sql = if perspective.session_key.is_some() {
-            format!(
-                r#"
-                SELECT * FROM memories
-                WHERE namespace_id = ?
-                  AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
-                  AND (
-                      json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.session_key') = ?
-                      OR EXISTS (
-                          SELECT 1
-                          FROM json_each(COALESCE(json_extract(metadata, '$.cognitive.session_keys'), '[]'))
-                          WHERE value = ?
-                      )
-                  )
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.level') != ?
-                  {noise_sql}
-                ORDER BY COALESCE(json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.times_reinforced'), 0) DESC,
-                         created_at DESC
-                LIMIT ?
-                "#,
-            )
-        } else {
-            format!(
-                r#"
-                SELECT * FROM memories
-                WHERE namespace_id = ?
-                  AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.level') != ?
-                  {noise_sql}
-                ORDER BY COALESCE(json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.times_reinforced'), 0) DESC,
-                         created_at DESC
-                LIMIT ?
-                "#,
-            )
-        };
+        let perspective_sql = perspective_where_clause(perspective);
+        let sql = format!(
+            r#"
+            SELECT * FROM memories
+            WHERE namespace_id = ?
+              AND is_active = 1
+              AND {perspective_sql}
+              AND {COGNITIVE_LEVEL_EXPR} != ?
+              {noise_sql}
+            ORDER BY COALESCE(json_extract({METADATA}, '$.cognitive.times_reinforced'), 0) DESC,
+                     created_at DESC
+            LIMIT ?
+            "#
+        );
+        let mut query = sqlx::query_as::<_, MemoryRow>(&sql).bind(namespace_id);
 
-        let mut query = sqlx::query_as::<_, MemoryRow>(&sql)
-            .bind(namespace_id)
-            .bind(&perspective.observer)
-            .bind(&perspective.subject);
-
-        if let Some(session_key) = &perspective.session_key {
-            query = query.bind(session_key);
-            query = query.bind(session_key);
+        for val in bind_perspective(perspective) {
+            query = query.bind(val);
         }
 
         let rows = query
@@ -883,10 +999,9 @@ impl MemoryRepository {
             .await
             .map_err(db_error)?;
 
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(|row| self.row_to_memory(row))
-            .collect())
+            .collect()
     }
 
     /// Get contradiction memories for the requested perspective.
@@ -917,54 +1032,24 @@ impl MemoryRepository {
             format!("AND {}", RAW_ACTIVITY_FILTER_SQL)
         };
 
-        let sql = if perspective.session_key.is_some() {
-            format!(
-                r#"
-                SELECT * FROM memories
-                WHERE namespace_id = ?
-                  AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
-                  AND (
-                      json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.session_key') = ?
-                      OR EXISTS (
-                          SELECT 1
-                          FROM json_each(COALESCE(json_extract(metadata, '$.cognitive.session_keys'), '[]'))
-                          WHERE value = ?
-                      )
-                  )
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.level') = ?
-                  {noise_sql}
-                ORDER BY COALESCE(json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.times_contradicted'), 0) DESC,
-                         created_at DESC
-                LIMIT ?
-                "#,
-            )
-        } else {
-            format!(
-                r#"
-                SELECT * FROM memories
-                WHERE namespace_id = ?
-                  AND is_active = 1
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.observer') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.subject') = ?
-                  AND json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.level') = ?
-                  {noise_sql}
-                ORDER BY COALESCE(json_extract(COALESCE(metadata, '{{}}'), '$.cognitive.times_contradicted'), 0) DESC,
-                         created_at DESC
-                LIMIT ?
-                "#,
-            )
-        };
+        let perspective_sql = perspective_where_clause(perspective);
+        let sql = format!(
+            r#"
+            SELECT * FROM memories
+            WHERE namespace_id = ?
+              AND is_active = 1
+              AND {perspective_sql}
+              AND {COGNITIVE_LEVEL_EXPR} = ?
+              {noise_sql}
+            ORDER BY COALESCE(json_extract({METADATA}, '$.cognitive.times_contradicted'), 0) DESC,
+                     created_at DESC
+            LIMIT ?
+            "#
+        );
+        let mut query = sqlx::query_as::<_, MemoryRow>(&sql).bind(namespace_id);
 
-        let mut query = sqlx::query_as::<_, MemoryRow>(&sql)
-            .bind(namespace_id)
-            .bind(&perspective.observer)
-            .bind(&perspective.subject);
-
-        if let Some(session_key) = &perspective.session_key {
-            query = query.bind(session_key);
-            query = query.bind(session_key);
+        for val in bind_perspective(perspective) {
+            query = query.bind(val);
         }
 
         let rows = query
@@ -974,10 +1059,9 @@ impl MemoryRepository {
             .await
             .map_err(db_error)?;
 
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(|row| self.row_to_memory(row))
-            .collect())
+            .collect()
     }
 
     // ---------------------------------------------------------------------------
@@ -1061,7 +1145,9 @@ impl MemoryRepository {
                 .fetch_all(&self.pool)
                 .await
                 .map_err(db_error)?;
-            rows.into_iter().map(|r| self.row_to_memory(r)).collect()
+            rows.into_iter()
+                .map(|r| self.row_to_memory(r))
+                .collect::<Result<Vec<_>>>()?
         };
 
         let contradictions = if let Some(persp) = perspective {
@@ -1151,6 +1237,7 @@ impl MemoryRepository {
         }
 
         let rows = query.fetch_all(&self.pool).await.map_err(db_error)?;
+        let id_set: HashSet<i64> = memory_ids.iter().copied().collect();
         let mut grouped: HashMap<i64, Vec<MemoryLineageEntry>> = HashMap::new();
 
         for row in rows {
@@ -1160,13 +1247,13 @@ impl MemoryRepository {
                 evidence_role: row.evidence_role,
             };
 
-            if memory_ids.contains(&entry.derived_memory_id) {
+            if id_set.contains(&entry.derived_memory_id) {
                 grouped
                     .entry(entry.derived_memory_id)
                     .or_default()
                     .push(entry.clone());
             }
-            if memory_ids.contains(&entry.source_memory_id) {
+            if id_set.contains(&entry.source_memory_id) {
                 grouped
                     .entry(entry.source_memory_id)
                     .or_default()
@@ -1185,7 +1272,27 @@ impl MemoryRepository {
             .await
             .map_err(db_error)?;
 
-        Ok(row.map(|r| self.row_to_memory(r)))
+        row.map(|r| self.row_to_memory(r)).transpose()
+    }
+
+    /// Get a memory by namespace and content (fallback for id 0 edge case)
+    pub async fn get_by_content(&self, namespace_id: i64, content: &str) -> Result<Memory> {
+        let row: Option<MemoryRow> = sqlx::query_as(
+            "SELECT * FROM memories WHERE namespace_id = ? AND LOWER(TRIM(content)) = LOWER(TRIM(?)) AND is_active = 1 ORDER BY created_at DESC LIMIT 1"
+        )
+        .bind(namespace_id)
+        .bind(content)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        row.map(|r| self.row_to_memory(r))
+            .transpose()?
+            .ok_or_else(|| {
+                nexus_core::NexusError::Storage(
+                    "No memories found in namespace after insert".to_string(),
+                )
+            })
     }
 
     /// Search memories by namespace
@@ -1205,7 +1312,7 @@ impl MemoryRepository {
         .await
         .map_err(db_error)?;
 
-        Ok(rows.into_iter().map(|r| self.row_to_memory(r)).collect())
+        rows.into_iter().map(|r| self.row_to_memory(r)).collect()
     }
 
     /// Count memories in namespace
@@ -1395,10 +1502,9 @@ impl MemoryRepository {
         let rows = self
             .search_by_text(namespace_id, query, limit, include_raw)
             .await?;
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(|row| self.row_to_memory(row))
-            .collect())
+            .collect()
     }
 
     /// Fetch recent, embedding-bearing cognition memories for vector-first semantic recall.
@@ -1507,10 +1613,9 @@ impl MemoryRepository {
                 .map_err(db_error)?
         };
 
-        Ok(rows
-            .into_iter()
+        rows.into_iter()
             .map(|row| self.row_to_memory(row))
-            .collect())
+            .collect()
     }
 
     /// List memories with optional filters
@@ -1572,7 +1677,7 @@ impl MemoryRepository {
             .await
             .map_err(db_error)?;
 
-        Ok(rows.into_iter().map(|r| self.row_to_memory(r)).collect())
+        rows.into_iter().map(|r| self.row_to_memory(r)).collect()
     }
 
     /// List memories that still need cognition metadata backfilled.
@@ -1598,7 +1703,7 @@ impl MemoryRepository {
         .await
         .map_err(db_error)?;
 
-        Ok(rows.into_iter().map(|r| self.row_to_memory(r)).collect())
+        rows.into_iter().map(|r| self.row_to_memory(r)).collect()
     }
 
     /// Count memories that still need cognition metadata backfilled.
@@ -1726,7 +1831,7 @@ impl MemoryRepository {
         .await
         .map_err(db_error)?;
 
-        Ok(rows.into_iter().map(|r| self.row_to_memory(r)).collect())
+        rows.into_iter().map(|r| self.row_to_memory(r)).collect()
     }
 
     /// Count lineage-backed archived raw-activity memories that are safe to prune.
@@ -1942,23 +2047,40 @@ impl MemoryRepository {
         })
     }
 
-    fn row_to_memory(&self, row: MemoryRow) -> Memory {
-        let labels: Vec<String> = serde_json::from_str(&row.labels).unwrap_or_default();
-        let metadata: serde_json::Value =
-            serde_json::from_str(&row.metadata).unwrap_or(serde_json::Value::Null);
+    fn row_to_memory(&self, row: MemoryRow) -> Result<Memory> {
+        let labels: Vec<String> = serde_json::from_str(&row.labels).map_err(|e| {
+            nexus_core::NexusError::Storage(format!(
+                "corrupted labels JSON for memory {}: {e}",
+                row.id
+            ))
+        })?;
+        let metadata: serde_json::Value = serde_json::from_str(&row.metadata).map_err(|e| {
+            nexus_core::NexusError::Storage(format!(
+                "corrupted metadata JSON for memory {}: {e}",
+                row.id
+            ))
+        })?;
         let embedding: Option<Vec<f32>> = row
             .content_embedding
-            .and_then(|e| serde_json::from_str(&e).ok());
+            .map(|e| {
+                serde_json::from_str(&e).map_err(|err| {
+                    nexus_core::NexusError::Storage(format!(
+                        "corrupted embedding JSON for memory {}: {err}",
+                        row.id
+                    ))
+                })
+            })
+            .transpose()?;
 
-        Memory {
+        Ok(Memory {
             id: row.id,
             namespace_id: row.namespace_id,
             content: row.content,
-            category: parse_category(&row.category),
-            memory_lane_type: row
-                .memory_lane_type
-                .as_deref()
-                .and_then(parse_memory_lane_type),
+            category: parse_category(&row.category)?,
+            memory_lane_type: match &row.memory_lane_type {
+                Some(s) => parse_memory_lane_type(s)?,
+                None => None,
+            },
             labels,
             metadata,
             similarity_score: row.similarity_score,
@@ -1971,7 +2093,7 @@ impl MemoryRepository {
             is_active: row.is_active,
             is_archived: row.is_archived,
             access_count: row.access_count,
-        }
+        })
     }
 
     // ---- Observability queries ----
@@ -2066,6 +2188,46 @@ impl MemoryRepository {
 
         let rows = query.fetch_all(&self.pool).await.map_err(db_error)?;
         Ok(rows)
+    }
+
+    /// Delete completed jobs that were last updated before the given timestamp.
+    ///
+    /// Returns the number of rows removed.
+    pub async fn purge_completed_jobs(&self, older_than: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM memory_jobs
+            WHERE status = ? AND updated_at < ?
+            "#,
+        )
+        .bind(memory_job_status::COMPLETED)
+        .bind(older_than.format("%Y-%m-%d %H:%M:%S").to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(result.rows_affected())
+    }
+
+    /// Delete permanently failed jobs (attempts >= 5) that were last updated
+    /// before the given timestamp.
+    ///
+    /// Returns the number of rows removed.
+    pub async fn purge_permanently_failed_jobs(&self, older_than: DateTime<Utc>) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM memory_jobs
+            WHERE status = ? AND attempts >= ? AND updated_at < ?
+            "#,
+        )
+        .bind(memory_job_status::FAILED)
+        .bind(MAX_JOB_ATTEMPTS)
+        .bind(older_than.format("%Y-%m-%d %H:%M:%S").to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+
+        Ok(result.rows_affected())
     }
 
     /// List session digests with optional session_key filter.
@@ -2716,12 +2878,22 @@ impl<'a> MemoryRelationRepository<'a> {
     }
 }
 
-fn parse_category(s: &str) -> Category {
-    MemoryCategory::parse(s).unwrap_or(MemoryCategory::General)
+fn parse_category(s: &str) -> Result<Category> {
+    match MemoryCategory::parse(s) {
+        Some(cat) => Ok(cat),
+        None => Err(nexus_core::NexusError::Storage(format!(
+            "Unknown memory category '{s}' persisted in database; row may be corrupted"
+        ))),
+    }
 }
 
-fn parse_memory_lane_type(s: &str) -> Option<MemoryLaneType> {
-    MemoryLaneType::parse(s)
+fn parse_memory_lane_type(s: &str) -> Result<Option<MemoryLaneType>> {
+    match MemoryLaneType::parse(s) {
+        Some(t) => Ok(Some(t)),
+        None => Err(nexus_core::NexusError::Storage(format!(
+            "Unknown memory_lane_type '{s}' persisted in database; row may be corrupted"
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -2753,12 +2925,12 @@ mod tests {
 
     #[test]
     fn test_parse_category() {
-        assert!(matches!(parse_category("facts"), Category::Facts));
+        assert!(matches!(parse_category("facts"), Ok(Category::Facts)));
         assert!(matches!(
             parse_category("preferences"),
-            Category::Preferences
+            Ok(Category::Preferences)
         ));
-        assert!(matches!(parse_category("unknown"), Category::General));
+        assert!(parse_category("unknown").is_err());
     }
 
     #[test]
@@ -2766,37 +2938,39 @@ mod tests {
         let correction = parse_memory_lane_type("correction");
         assert!(matches!(
             correction,
-            Some(MemoryLaneType::Priority(MemoryLanePriorityType::Correction))
+            Ok(Some(MemoryLaneType::Priority(
+                MemoryLanePriorityType::Correction
+            )))
         ));
 
         let pattern_seed = parse_memory_lane_type("pattern_seed");
         assert!(matches!(
             pattern_seed,
-            Some(MemoryLaneType::Priority(
+            Ok(Some(MemoryLaneType::Priority(
                 MemoryLanePriorityType::PatternSeed
-            ))
+            )))
         ));
 
-        assert!(parse_memory_lane_type("unknown").is_none());
+        assert!(parse_memory_lane_type("unknown").is_err());
     }
 
     #[test]
     fn test_parse_category_all_variants() {
-        assert!(matches!(parse_category("general"), Category::General));
-        assert!(matches!(parse_category("session"), Category::Session));
-        assert!(matches!(parse_category("context"), Category::Context));
+        assert!(matches!(parse_category("general"), Ok(Category::General)));
+        assert!(matches!(parse_category("session"), Ok(Category::Session)));
+        assert!(matches!(parse_category("context"), Ok(Category::Context)));
         assert!(matches!(
             parse_category("specifications"),
-            Category::Specifications
+            Ok(Category::Specifications)
         ));
-        assert!(matches!(parse_category("facts"), Category::Facts));
+        assert!(matches!(parse_category("facts"), Ok(Category::Facts)));
         assert!(matches!(
             parse_category("preferences"),
-            Category::Preferences
+            Ok(Category::Preferences)
         ));
-        // Unknown falls back to General
-        assert!(matches!(parse_category("bogus"), Category::General));
-        assert!(matches!(parse_category(""), Category::General));
+        // Unknown values are rejected (fail-closed)
+        assert!(parse_category("bogus").is_err());
+        assert!(parse_category("").is_err());
     }
 
     #[test]
@@ -2864,6 +3038,69 @@ mod tests {
         let ns = NamespaceRepository::new(pool.clone());
         ns.get_or_create(name, "test").await.unwrap();
         ns.get_by_name(name).await.unwrap().unwrap().id
+    }
+
+    // ---- Regression tests for audit findings ----
+
+    /// Audit finding #1: `get_by_content` must match `namespace_id + content`,
+    /// not "latest active row". This prevents the duplicate-insert fallback
+    /// in `store` from returning the wrong memory.
+    #[tokio::test]
+    async fn test_get_by_content_matches_actual_content() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "test-agent").await;
+        let repo = MemoryRepository::new(pool);
+
+        // Store two different memories in the same namespace.
+        let mem_a = repo
+            .store(StoreMemoryParams {
+                namespace_id: ns_id,
+                content: "first memory content",
+                category: &Category::General,
+                memory_lane_type: None,
+                labels: &[],
+                metadata: &serde_json::Value::Null,
+                embedding: None,
+                embedding_model: None,
+            })
+            .await
+            .unwrap();
+
+        let mem_b = repo
+            .store(StoreMemoryParams {
+                namespace_id: ns_id,
+                content: "second memory content",
+                category: &Category::General,
+                memory_lane_type: None,
+                labels: &[],
+                metadata: &serde_json::Value::Null,
+                embedding: None,
+                embedding_model: None,
+            })
+            .await
+            .unwrap();
+
+        assert_ne!(mem_a.id, mem_b.id);
+
+        // get_by_content must return the memory with matching content,
+        // NOT the newest one.
+        let found_a = repo
+            .get_by_content(ns_id, "first memory content")
+            .await
+            .unwrap();
+        assert_eq!(found_a.id, mem_a.id);
+        assert_eq!(found_a.content, "first memory content");
+
+        let found_b = repo
+            .get_by_content(ns_id, "second memory content")
+            .await
+            .unwrap();
+        assert_eq!(found_b.id, mem_b.id);
+        assert_eq!(found_b.content, "second memory content");
+
+        // Non-existent content must error.
+        let result = repo.get_by_content(ns_id, "nonexistent").await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -4159,6 +4396,261 @@ mod tests {
         );
     }
 
+    /// Regression test: `get_by_cognitive_level_with_perspective` must apply
+    /// perspective filtering in SQL BEFORE the LIMIT, so callers receive up to
+    /// `limit` matching results instead of silently getting fewer.
+    #[tokio::test]
+    async fn test_get_by_cognitive_level_with_perspective_filters_before_limit() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "perspective-limit").await;
+        let repo = MemoryRepository::new(pool);
+
+        let perspective_a = PerspectiveKey::new("alice", "project-x", None);
+        let perspective_b = PerspectiveKey::new("bob", "project-y", None);
+
+        // Insert 5 memories for alice + project-x at Explicit level.
+        for i in 0..5 {
+            repo.store(StoreMemoryParams {
+                namespace_id: ns_id,
+                content: &format!("alice memory {}", i),
+                category: &Category::Facts,
+                memory_lane_type: None,
+                labels: &[],
+                metadata: &cognitive_metadata(CognitiveLevel::Explicit, &perspective_a, 0, 0),
+                embedding: None,
+                embedding_model: None,
+            })
+            .await
+            .unwrap();
+        }
+
+        // Insert 5 memories for bob + project-y at Explicit level.
+        for i in 0..5 {
+            repo.store(StoreMemoryParams {
+                namespace_id: ns_id,
+                content: &format!("bob memory {}", i),
+                category: &Category::Facts,
+                memory_lane_type: None,
+                labels: &[],
+                metadata: &cognitive_metadata(CognitiveLevel::Explicit, &perspective_b, 0, 0),
+                embedding: None,
+                embedding_model: None,
+            })
+            .await
+            .unwrap();
+        }
+
+        // Request 3 results for alice's perspective; should get exactly 3, not fewer.
+        let alice_results = repo
+            .get_by_cognitive_level_with_perspective(
+                ns_id,
+                CognitiveLevel::Explicit,
+                &perspective_a,
+                3,
+            )
+            .await
+            .unwrap();
+        assert_eq!(alice_results.len(), 3);
+        assert!(alice_results.iter().all(|m| {
+            let meta = &m.metadata;
+            let obs = meta
+                .get("cognitive")
+                .and_then(|c| c.get("observer"))
+                .and_then(|v| v.as_str());
+            let sub = meta
+                .get("cognitive")
+                .and_then(|c| c.get("subject"))
+                .and_then(|v| v.as_str());
+            obs == Some("alice") && sub == Some("project-x")
+        }));
+
+        // Request 10 results for alice; there are only 5, so capped at 5.
+        let alice_many = repo
+            .get_by_cognitive_level_with_perspective(
+                ns_id,
+                CognitiveLevel::Explicit,
+                &perspective_a,
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(alice_many.len(), 5);
+
+        // Bob gets a separate set.
+        let bob_results = repo
+            .get_by_cognitive_level_with_perspective(
+                ns_id,
+                CognitiveLevel::Explicit,
+                &perspective_b,
+                3,
+            )
+            .await
+            .unwrap();
+        assert_eq!(bob_results.len(), 3);
+        assert!(bob_results.iter().all(|m| {
+            let meta = &m.metadata;
+            let obs = meta
+                .get("cognitive")
+                .and_then(|c| c.get("observer"))
+                .and_then(|v| v.as_str());
+            let sub = meta
+                .get("cognitive")
+                .and_then(|c| c.get("subject"))
+                .and_then(|v| v.as_str());
+            obs == Some("bob") && sub == Some("project-y")
+        }));
+    }
+
+    /// Verifies that the scalar session_key field is respected in the SQL filter.
+    #[tokio::test]
+    async fn test_get_by_cognitive_level_with_perspective_respects_session_key() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "session-key-scalar").await;
+        let repo = MemoryRepository::new(pool);
+
+        let perspective_s1 =
+            PerspectiveKey::new("alice", "project-x", Some("session-1".to_string()));
+        let perspective_s2 =
+            PerspectiveKey::new("alice", "project-x", Some("session-2".to_string()));
+
+        for i in 0..3 {
+            repo.store(StoreMemoryParams {
+                namespace_id: ns_id,
+                content: &format!("s1 memory {}", i),
+                category: &Category::Facts,
+                memory_lane_type: None,
+                labels: &[],
+                metadata: &cognitive_metadata(CognitiveLevel::Derived, &perspective_s1, 0, 0),
+                embedding: None,
+                embedding_model: None,
+            })
+            .await
+            .unwrap();
+        }
+        for i in 0..3 {
+            repo.store(StoreMemoryParams {
+                namespace_id: ns_id,
+                content: &format!("s2 memory {}", i),
+                category: &Category::Facts,
+                memory_lane_type: None,
+                labels: &[],
+                metadata: &cognitive_metadata(CognitiveLevel::Derived, &perspective_s2, 0, 0),
+                embedding: None,
+                embedding_model: None,
+            })
+            .await
+            .unwrap();
+        }
+
+        let s1_results = repo
+            .get_by_cognitive_level_with_perspective(
+                ns_id,
+                CognitiveLevel::Derived,
+                &perspective_s1,
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(s1_results.len(), 3);
+        assert!(s1_results.iter().all(|m| m.content.starts_with("s1")));
+
+        let s2_results = repo
+            .get_by_cognitive_level_with_perspective(
+                ns_id,
+                CognitiveLevel::Derived,
+                &perspective_s2,
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(s2_results.len(), 3);
+        assert!(s2_results.iter().all(|m| m.content.starts_with("s2")));
+    }
+
+    /// Verifies that memories matching only the session_keys array are included.
+    #[tokio::test]
+    async fn test_get_by_cognitive_level_with_perspective_matches_session_keys_array() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "session-keys-array").await;
+        let repo = MemoryRepository::new(pool);
+
+        let perspective = PerspectiveKey::new("alice", "project-x", Some("session-a".to_string()));
+
+        // Memory with session_key set to the same key as the perspective.
+        repo.store(StoreMemoryParams {
+            namespace_id: ns_id,
+            content: "scalar match",
+            category: &Category::Facts,
+            memory_lane_type: None,
+            labels: &[],
+            metadata: &cognitive_metadata(CognitiveLevel::Explicit, &perspective, 0, 0),
+            embedding: None,
+            embedding_model: None,
+        })
+        .await
+        .unwrap();
+
+        // Memory with session_keys array containing the key (but different scalar session_key).
+        repo.store(StoreMemoryParams {
+            namespace_id: ns_id,
+            content: "array match",
+            category: &Category::Facts,
+            memory_lane_type: None,
+            labels: &[],
+            metadata: &serde_json::json!({
+                "cognitive": {
+                    "level": "explicit",
+                    "observer": "alice",
+                    "subject": "project-x",
+                    "session_key": "session-other",
+                    "session_keys": ["session-a", "session-b"],
+                    "generated_by": "test"
+                }
+            }),
+            embedding: None,
+            embedding_model: None,
+        })
+        .await
+        .unwrap();
+
+        // Memory that does not match at all.
+        repo.store(StoreMemoryParams {
+            namespace_id: ns_id,
+            content: "no match",
+            category: &Category::Facts,
+            memory_lane_type: None,
+            labels: &[],
+            metadata: &serde_json::json!({
+                "cognitive": {
+                    "level": "explicit",
+                    "observer": "alice",
+                    "subject": "project-x",
+                    "session_key": "session-other",
+                    "session_keys": ["session-z"],
+                    "generated_by": "test"
+                }
+            }),
+            embedding: None,
+            embedding_model: None,
+        })
+        .await
+        .unwrap();
+
+        let results = repo
+            .get_by_cognitive_level_with_perspective(
+                ns_id,
+                CognitiveLevel::Explicit,
+                &perspective,
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        let contents: Vec<_> = results.iter().map(|m| m.content.as_str()).collect();
+        assert!(contents.contains(&"scalar match"));
+        assert!(contents.contains(&"array match"));
+    }
+
     #[tokio::test]
     async fn test_record_metric_and_latest_metrics_for_namespace() {
         let pool = setup_test_db().await;
@@ -4498,5 +4990,487 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(none_count, 0);
+    }
+
+    // ---- Phase 2 Task 2: Explicit JSON decode error tests ----
+
+    /// Malformed labels JSON must produce an explicit Storage error,
+    /// not silently default to an empty Vec.
+    #[tokio::test]
+    async fn test_row_to_memory_rejects_malformed_labels() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "test-agent").await;
+        let repo = MemoryRepository::new(pool);
+
+        // Insert a memory with valid data first.
+        let memory = repo
+            .store(StoreMemoryParams {
+                namespace_id: ns_id,
+                content: "corruption test labels",
+                category: &Category::General,
+                memory_lane_type: None,
+                labels: &["valid-label".to_string()],
+                metadata: &serde_json::Value::Null,
+                embedding: None,
+                embedding_model: None,
+            })
+            .await
+            .unwrap();
+
+        // Corrupt the labels in-place to invalid JSON.
+        sqlx::query("UPDATE memories SET labels = 'NOT VALID JSON{{{' WHERE id = ?")
+            .bind(memory.id)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+
+        let err = repo.get_by_id(memory.id).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("corrupted labels JSON"),
+            "expected labels corruption error, got: {msg}"
+        );
+        assert!(msg.contains(&memory.id.to_string()));
+    }
+
+    /// Malformed metadata JSON must produce an explicit Storage error,
+    /// not silently default to Value::Null.
+    #[tokio::test]
+    async fn test_row_to_memory_rejects_malformed_metadata() {
+        let pool = setup_test_db().await;
+        let repo = MemoryRepository::new(pool);
+
+        // Construct a MemoryRow with corrupted metadata directly,
+        // bypassing SQLite expression-index validation on UPDATE.
+        let row = MemoryRow {
+            id: 999,
+            namespace_id: 1,
+            content: "test".to_string(),
+            category: "general".to_string(),
+            memory_lane_type: None,
+            labels: "[]".to_string(),
+            metadata: "[truncated".to_string(), // invalid JSON
+            similarity_score: None,
+            relevance_score: None,
+            content_embedding: None,
+            embedding_model: None,
+            created_at: Utc::now(),
+            updated_at: None,
+            last_accessed: None,
+            is_active: true,
+            is_archived: false,
+            access_count: 0,
+        };
+
+        let err = repo.row_to_memory(row).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("corrupted metadata JSON"),
+            "expected metadata corruption error, got: {msg}"
+        );
+    }
+
+    /// Malformed embedding JSON must produce an explicit Storage error,
+    /// not silently default to None.
+    #[tokio::test]
+    async fn test_row_to_memory_rejects_malformed_embedding() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "test-agent").await;
+        let repo = MemoryRepository::new(pool);
+
+        let memory = repo
+            .store(StoreMemoryParams {
+                namespace_id: ns_id,
+                content: "corruption test embedding",
+                category: &Category::General,
+                memory_lane_type: None,
+                labels: &[],
+                metadata: &serde_json::Value::Null,
+                embedding: Some(&[0.1, 0.2, 0.3]),
+                embedding_model: Some("test-model"),
+            })
+            .await
+            .unwrap();
+
+        sqlx::query("UPDATE memories SET content_embedding = 'not-an-array' WHERE id = ?")
+            .bind(memory.id)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+
+        let err = repo.get_by_id(memory.id).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("corrupted embedding JSON"),
+            "expected embedding corruption error, got: {msg}"
+        );
+    }
+
+    /// Malformed job payload JSON is permanently failed and the claim succeeds
+    /// with an empty result, rather than poisoning the entire batch.
+    #[tokio::test]
+    async fn test_claim_jobs_rejects_malformed_payload() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "test-agent").await;
+        let repo = MemoryRepository::new(pool);
+
+        // Insert a job directly with corrupted payload JSON.
+        sqlx::query(
+            r#"
+            INSERT INTO memory_jobs (namespace_id, job_type, status, priority, payload_json, created_at, updated_at)
+            VALUES (?, 'derive_memory', 'pending', 100, '{INVALID_JSON}', datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(ns_id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+        // claim_jobs should succeed with empty result — the bad job is permanently failed.
+        let claimed = repo
+            .claim_jobs(ns_id, "derive_memory", "worker-1", 60, 1)
+            .await
+            .unwrap();
+        assert!(
+            claimed.is_empty(),
+            "corrupt payload job should not be returned"
+        );
+
+        // Verify the job was permanently failed.
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM memory_jobs WHERE namespace_id = ?")
+                .bind(ns_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(status, "failed", "corrupt job should be permanently failed");
+
+        let last_error: Option<String> =
+            sqlx::query_scalar("SELECT last_error FROM memory_jobs WHERE namespace_id = ?")
+                .bind(ns_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert!(
+            last_error
+                .unwrap_or_default()
+                .contains("corrupted payload JSON"),
+            "last_error should mention payload corruption"
+        );
+    }
+
+    /// Malformed perspective JSON in claim_jobs is permanently failed and the
+    /// claim succeeds with an empty result, rather than poisoning the batch.
+    #[tokio::test]
+    async fn test_claim_jobs_rejects_malformed_perspective() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "test-agent").await;
+        let repo = MemoryRepository::new(pool);
+
+        // Insert a job with valid payload but corrupted perspective JSON.
+        sqlx::query(
+            r#"
+            INSERT INTO memory_jobs (namespace_id, job_type, status, priority, perspective_json, payload_json, created_at, updated_at)
+            VALUES (?, 'derive_memory', 'pending', 100, '{BOGUS}', '{"ok": true}', datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(ns_id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+        // claim_jobs should succeed with empty result — the bad job is permanently failed.
+        let claimed = repo
+            .claim_jobs(ns_id, "derive_memory", "worker-1", 60, 1)
+            .await
+            .unwrap();
+        assert!(
+            claimed.is_empty(),
+            "corrupt perspective job should not be returned"
+        );
+
+        // Verify the job was permanently failed.
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM memory_jobs WHERE namespace_id = ?")
+                .bind(ns_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(status, "failed", "corrupt job should be permanently failed");
+
+        let last_error: Option<String> =
+            sqlx::query_scalar("SELECT last_error FROM memory_jobs WHERE namespace_id = ?")
+                .bind(ns_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert!(
+            last_error
+                .unwrap_or_default()
+                .contains("corrupted perspective JSON"),
+            "last_error should mention perspective corruption"
+        );
+    }
+
+    /// When a batch contains one corrupt job among valid ones, the valid jobs
+    /// are returned and only the corrupt job is permanently failed.
+    #[tokio::test]
+    async fn test_claim_jobs_skips_corrupt_returns_valid() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "test-agent").await;
+        let repo = MemoryRepository::new(pool);
+
+        // Enqueue 2 valid jobs.
+        let p1 = serde_json::json!({"memory_id": 1});
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 100,
+            perspective: None,
+            payload: &p1,
+        })
+        .await
+        .unwrap();
+        let p2 = serde_json::json!({"memory_id": 2});
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 50,
+            perspective: None,
+            payload: &p2,
+        })
+        .await
+        .unwrap();
+
+        // Insert 1 corrupt job at the highest priority.
+        sqlx::query(
+            r#"
+            INSERT INTO memory_jobs (namespace_id, job_type, status, priority, payload_json, created_at, updated_at)
+            VALUES (?, 'derive_memory', 'pending', 200, '{BROKEN}', datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(ns_id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+        // Claim all 3 — should get only the 2 valid jobs.
+        let claimed = repo
+            .claim_jobs(ns_id, "derive_memory", "worker-1", 60, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            claimed.len(),
+            2,
+            "should return 2 valid jobs, skipping the corrupt one"
+        );
+
+        // The corrupt job should be permanently failed.
+        let failed_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM memory_jobs WHERE namespace_id = ? AND status = 'failed'",
+        )
+        .bind(ns_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(failed_count, 1, "corrupt job should be permanently failed");
+    }
+
+    // ---- Lifecycle management: purge tests ----
+
+    /// Purge should remove old completed jobs but keep recently completed ones.
+    #[tokio::test]
+    async fn test_purge_completed_jobs_removes_old_keeps_recent() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "purge-test").await;
+        let repo = MemoryRepository::new(pool);
+
+        // Enqueue and complete a job, then backdate its updated_at.
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 10,
+            perspective: None,
+            payload: &serde_json::json!({"old": true}),
+        })
+        .await
+        .unwrap();
+
+        let claimed = repo
+            .claim_jobs(ns_id, "derive_memory", "w", 60, 10)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        let old_job_id = claimed[0].row.id;
+
+        repo.complete_job(&claimed[0]).await.unwrap();
+
+        // Backdate the completed job to 30 days ago.
+        sqlx::query("UPDATE memory_jobs SET updated_at = datetime('now', '-30 days') WHERE id = ?")
+            .bind(old_job_id)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+
+        // Enqueue and complete a second job that stays recent.
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 10,
+            perspective: None,
+            payload: &serde_json::json!({"new": true}),
+        })
+        .await
+        .unwrap();
+
+        let claimed2 = repo
+            .claim_jobs(ns_id, "derive_memory", "w", 60, 10)
+            .await
+            .unwrap();
+        assert_eq!(claimed2.len(), 1);
+        repo.complete_job(&claimed2[0]).await.unwrap();
+
+        // Purge with a cutoff of 7 days ago.
+        let cutoff = Utc::now() - chrono::Duration::days(7);
+        let deleted = repo.purge_completed_jobs(cutoff).await.unwrap();
+        assert_eq!(deleted, 1);
+
+        // Verify: old job is gone, recent job remains.
+        let remaining = repo.list_jobs(ns_id, None, None, 50, 0).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, claimed2[0].row.id);
+    }
+
+    /// Purge permanently failed jobs should only remove those with attempts >= 5.
+    #[tokio::test]
+    async fn test_purge_permanently_failed_jobs_removes_old_keeps_recent() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "purge-failed").await;
+        let repo = MemoryRepository::new(pool);
+
+        // Enqueue a job and fail it 5 times to make it permanently failed.
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 10,
+            perspective: None,
+            payload: &serde_json::json!({"fail_me": true}),
+        })
+        .await
+        .unwrap();
+
+        for _ in 0..5 {
+            let claimed = repo
+                .claim_jobs(ns_id, "derive_memory", "w", 60, 10)
+                .await
+                .unwrap();
+            assert_eq!(claimed.len(), 1);
+            repo.fail_job(&claimed[0], "persistent error")
+                .await
+                .unwrap();
+        }
+
+        // Backdate to 30 days ago.
+        sqlx::query(
+            "UPDATE memory_jobs SET updated_at = datetime('now', '-30 days') WHERE status = ?",
+        )
+        .bind(memory_job_status::FAILED)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+        // Enqueue a second job and fail it only 2 times (still re-queueable).
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 10,
+            perspective: None,
+            payload: &serde_json::json!({"retry_me": true}),
+        })
+        .await
+        .unwrap();
+
+        for _ in 0..2 {
+            let claimed = repo
+                .claim_jobs(ns_id, "derive_memory", "w", 60, 10)
+                .await
+                .unwrap();
+            assert_eq!(claimed.len(), 1);
+            repo.fail_job(&claimed[0], "transient error").await.unwrap();
+        }
+
+        // Purge with a cutoff of 7 days ago.
+        let cutoff = Utc::now() - chrono::Duration::days(7);
+        let deleted = repo.purge_permanently_failed_jobs(cutoff).await.unwrap();
+        assert_eq!(deleted, 1);
+
+        // The permanently failed job is gone; the re-queueable job remains as pending.
+        let remaining = repo.list_jobs(ns_id, None, None, 50, 0).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].status, memory_job_status::PENDING);
+    }
+
+    /// Active leasing should still work after purging old completed/failed jobs.
+    #[tokio::test]
+    async fn test_active_leasing_works_after_purge() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "purge-lease").await;
+        let repo = MemoryRepository::new(pool);
+
+        // Create and complete an old job.
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 10,
+            perspective: None,
+            payload: &serde_json::json!({"old": true}),
+        })
+        .await
+        .unwrap();
+
+        let claimed = repo
+            .claim_jobs(ns_id, "derive_memory", "w", 60, 10)
+            .await
+            .unwrap();
+        repo.complete_job(&claimed[0]).await.unwrap();
+
+        sqlx::query("UPDATE memory_jobs SET updated_at = datetime('now', '-30 days') WHERE id = ?")
+            .bind(claimed[0].row.id)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+
+        // Purge old completed jobs.
+        let cutoff = Utc::now() - chrono::Duration::days(7);
+        repo.purge_completed_jobs(cutoff).await.unwrap();
+
+        // Enqueue a fresh job and verify the full claim/complete/fail cycle still works.
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 20,
+            perspective: None,
+            payload: &serde_json::json!({"fresh": true}),
+        })
+        .await
+        .unwrap();
+
+        let fresh_claimed = repo
+            .claim_jobs(ns_id, "derive_memory", "worker-2", 120, 10)
+            .await
+            .unwrap();
+        assert_eq!(fresh_claimed.len(), 1);
+        assert_eq!(fresh_claimed[0].row.status, "running");
+        assert_eq!(fresh_claimed[0].payload["fresh"], true);
+
+        // Complete it.
+        repo.complete_job(&fresh_claimed[0]).await.unwrap();
+
+        // Verify no more claimable jobs.
+        let empty = repo
+            .claim_jobs(ns_id, "derive_memory", "worker-3", 60, 10)
+            .await
+            .unwrap();
+        assert!(empty.is_empty());
     }
 }

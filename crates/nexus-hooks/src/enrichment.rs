@@ -22,6 +22,7 @@ pub struct EnrichedMemory {
     /// Nexus category for the memory
     pub category: String,
     /// Rewritten, standalone, retrieval-friendly content
+    #[serde(alias = "memory")]
     pub memory_text: String,
     /// Labels for retrieval
     pub labels: Vec<String>,
@@ -37,6 +38,7 @@ pub struct EnrichedMemory {
 /// Result of enriching a batch of candidates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnrichmentBatchResult {
+    #[serde(alias = "accepted_memories", default)]
     pub memories: Vec<EnrichedMemory>,
 }
 
@@ -218,6 +220,29 @@ mod tests {
 
         let serialized = serde_json::to_string(&result).unwrap();
         let deserialized: EnrichmentBatchResult = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(deserialized.memories.len(), 1);
+        assert_eq!(deserialized.memories[0].category, "facts");
+    }
+
+    #[test]
+    fn test_enrichment_batch_result_accepts_accepted_memories_alias() {
+        let payload = json!({
+            "accepted_memories": [
+                {
+                    "store": true,
+                    "category": "facts",
+                    "memory_text": "Project uses SQLite for persistence",
+                    "labels": ["sqlite", "database"],
+                    "memory_lane_type": null,
+                    "comment": "Architecture fact",
+                    "confidence": 0.95
+                }
+            ]
+        });
+
+        let deserialized: EnrichmentBatchResult =
+            serde_json::from_value(payload).expect("deserialize alias payload");
 
         assert_eq!(deserialized.memories.len(), 1);
         assert_eq!(deserialized.memories[0].category, "facts");

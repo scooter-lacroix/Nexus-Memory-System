@@ -24,8 +24,18 @@ pub async fn execute(transport: String, port: u16, agent: bool) -> Result<()> {
 
     match transport.as_str() {
         "stdio" => serve_stdio().await,
-        "http" | "web" => {
-            if transport == "web" && agent {
+        "http" => {
+            eprintln!(
+                "warning: --transport http is deprecated and serves the web dashboard, not MCP.\n\
+                 Use --transport web instead. The http alias will be removed in a future release."
+            );
+            tracing::warn!(
+                "deprecated transport 'http' used; serving web dashboard (not MCP over HTTP)"
+            );
+            serve_web_surface(&config, port).await
+        }
+        "web" => {
+            if agent {
                 info!("Always-on memory agent ENABLED");
             }
             serve_web_surface(&config, port).await

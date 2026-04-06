@@ -253,7 +253,17 @@ impl ResourceHandler {
 
         match ns_repo.get_by_name(agent_type).await {
             Ok(Some(ns)) => {
-                let memory_count = mem_repo.count_by_namespace(ns.id).await.unwrap_or(0);
+                let memory_count = match mem_repo.count_by_namespace(ns.id).await {
+                    Ok(count) => count,
+                    Err(e) => {
+                        return ReadResourceResult {
+                            contents: vec![ResourceContents::text(
+                                format!("agent://{agent_type}"),
+                                format!("Failed to count memories: {e}"),
+                            )],
+                        };
+                    }
+                };
 
                 let value = serde_json::json!({
                     "name": ns.name,
@@ -338,7 +348,17 @@ impl ResourceHandler {
 
         match ns_repo.get_by_name(agent_type).await {
             Ok(Some(ns)) => {
-                let total_memories = mem_repo.count_by_namespace(ns.id).await.unwrap_or(0);
+                let total_memories = match mem_repo.count_by_namespace(ns.id).await {
+                    Ok(count) => count,
+                    Err(e) => {
+                        return ReadResourceResult {
+                            contents: vec![ResourceContents::text(
+                                format!("stats://{agent_type}"),
+                                format!("Failed to count memories: {e}"),
+                            )],
+                        };
+                    }
+                };
 
                 let value = serde_json::json!({
                     "agent_type": agent_type,

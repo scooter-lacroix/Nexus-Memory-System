@@ -7,10 +7,11 @@ use crate::resources::ResourceHandler;
 use crate::tools::ToolHandler;
 use crate::McpConfig;
 use nexus_storage::StorageManager;
-use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use tokio::io::AsyncBufReadExt;
 use tokio::sync::RwLock;
+use tracing::warn;
 
 /// Server state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -173,11 +174,9 @@ impl McpServer {
     async fn start_stdio(&mut self) -> crate::Result<()> {
         tracing::info!("Starting MCP server with stdio transport");
 
-        let stdin = io::stdin();
-        let stdout = io::stdout();
-
-        // Lock stdout for writing
-        let mut stdout_lock = stdout.lock();
+        let stdin = tokio::io::BufReader::new(tokio::io::stdin());
+        let stdout = tokio::io::stdout();
+        let mut stdout_lock = tokio::io::BufWriter::new(stdout);
 
         // Get pool from storage
         let pool = self
@@ -190,15 +189,22 @@ impl McpServer {
         let tool_handler = ToolHandler::new(pool.clone());
         let resource_handler = ResourceHandler::new(pool);
 
-        // Read lines from stdin
-        for line in stdin.lock().lines() {
-            // Check for shutdown
+        // Read lines from stdin asynchronously.
+        // NOTE: We do NOT use tokio::select! here because Lines::next_line() is
+        // not cancel-safe — dropping the future after partial reads loses buffered
+        // bytes.  Instead, we await each line directly and check the shutdown flag
+        // between messages.  For an MCP stdio server, EOF from the client is the
+        // primary shutdown signal.
+        let mut lines = stdin.lines();
+        loop {
+            // Check for shutdown between messages (not while awaiting input).
             if self.shutdown.load(Ordering::SeqCst) {
                 break;
             }
 
-            let line = match line {
-                Ok(l) => l,
+            let line = match lines.next_line().await {
+                Ok(Some(l)) => l,
+                Ok(None) => break, // EOF — client disconnected
                 Err(e) => {
                     tracing::error!("Failed to read from stdin: {}", e);
                     continue;
@@ -225,18 +231,23 @@ impl McpServer {
                 }
                 Err(e) => {
                     tracing::error!("Failed to parse request: {}", e);
-                    JsonRpcMessage::Error(JsonRpcErrorResponse {
+                    Some(JsonRpcMessage::Error(JsonRpcErrorResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         error: JsonRpcError::parse_error(e.to_string()),
                         id: None,
-                    })
+                    }))
                 }
             };
 
-            // Serialize and write response
-            let response_json = serde_json::to_string(&response)?;
-            writeln!(stdout_lock, "{}", response_json)?;
-            stdout_lock.flush()?;
+            // Only write when there is a response (notifications produce no output)
+            if let Some(response) = response {
+                let response_json = serde_json::to_string(&response)?;
+                use tokio::io::AsyncWriteExt;
+                stdout_lock
+                    .write_all(format!("{}\n", response_json).as_bytes())
+                    .await?;
+                stdout_lock.flush().await?;
+            }
         }
 
         Ok(())
@@ -248,21 +259,22 @@ impl McpServer {
             "Starting MCP server with HTTP transport on port {}",
             self.config.port
         );
-
-        // HTTP transport is more complex and would typically use axum or hyper
-        // For now, we'll return an error suggesting stdio transport
         Err(nexus_core::NexusError::InvalidConfig(
             "HTTP transport not yet implemented. Use stdio transport for now.".to_string(),
         ))
     }
 
-    /// Handle an incoming JSON-RPC request
+    /// Handle an incoming JSON-RPC request.
+    ///
+    /// Returns `None` when the incoming message is a notification (no `id`),
+    /// because the JSON-RPC 2.0 spec mandates that notifications MUST NOT
+    /// elicit a response.
     async fn handle_request(
         &self,
         request: JsonRpcRequest,
         tool_handler: &ToolHandler,
         resource_handler: &ResourceHandler,
-    ) -> JsonRpcMessage {
+    ) -> Option<JsonRpcMessage> {
         let total_requests = self.request_counter.load(Ordering::Relaxed);
         tracing::debug!(
             method = %request.method,
@@ -270,13 +282,10 @@ impl McpServer {
             "Handling MCP request"
         );
 
-        // Handle notifications (no response needed)
+        // Handle notifications (no response needed per JSON-RPC 2.0 spec)
         if request.is_notification() {
             tracing::debug!("Received notification: {}", request.method);
-            return JsonRpcMessage::Response(JsonRpcResponse::new(
-                RequestId::Number(0),
-                serde_json::json!(null),
-            ));
+            return None;
         }
 
         let id = request.id.clone().unwrap_or_default();
@@ -310,14 +319,14 @@ impl McpServer {
             }
         };
 
-        match result {
+        Some(match result {
             Ok(value) => JsonRpcMessage::Response(JsonRpcResponse::new(id, value)),
             Err(error) => JsonRpcMessage::Error(JsonRpcErrorResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 error,
                 id: Some(id),
             }),
-        }
+        })
     }
 
     /// Handle initialize request
@@ -325,9 +334,12 @@ impl McpServer {
         &self,
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, JsonRpcError> {
-        let params: InitializeParams = params
-            .and_then(|p| serde_json::from_value(p).ok())
-            .ok_or_else(|| JsonRpcError::invalid_params("Missing initialize params"))?;
+        let params: InitializeParams = match params {
+            Some(p) => serde_json::from_value(p).map_err(|e| {
+                JsonRpcError::invalid_params(format!("Invalid initialize params: {e}"))
+            })?,
+            None => return Err(JsonRpcError::invalid_params("Missing initialize params")),
+        };
 
         tracing::info!(
             "Client connecting: {} v{} (protocol: {})",
@@ -341,7 +353,7 @@ impl McpServer {
 
         // Return server capabilities
         let result = InitializeResult::default();
-        Ok(serde_json::to_value(result).unwrap_or_default())
+        Ok(serialize_result("initialize", &result))
     }
 
     /// Handle tools/list request
@@ -351,7 +363,7 @@ impl McpServer {
             tools,
             next_cursor: None,
         };
-        Ok(serde_json::to_value(result).unwrap_or_default())
+        Ok(serialize_result("tools/list", &result))
     }
 
     /// Handle tools/call request
@@ -360,15 +372,18 @@ impl McpServer {
         params: Option<serde_json::Value>,
         tool_handler: &ToolHandler,
     ) -> Result<serde_json::Value, JsonRpcError> {
-        let params: CallToolParams = params
-            .and_then(|p| serde_json::from_value(p).ok())
-            .ok_or_else(|| JsonRpcError::invalid_params("Missing tool call params"))?;
+        let params: CallToolParams = match params {
+            Some(p) => serde_json::from_value(p).map_err(|e| {
+                JsonRpcError::invalid_params(format!("Invalid tool call params: {e}"))
+            })?,
+            None => return Err(JsonRpcError::invalid_params("Missing tool call params")),
+        };
 
         tracing::info!("Calling tool: {}", params.name);
 
         let result = tool_handler.handle(&params.name, &params.arguments).await;
 
-        Ok(serde_json::to_value(result).unwrap_or_default())
+        Ok(serialize_result(&params.name, &result))
     }
 
     /// Handle resources/list request
@@ -377,7 +392,7 @@ impl McpServer {
         handler: &ResourceHandler,
     ) -> Result<serde_json::Value, JsonRpcError> {
         let result = handler.list_resources();
-        Ok(serde_json::to_value(result).unwrap_or_default())
+        Ok(serialize_result("resources/list", &result))
     }
 
     /// Handle resources/read request
@@ -386,14 +401,17 @@ impl McpServer {
         params: Option<serde_json::Value>,
         handler: &ResourceHandler,
     ) -> Result<serde_json::Value, JsonRpcError> {
-        let params: ReadResourceParams = params
-            .and_then(|p| serde_json::from_value(p).ok())
-            .ok_or_else(|| JsonRpcError::invalid_params("Missing resource read params"))?;
+        let params: ReadResourceParams = match params {
+            Some(p) => serde_json::from_value(p).map_err(|e| {
+                JsonRpcError::invalid_params(format!("Invalid resource read params: {e}"))
+            })?,
+            None => return Err(JsonRpcError::invalid_params("Missing resource read params")),
+        };
 
         tracing::info!("Reading resource: {}", params.uri);
 
         let result = handler.read_resource(&params.uri).await;
-        Ok(serde_json::to_value(result).unwrap_or_default())
+        Ok(serialize_result("resources/read", &result))
     }
 
     /// Handle prompts/list request
@@ -438,7 +456,7 @@ impl McpServer {
             next_cursor: None,
         };
 
-        Ok(serde_json::to_value(result).unwrap_or_default())
+        Ok(serialize_result("prompts/list", &result))
     }
 
     /// Handle prompts/get request
@@ -446,9 +464,12 @@ impl McpServer {
         &self,
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, JsonRpcError> {
-        let params: GetPromptParams = params
-            .and_then(|p| serde_json::from_value(p).ok())
-            .ok_or_else(|| JsonRpcError::invalid_params("Missing prompt get params"))?;
+        let params: GetPromptParams = match params {
+            Some(p) => serde_json::from_value(p).map_err(|e| {
+                JsonRpcError::invalid_params(format!("Invalid prompt get params: {e}"))
+            })?,
+            None => return Err(JsonRpcError::invalid_params("Missing prompt get params")),
+        };
 
         let result = match params.name.as_str() {
             "store_memory" => {
@@ -501,7 +522,22 @@ impl McpServer {
             }
         };
 
-        Ok(serde_json::to_value(result).unwrap_or_default())
+        Ok(serialize_result("prompts/get", &result))
+    }
+}
+
+/// Serialize a response value to JSON, logging a warning on failure.
+///
+/// Returns an empty object on serialization error so the MCP client
+/// receives a valid JSON-RPC response rather than a malformed one,
+/// but the warning makes the failure visible in logs.
+fn serialize_result<T: serde::Serialize>(method: &str, value: &T) -> serde_json::Value {
+    match serde_json::to_value(value) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, method, "Failed to serialize MCP response; returning empty object");
+            serde_json::Value::Object(serde_json::Map::new())
+        }
     }
 }
 
