@@ -396,21 +396,46 @@ impl MemoryRepository {
         let mut claimed = Vec::with_capacity(rows.len());
         for row in rows {
             let perspective = match row.perspective_json.as_deref() {
-                Some(s) => Some(serde_json::from_str(s).map_err(|e| {
-                    nexus_core::NexusError::Storage(format!(
-                        "corrupted perspective JSON for job {}: {e}",
-                        row.id
-                    ))
-                })?),
+                Some(s) => match serde_json::from_str(s) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        tracing::warn!(
+                            job_id = row.id,
+                            error = %e,
+                            "corrupted perspective JSON, permanently failing job"
+                        );
+                        let _ = self
+                            .permanently_fail_job(
+                                row.id,
+                                &row.lease_owner,
+                                &row.claim_token,
+                                &format!("corrupted perspective JSON: {e}"),
+                            )
+                            .await;
+                        continue;
+                    }
+                },
                 None => None,
             };
-            let payload: serde_json::Value =
-                serde_json::from_str(&row.payload_json).map_err(|e| {
-                    nexus_core::NexusError::Storage(format!(
-                        "corrupted payload JSON for job {}: {e}",
-                        row.id
-                    ))
-                })?;
+            let payload: serde_json::Value = match serde_json::from_str(&row.payload_json) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        job_id = row.id,
+                        error = %e,
+                        "corrupted payload JSON, permanently failing job"
+                    );
+                    let _ = self
+                        .permanently_fail_job(
+                            row.id,
+                            &row.lease_owner,
+                            &row.claim_token,
+                            &format!("corrupted payload JSON: {e}"),
+                        )
+                        .await;
+                    continue;
+                }
+            };
             claimed.push(ClaimedMemoryJob {
                 row,
                 perspective,
@@ -520,6 +545,35 @@ impl MemoryRepository {
             }
         }
 
+        Ok(())
+    }
+
+    /// Permanently fail a job by ID without requiring a ClaimedMemoryJob.
+    /// Used by claim_jobs to handle corrupted jobs without
+    /// poisoning the entire batch.
+    async fn permanently_fail_job(
+        &self,
+        job_id: i64,
+        lease_owner: &Option<String>,
+        claim_token: &Option<String>,
+        error: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE memory_jobs
+            SET status = ?, last_error = ?, lease_owner = NULL, claim_token = NULL,
+                lease_expires_at = NULL, updated_at = datetime('now')
+            WHERE id = ? AND lease_owner = ? AND claim_token = ?
+            "#,
+        )
+        .bind(memory_job_status::FAILED)
+        .bind(error)
+        .bind(job_id)
+        .bind(lease_owner.as_deref())
+        .bind(claim_token.as_deref())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
         Ok(())
     }
 
@@ -5052,8 +5106,8 @@ mod tests {
         );
     }
 
-    /// Malformed job payload JSON must produce an explicit Storage error
-    /// from claim_jobs, not silently return Value::Null.
+    /// Malformed job payload JSON is permanently failed and the claim succeeds
+    /// with an empty result, rather than poisoning the entire batch.
     #[tokio::test]
     async fn test_claim_jobs_rejects_malformed_payload() {
         let pool = setup_test_db().await;
@@ -5072,18 +5126,41 @@ mod tests {
         .await
         .unwrap();
 
-        let err = repo
+        // claim_jobs should succeed with empty result — the bad job is permanently failed.
+        let claimed = repo
             .claim_jobs(ns_id, "derive_memory", "worker-1", 60, 1)
             .await
-            .unwrap_err();
-        let msg = err.to_string();
+            .unwrap();
         assert!(
-            msg.contains("corrupted payload JSON"),
-            "expected payload corruption error, got: {msg}"
+            claimed.is_empty(),
+            "corrupt payload job should not be returned"
+        );
+
+        // Verify the job was permanently failed.
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM memory_jobs WHERE namespace_id = ?")
+                .bind(ns_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(status, "failed", "corrupt job should be permanently failed");
+
+        let last_error: Option<String> =
+            sqlx::query_scalar("SELECT last_error FROM memory_jobs WHERE namespace_id = ?")
+                .bind(ns_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert!(
+            last_error
+                .unwrap_or_default()
+                .contains("corrupted payload JSON"),
+            "last_error should mention payload corruption"
         );
     }
 
-    /// Malformed perspective JSON in claim_jobs must produce an explicit Storage error.
+    /// Malformed perspective JSON in claim_jobs is permanently failed and the
+    /// claim succeeds with an empty result, rather than poisoning the batch.
     #[tokio::test]
     async fn test_claim_jobs_rejects_malformed_perspective() {
         let pool = setup_test_db().await;
@@ -5102,15 +5179,101 @@ mod tests {
         .await
         .unwrap();
 
-        let err = repo
+        // claim_jobs should succeed with empty result — the bad job is permanently failed.
+        let claimed = repo
             .claim_jobs(ns_id, "derive_memory", "worker-1", 60, 1)
             .await
-            .unwrap_err();
-        let msg = err.to_string();
+            .unwrap();
         assert!(
-            msg.contains("corrupted perspective JSON"),
-            "expected perspective corruption error, got: {msg}"
+            claimed.is_empty(),
+            "corrupt perspective job should not be returned"
         );
+
+        // Verify the job was permanently failed.
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM memory_jobs WHERE namespace_id = ?")
+                .bind(ns_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(status, "failed", "corrupt job should be permanently failed");
+
+        let last_error: Option<String> =
+            sqlx::query_scalar("SELECT last_error FROM memory_jobs WHERE namespace_id = ?")
+                .bind(ns_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert!(
+            last_error
+                .unwrap_or_default()
+                .contains("corrupted perspective JSON"),
+            "last_error should mention perspective corruption"
+        );
+    }
+
+    /// When a batch contains one corrupt job among valid ones, the valid jobs
+    /// are returned and only the corrupt job is permanently failed.
+    #[tokio::test]
+    async fn test_claim_jobs_skips_corrupt_returns_valid() {
+        let pool = setup_test_db().await;
+        let ns_id = create_namespace(&pool, "test-agent").await;
+        let repo = MemoryRepository::new(pool);
+
+        // Enqueue 2 valid jobs.
+        let p1 = serde_json::json!({"memory_id": 1});
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 100,
+            perspective: None,
+            payload: &p1,
+        })
+        .await
+        .unwrap();
+        let p2 = serde_json::json!({"memory_id": 2});
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: ns_id,
+            job_type: "derive_memory",
+            priority: 50,
+            perspective: None,
+            payload: &p2,
+        })
+        .await
+        .unwrap();
+
+        // Insert 1 corrupt job at the highest priority.
+        sqlx::query(
+            r#"
+            INSERT INTO memory_jobs (namespace_id, job_type, status, priority, payload_json, created_at, updated_at)
+            VALUES (?, 'derive_memory', 'pending', 200, '{BROKEN}', datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(ns_id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+        // Claim all 3 — should get only the 2 valid jobs.
+        let claimed = repo
+            .claim_jobs(ns_id, "derive_memory", "worker-1", 60, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            claimed.len(),
+            2,
+            "should return 2 valid jobs, skipping the corrupt one"
+        );
+
+        // The corrupt job should be permanently failed.
+        let failed_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM memory_jobs WHERE namespace_id = ? AND status = 'failed'",
+        )
+        .bind(ns_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(failed_count, 1, "corrupt job should be permanently failed");
     }
 
     // ---- Lifecycle management: purge tests ----

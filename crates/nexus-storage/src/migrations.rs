@@ -144,7 +144,7 @@ async fn is_migration_applied(pool: &SqlitePool, version: i64) -> crate::Result<
 }
 
 async fn record_migration(pool: &SqlitePool, version: i64, description: &str) -> crate::Result<()> {
-    sqlx::query("INSERT INTO schema_migrations (version, description) VALUES (?, ?)")
+    sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, description) VALUES (?, ?)")
         .bind(version)
         .bind(description)
         .execute(pool)
