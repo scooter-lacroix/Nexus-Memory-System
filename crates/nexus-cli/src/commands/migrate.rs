@@ -1299,6 +1299,8 @@ async fn run_migration(
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .busy_timeout(std::time::Duration::from_secs(5))
         .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        // Per-connection pragmas — applied to every pooled connection,
+        // consistent with StorageManager::from_url().
         .foreign_keys(true)
         .pragma("cache_size", "-2000")
         .pragma("temp_store", "MEMORY");
