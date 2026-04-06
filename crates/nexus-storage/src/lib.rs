@@ -45,23 +45,13 @@ impl StorageManager {
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .busy_timeout(std::time::Duration::from_secs(5))
-            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+            // Per-connection pragmas — these are applied to every pooled connection.
+            .foreign_keys(true)
+            .pragma("cache_size", "-2000")
+            .pragma("temp_store", "MEMORY");
 
         let pool = SqlitePool::connect_with(options).await.map_err(db_error)?;
-
-        // Additional pragmas that must run per-connection
-        sqlx::query("PRAGMA foreign_keys = ON")
-            .execute(&pool)
-            .await
-            .map_err(db_error)?;
-        sqlx::query("PRAGMA cache_size = -2000")
-            .execute(&pool)
-            .await
-            .map_err(db_error)?;
-        sqlx::query("PRAGMA temp_store = MEMORY")
-            .execute(&pool)
-            .await
-            .map_err(db_error)?;
 
         Ok(Self::new(pool))
     }

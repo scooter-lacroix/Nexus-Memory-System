@@ -768,13 +768,33 @@ install_session_start_hook() {
     cat > "${hook_path}" <<'HOOK_EOF'
 #!/bin/bash
 # SessionStart hook - initializes nexus runtime for the session
-# Executes immediately to prevent Claude Code timeout
+# Extracts session_key and cwd from stdin JSON payload for proper session isolation.
 
-# Execute nexus session start - always succeeds
-NEXUS_BIN_PATH session start \
-  --agent claude-code \
-  --mode session \
-  "$@" >/dev/null 2>&1 || true
+input=""
+if [ ! -t 0 ]; then
+    input=$(cat)
+fi
+
+# Extract session_key and cwd from the JSON payload using python3.
+# Falls back to empty string if extraction fails or field is absent.
+extract_field() {
+    python3 -c "
+import sys, json
+try:
+    d = json.loads(sys.argv[1])
+    print(d.get(sys.argv[2], d.get(sys.argv[3], '')))
+except: print('')
+" "$input" "$1" "$2" 2>/dev/null || echo ""
+}
+
+session_key=$(extract_field "session_id" "sessionId")
+cwd_val=$(extract_field "cwd" "working_directory")
+
+args=(session start --agent claude-code --mode session)
+[ -n "$session_key" ] && args+=(--session-key "$session_key")
+[ -n "$cwd_val" ] && args+=(--cwd "$cwd_val")
+
+NEXUS_BIN_PATH "${args[@]}" >/dev/null 2>&1 || true
 
 # Always exit 0 to prevent hook failures
 exit 0
