@@ -1298,24 +1298,13 @@ async fn run_migration(
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .busy_timeout(std::time::Duration::from_secs(5))
-        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        .foreign_keys(true)
+        .pragma("cache_size", "-2000")
+        .pragma("temp_store", "MEMORY");
     let pool = sqlx::SqlitePool::connect_with(options)
         .await
         .context("Failed to connect to target database")?;
-
-    // Apply the same runtime pragma bundle as StorageManager::from_url()
-    sqlx::query("PRAGMA foreign_keys = ON")
-        .execute(&pool)
-        .await
-        .context("Failed to enable foreign keys on migration target")?;
-    sqlx::query("PRAGMA cache_size = -2000")
-        .execute(&pool)
-        .await
-        .context("Failed to set cache size on migration target")?;
-    sqlx::query("PRAGMA temp_store = MEMORY")
-        .execute(&pool)
-        .await
-        .context("Failed to set temp store on migration target")?;
 
     // Run migrations on target
     nexus_storage::migrations::run_migrations(&pool).await?;
