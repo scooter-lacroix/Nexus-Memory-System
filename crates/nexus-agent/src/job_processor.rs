@@ -231,7 +231,6 @@ pub(crate) async fn process_digest_jobs(
                 repo.fail_job(&job, &error.to_string())
                     .await
                     .map_err(|storage_error| AgentError::Storage(storage_error.to_string()))?;
-                processed += 1;
                 continue;
             }
         };
@@ -318,6 +317,11 @@ async fn should_run_incremental_digest(
         return Ok(true);
     }
 
+    // Note: `activity_distill_min_events` is intentionally reused here as the
+    // minimum threshold for digest rollover as well.  The two operations (activity
+    // distillation and incremental digest) share the same "minimum new events before
+    // processing is worthwhile" semantic, so a single config knob avoids
+    // over-parameterisation.
     Ok(
         rollover.new_memory_count >= cognition.activity_distill_min_events as i64
             || rollover.estimated_new_tokens >= cognition.digest_short_target_tokens as i64,
