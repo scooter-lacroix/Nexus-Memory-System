@@ -1,7 +1,7 @@
 //! Consolidate command - manually trigger memory consolidation
 
 use anyhow::Result;
-use nexus_agent::runtime::{run_dream_cycle, DreamCycleRequest};
+use nexus_agent::dream_cycle::{run_dream_cycle, DreamCycleRequest};
 use nexus_core::config::AgentConfig;
 use nexus_core::Config;
 use nexus_llm::create_client_auto_with_fallback;
