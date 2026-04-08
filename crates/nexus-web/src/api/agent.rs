@@ -135,7 +135,7 @@ pub async fn agent_consolidate(
         nexus_llm::create_client_auto_with_fallback()
             .map_err(|e| WebError::Config(format!("Failed to create LLM client: {}", e)))?,
         embeddings,
-        nexus_agent::DreamCycleRequest {
+        nexus_agent::dream_cycle::DreamCycleRequest {
             namespace_id,
             lease_owner: &lease_owner,
             perspective: None,

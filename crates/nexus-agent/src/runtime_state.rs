@@ -1,6 +1,5 @@
 //! Runtime state persistence, session key derivation, and helper types.
 
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -119,10 +118,11 @@ pub fn derive_session_key(
         .filter(|value| !value.trim().is_empty())
         .map(nexus_core::normalize_project_path)
         .unwrap_or_else(|| "unknown-cwd".to_string());
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    canonical_agent.hash(&mut hasher);
-    fallback_scope.hash(&mut hasher);
-    format!("derived-{:016x}", hasher.finish())
+    format!(
+        "derived-{}-{}",
+        sanitize_component(&canonical_agent),
+        sanitize_component(&fallback_scope)
+    )
 }
 
 pub(crate) fn sanitize_component(value: &str) -> String {

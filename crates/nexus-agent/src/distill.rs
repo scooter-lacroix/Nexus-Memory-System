@@ -13,6 +13,8 @@ use nexus_core::{
 use nexus_llm::{ChatMessage, GenerateParams, LlmClient, LlmClientJson};
 use nexus_storage::repository::{MemoryRepository, StoreMemoryParams};
 
+use tracing::warn;
+
 use crate::error::AgentError;
 
 pub(crate) const ACTIVITY_DISTILL_JOB: &str = "activity_distill";
@@ -84,7 +86,7 @@ pub(crate) async fn process_activity_distill_jobs(
     let mut processed = 0usize;
     let mut seen_sessions = HashSet::new();
     for job in jobs {
-        let session_key = job
+        let session_key = match job
             .payload
             .get("session_key")
             .and_then(serde_json::Value::as_str)
@@ -93,10 +95,17 @@ pub(crate) async fn process_activity_distill_jobs(
                 job.perspective
                     .as_ref()
                     .and_then(|perspective| perspective.session_key.clone())
-            })
-            .ok_or_else(|| {
-                AgentError::Ingest("activity_distill job missing session_key".to_string())
-            })?;
+            }) {
+            Some(key) => key,
+            None => {
+                let error =
+                    AgentError::Ingest("activity_distill job missing session_key".to_string());
+                repo.fail_job(&job, &error.to_string())
+                    .await
+                    .map_err(|storage_error| AgentError::Storage(storage_error.to_string()))?;
+                continue;
+            }
+        };
         let agent_name = job
             .payload
             .get("agent")
@@ -167,9 +176,13 @@ pub(crate) async fn distill_raw_activity_session(
 
     let event_summaries: Vec<String> = events.iter().map(summarize_distill_event).collect();
     let source_ids: Vec<i64> = events.iter().map(|event| event.memory_id).collect();
-    let distilled = distill_with_llm(&llm, session_key, event_summaries.as_slice())
-        .await
-        .unwrap_or_else(|_| fallback_distilled_session(&events));
+    let distilled = match distill_with_llm(&llm, session_key, event_summaries.as_slice()).await {
+        Ok(result) => result,
+        Err(error) => {
+            warn!(%error, session_key, "LLM distillation failed, using deterministic fallback");
+            fallback_distilled_session(&events)
+        }
+    };
 
     let category = MemoryCategory::parse(&distilled.category).unwrap_or(MemoryCategory::Session);
     let lane_type = MemoryLaneType::Cognitive(MemoryLaneCognitiveType::Explicit);

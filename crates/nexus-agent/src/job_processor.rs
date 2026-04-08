@@ -3,12 +3,13 @@
 //! Each function claims a batch of pending jobs, dispatches them to the
 //! appropriate service, and marks them complete or failed.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use nexus_core::config::{AgentConfig, CognitionConfig};
 use nexus_core::traits::EmbeddingService;
 use nexus_llm::LlmClient;
+use nexus_storage::models::ClaimedMemoryJob;
 use nexus_storage::models::{memory_job_status, EnqueueJobParams, MemoryJobRow};
 use nexus_storage::repository::MemoryRepository;
 use serde_json::json;
@@ -208,9 +209,13 @@ pub(crate) async fn process_digest_jobs(
 
     let service = DigestService::new(agent.clone(), llm, embeddings);
     let mut processed = 0usize;
-    let mut seen_sessions = HashSet::new();
+
+    // Group claimed jobs by session_key, OR-ing the forced flag across
+    // duplicates so that a manual_digest/manual_rebuild is never silently
+    // dropped when an earlier automatic job exists for the same session.
+    let mut session_jobs: HashMap<String, Vec<(ClaimedMemoryJob, bool)>> = HashMap::new();
     for job in jobs {
-        let session_key = job
+        let session_key = match job
             .payload
             .get("session_key")
             .and_then(serde_json::Value::as_str)
@@ -219,21 +224,31 @@ pub(crate) async fn process_digest_jobs(
                 job.perspective
                     .as_ref()
                     .and_then(|perspective| perspective.session_key.clone())
-            })
-            .ok_or_else(|| AgentError::Digest("digest job missing session_key".to_string()))?;
+            }) {
+            Some(key) => key,
+            None => {
+                let error = AgentError::Digest("digest job missing session_key".to_string());
+                repo.fail_job(&job, &error.to_string())
+                    .await
+                    .map_err(|storage_error| AgentError::Storage(storage_error.to_string()))?;
+                processed += 1;
+                continue;
+            }
+        };
         let force = digest_job_is_forced(
             job.payload
                 .get("reason")
                 .and_then(serde_json::Value::as_str),
         );
+        session_jobs
+            .entry(session_key)
+            .or_default()
+            .push((job, force));
+    }
 
-        if !seen_sessions.insert(session_key.clone()) {
-            repo.complete_job(&job)
-                .await
-                .map_err(|error| AgentError::Storage(error.to_string()))?;
-            processed += 1;
-            continue;
-        }
+    for (session_key, job_batch) in session_jobs {
+        // OR forced flag across all jobs for this session.
+        let force = job_batch.iter().any(|(_, f)| *f);
 
         if !force
             && !should_run_incremental_digest(repo, namespace_id, &session_key, cognition).await?
@@ -242,10 +257,12 @@ pub(crate) async fn process_digest_jobs(
                 namespace_id,
                 session_key, "Skipping digest rollover below threshold"
             );
-            repo.complete_job(&job)
-                .await
-                .map_err(|error| AgentError::Storage(error.to_string()))?;
-            processed += 1;
+            for (job, _) in &job_batch {
+                repo.complete_job(job)
+                    .await
+                    .map_err(|error| AgentError::Storage(error.to_string()))?;
+                processed += 1;
+            }
             continue;
         }
 
@@ -259,15 +276,19 @@ pub(crate) async fn process_digest_jobs(
 
         match outcome {
             Ok(()) => {
-                repo.complete_job(&job)
-                    .await
-                    .map_err(|error| AgentError::Storage(error.to_string()))?;
-                processed += 1;
+                for (job, _) in &job_batch {
+                    repo.complete_job(job)
+                        .await
+                        .map_err(|error| AgentError::Storage(error.to_string()))?;
+                    processed += 1;
+                }
             }
             Err(error) => {
-                repo.fail_job(&job, &error.to_string())
-                    .await
-                    .map_err(|storage_error| AgentError::Storage(storage_error.to_string()))?;
+                for (job, _) in &job_batch {
+                    repo.fail_job(job, &error.to_string())
+                        .await
+                        .map_err(|storage_error| AgentError::Storage(storage_error.to_string()))?;
+                }
             }
         }
     }
@@ -328,6 +349,13 @@ pub(crate) async fn enqueue_digest_job_if_absent(
     .await
 }
 
+/// Enqueue a job only if no matching pending/running job already exists.
+///
+/// **Note:** The `list_jobs` → `enqueue_job` sequence is subject to a TOCTOU
+/// race under high concurrency. A proper uniqueness guarantee should be
+/// enforced at the database level (e.g. a unique index on
+/// `(namespace_id, job_type, payload_hash)`). The current scan is a
+/// best-effort pre-check, not a source of truth.
 pub(crate) async fn enqueue_job_if_absent(
     repo: &MemoryRepository,
     params: EnqueueJobParams<'_>,

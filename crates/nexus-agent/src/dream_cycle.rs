@@ -9,7 +9,7 @@ use nexus_core::traits::EmbeddingService;
 use nexus_core::{CognitiveLevel, CognitiveMetadata, Memory, PerspectiveKey};
 use nexus_llm::LlmClient;
 use nexus_storage::models::EnqueueJobParams;
-use nexus_storage::repository::{ListMemoryFilters, MemoryRepository};
+use nexus_storage::repository::MemoryRepository;
 use serde_json::json;
 
 use crate::distill;
@@ -282,18 +282,7 @@ pub(crate) async fn collect_dream_signals(
     session_key: &str,
 ) -> Result<DreamSignals, AgentError> {
     let memories = repo
-        .list_filtered(
-            namespace_id,
-            ListMemoryFilters {
-                category: None,
-                since: None,
-                until: None,
-                content_like: None,
-                include_raw: true,
-                limit: 256,
-                offset: 0,
-            },
-        )
+        .list_by_session_key(namespace_id, session_key, 512, true)
         .await
         .map_err(|error| AgentError::Storage(error.to_string()))?;
     let has_digest_gap = repo
