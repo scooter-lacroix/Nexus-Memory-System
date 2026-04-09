@@ -55,7 +55,7 @@ jobs:
           TAG="v${{ steps.version.outputs.version }}"
           if git rev-parse "${TAG}" >/dev/null 2>&1; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Tag ${TAG} already exists — skipping release"
+            echo "::warning::Tag ${TAG} already exists — release skipped. Bump the version in Cargo.toml to trigger a new release."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
