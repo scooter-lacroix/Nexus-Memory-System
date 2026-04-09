@@ -126,7 +126,7 @@ impl AgentType {
             AgentType::OpenCode => &["opencode"],
             AgentType::Codex => &["codex", "codex-cli"],
             AgentType::Amp => &["amp"],
-            AgentType::Droid => &["droid", "factory", "factory-cli"],
+            AgentType::Droid => &["droid", "factory-cli"],
             AgentType::Hermes => &["hermes", "hermes-cli"],
             AgentType::Generic => &[],
         }

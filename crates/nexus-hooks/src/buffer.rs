@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
@@ -210,14 +209,7 @@ impl PersistentBuffer {
 
         if let Some(buffer) = buffers.get(agent_type) {
             let buffer_file = self.buffer_dir.join(format!("{}.json", agent_type));
-            let tmp_file = self.buffer_dir.join(format!(
-                "{}.json.tmp-{}",
-                agent_type,
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            ));
+            let tmp_file = self.buffer_dir.join(format!("{}.json.tmp", agent_type));
             let json = serde_json::to_string_pretty(buffer)
                 .map_err(|e| HookError::BufferError(format!("Failed to serialize: {}", e)))?;
 
@@ -228,13 +220,27 @@ impl PersistentBuffer {
             file.write_all(json.as_bytes())
                 .await
                 .map_err(|e| HookError::BufferError(format!("Failed to write: {}", e)))?;
-            file.flush()
+            file.sync_all()
                 .await
-                .map_err(|e| HookError::BufferError(format!("Failed to flush: {}", e)))?;
+                .map_err(|e| HookError::BufferError(format!("Failed to sync file: {}", e)))?;
 
-            fs::rename(&tmp_file, &buffer_file)
-                .await
-                .map_err(|e| HookError::BufferError(format!("Failed to replace buffer: {}", e)))?;
+            if let Err(err) = fs::rename(&tmp_file, &buffer_file).await {
+                let _ = fs::remove_file(&tmp_file).await;
+                return Err(HookError::BufferError(format!(
+                    "Failed to replace buffer: {}",
+                    err
+                )));
+            }
+
+            #[cfg(unix)]
+            if let Some(parent) = buffer_file.parent() {
+                let dir = fs::File::open(parent).await.map_err(|e| {
+                    HookError::BufferError(format!("Failed to open buffer dir for sync: {}", e))
+                })?;
+                dir.sync_all().await.map_err(|e| {
+                    HookError::BufferError(format!("Failed to sync buffer dir: {}", e))
+                })?;
+            }
 
             // Update last_flush time
             drop(buffers);

@@ -7,7 +7,6 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 
 const GITHUB_REPO: &str = "scooter-lacroix/Nexus-Memory-System";
@@ -219,7 +218,7 @@ fn select_release_asset_for_current_platform(
         .filter_map(|value| value.get("name").and_then(|name| name.as_str()))
         .filter(|name| name.ends_with(".tar.gz"))
         .filter(|name| platform_tokens.iter().any(|token| name.contains(token)))
-        .filter(|name| arch_tokens.iter().any(|token| name.contains(token)))
+        .filter(|name| has_exact_arch_segment(name, &arch_tokens))
         .map(|name| name.to_string())
         .collect::<Vec<_>>();
 
@@ -353,11 +352,12 @@ fn verify_asset_checksum(archive_path: &Path, checksums_path: &Path) -> Result<(
     }
     let actual = format!("{:x}", hasher.finalize());
 
-    if actual != expected {
+    let expected_trimmed = expected.trim();
+    if !actual.eq_ignore_ascii_case(expected_trimmed) {
         return Err(anyhow!(
             "Checksum mismatch for {} (expected {}, got {})",
             archive_path.display(),
-            expected,
+            expected_trimmed,
             actual
         ));
     }
@@ -415,22 +415,14 @@ fn install_binary_and_method_file(
     } else {
         current_exe.to_path_buf()
     };
-
-    let unique = format!(
-        ".nexus-update-{}.tmp",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    );
     let temp_target = target_bin.with_file_name(format!(
-        "{}{}",
+        "{}.tmp-update",
         target_bin
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("nexus"),
-        unique
+            .unwrap_or("nexus")
     ));
+    let _ = fs::remove_file(&temp_target);
 
     fs::copy(new_binary, &temp_target).with_context(|| {
         format!(
@@ -443,9 +435,16 @@ fn install_binary_and_method_file(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&temp_target)?.permissions();
+        let mut perms = fs::metadata(&temp_target)
+            .with_context(|| format!("Failed to stat {}", temp_target.display()))?
+            .permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&temp_target, perms)?;
+        fs::set_permissions(&temp_target, perms).with_context(|| {
+            format!(
+                "Failed to set executable permissions on {}",
+                temp_target.display()
+            )
+        })?;
     }
 
     if let Err(err) = fs::rename(&temp_target, &target_bin) {
@@ -492,6 +491,17 @@ fn arch_tokens(arch: &str) -> Vec<String> {
         "x86" => vec!["x86".to_string(), "i686".to_string()],
         other => vec![other.to_string()],
     }
+}
+
+fn has_exact_arch_segment(asset_name: &str, arch_tokens: &[String]) -> bool {
+    let normalized = asset_name.to_ascii_lowercase();
+    let segments = normalized
+        .split(['-', '.'])
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    arch_tokens
+        .iter()
+        .any(|token| segments.iter().any(|segment| segment == token))
 }
 
 #[cfg(test)]

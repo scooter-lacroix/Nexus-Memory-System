@@ -3,7 +3,7 @@
 //! Installs native lifecycle hooks in `~/.factory/settings.json`.
 
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::base::{AgentHook, BaseHook, LifecycleCapabilities, SessionEndCallback};
 use crate::error::{HookError, Result};
@@ -22,28 +22,47 @@ pub struct DroidHook {
     base: BaseHook,
     settings_hook_installed: bool,
     process_monitor: ProcessMonitor,
+    readonly: bool,
+    settings_path_override: Option<PathBuf>,
 }
 
 impl DroidHook {
     pub const CONFIG_DIR: &'static str = ".factory";
 
     pub fn new() -> Self {
-        Self {
-            base: BaseHook::new("droid"),
-            settings_hook_installed: Self::has_settings_hooks().unwrap_or(false),
-            process_monitor: ProcessMonitor::new(),
-        }
+        Self::new_with_mode(false)
     }
 
     pub fn new_readonly() -> Self {
+        Self::new_with_mode(true)
+    }
+
+    fn new_with_mode(readonly: bool) -> Self {
+        let settings_hook_installed = Self::default_settings_path()
+            .ok()
+            .and_then(|path| Self::has_settings_hooks_at_path(&path).ok())
+            .unwrap_or(false);
         Self {
             base: BaseHook::new("droid"),
-            settings_hook_installed: Self::has_settings_hooks().unwrap_or(false),
+            settings_hook_installed,
             process_monitor: ProcessMonitor::new(),
+            readonly,
+            settings_path_override: None,
         }
     }
 
-    fn settings_path() -> Result<PathBuf> {
+    #[cfg(test)]
+    fn with_settings_path(settings_path: PathBuf, readonly: bool) -> Self {
+        Self {
+            base: BaseHook::new("droid"),
+            settings_hook_installed: false,
+            process_monitor: ProcessMonitor::new(),
+            readonly,
+            settings_path_override: Some(settings_path),
+        }
+    }
+
+    fn default_settings_path() -> Result<PathBuf> {
         let home = dirs::home_dir().ok_or_else(|| {
             HookError::InstallationFailed(format!(
                 "Home directory unavailable; cannot resolve {}/settings.json",
@@ -51,6 +70,13 @@ impl DroidHook {
             ))
         })?;
         Ok(home.join(Self::CONFIG_DIR).join("settings.json"))
+    }
+
+    fn settings_path(&self) -> Result<PathBuf> {
+        if let Some(path) = &self.settings_path_override {
+            return Ok(path.clone());
+        }
+        Self::default_settings_path()
     }
 
     fn find_nexus_binary() -> String {
@@ -90,34 +116,51 @@ impl DroidHook {
     }
 
     fn desired_commands() -> [(String, String); 5] {
-        let nexus_bin = Self::find_nexus_binary().replace('\'', "'\\''");
-        let quoted = format!("'{}'", nexus_bin);
+        let nexus_bin = Self::find_nexus_binary()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+
+        let scoped = |base: &str| -> String {
+            format!(
+                "bash -lc \"{base} --session-key \\\"${{FACTORY_SESSION_ID:-${{SESSION_ID:-}}}}\\\" --cwd \\\"${{FACTORY_CWD:-${{PWD:-}}}}\\\"\""
+            )
+        };
+
         [
             (
                 SESSION_START_EVENT.to_string(),
-                format!("{quoted} session start --agent droid --mode session"),
+                scoped(&format!(
+                    "\"{nexus_bin}\" session start --agent droid --mode session"
+                )),
             ),
             (
                 SESSION_END_EVENT.to_string(),
-                format!("{quoted} session end --agent droid --reason session-end"),
+                scoped(&format!(
+                    "\"{nexus_bin}\" session end --agent droid --reason session-end"
+                )),
             ),
             (
                 CHECKPOINT_EVENT.to_string(),
-                format!("{quoted} session event --agent droid --kind checkpoint"),
+                scoped(&format!(
+                    "\"{nexus_bin}\" session event --agent droid --kind checkpoint"
+                )),
             ),
             (
                 COMPACT_EVENT.to_string(),
-                format!("{quoted} session event --agent droid --kind compact"),
+                scoped(&format!(
+                    "\"{nexus_bin}\" session event --agent droid --kind compact"
+                )),
             ),
             (
                 ERROR_EVENT.to_string(),
-                format!("{quoted} session event --agent droid --kind error"),
+                scoped(&format!(
+                    "\"{nexus_bin}\" session event --agent droid --kind error"
+                )),
             ),
         ]
     }
 
-    fn has_settings_hooks() -> Result<bool> {
-        let settings_path = Self::settings_path()?;
+    fn has_settings_hooks_at_path(settings_path: &Path) -> Result<bool> {
         let content = match std::fs::read_to_string(settings_path) {
             Ok(content) => content,
             Err(_) => return Ok(false),
@@ -131,6 +174,11 @@ impl DroidHook {
         Ok(commands
             .iter()
             .all(|(event, command)| Self::settings_has_command(&settings, event, command)))
+    }
+
+    fn has_settings_hooks(&self) -> Result<bool> {
+        let settings_path = self.settings_path()?;
+        Self::has_settings_hooks_at_path(&settings_path)
     }
 
     fn settings_has_command(settings: &serde_json::Value, event: &str, command: &str) -> bool {
@@ -165,11 +213,13 @@ impl DroidHook {
     }
 
     fn install_settings_hooks(&mut self) -> Result<()> {
-        if self.settings_hook_installed && Self::has_settings_hooks().unwrap_or(false) {
+        self.ensure_mutable()?;
+
+        if self.settings_hook_installed && self.has_settings_hooks().unwrap_or(false) {
             return Ok(());
         }
 
-        let settings_path = Self::settings_path()?;
+        let settings_path = self.settings_path()?;
         let mut settings = if settings_path.exists() {
             let content = std::fs::read_to_string(&settings_path).map_err(|e| {
                 HookError::InstallationFailed(format!("Failed to read settings.json: {}", e))
@@ -251,7 +301,7 @@ impl DroidHook {
     ) -> bool {
         for entry in entries {
             if let Some(command) = entry.get("command").and_then(|value| value.as_str()) {
-                if command.contains("session") && command.contains("droid") {
+                if Self::is_nexus_managed_command(command) {
                     let mut new_entry = entry.clone();
                     if let Some(obj) = new_entry.as_object_mut() {
                         obj.insert(
@@ -276,9 +326,7 @@ impl DroidHook {
                     if hook
                         .get("command")
                         .and_then(|value| value.as_str())
-                        .is_some_and(|command| {
-                            command.contains("session") && command.contains("droid")
-                        })
+                        .is_some_and(Self::is_nexus_managed_command)
                     {
                         if let Some(obj) = hook.as_object_mut() {
                             obj.insert(
@@ -298,6 +346,22 @@ impl DroidHook {
 
         false
     }
+
+    fn is_nexus_managed_command(command: &str) -> bool {
+        let command = command.to_ascii_lowercase();
+        command.contains("nexus")
+            && command.contains("--agent droid")
+            && (command.contains(" session ") || command.contains("ingest-hook-event"))
+    }
+
+    fn ensure_mutable(&self) -> Result<()> {
+        if self.readonly {
+            return Err(HookError::NotSupported(
+                "DroidHook readonly mode does not allow hook installation".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for DroidHook {
@@ -313,27 +377,32 @@ impl AgentHook for DroidHook {
     }
 
     async fn install_session_start_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
+        self.ensure_mutable()?;
         self.base.add_callback(callback);
         self.install_settings_hooks()
     }
 
     async fn install_session_end_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
+        self.ensure_mutable()?;
         self.base.add_callback(callback);
         self.base.installed = true;
         self.install_settings_hooks()
     }
 
     async fn install_checkpoint_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
+        self.ensure_mutable()?;
         self.base.add_callback(callback);
         self.install_settings_hooks()
     }
 
     async fn install_compact_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
+        self.ensure_mutable()?;
         self.base.add_callback(callback);
         self.install_settings_hooks()
     }
 
     async fn install_error_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
+        self.ensure_mutable()?;
         self.base.add_callback(callback);
         self.install_settings_hooks()
     }
@@ -420,9 +489,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_install_session_end_hook_is_supported() {
-        let mut hook = DroidHook::new();
+        let home = tempfile::tempdir().unwrap();
+        let settings_path = home.path().join(".factory").join("settings.json");
+        let mut hook = DroidHook::with_settings_path(settings_path, false);
         let callback = std::sync::Arc::new(|_ctx| {});
         let result = hook.install_session_end_hook(callback).await;
         assert!(result.is_ok() || matches!(result, Err(HookError::InstallationFailed(_))));
+    }
+
+    #[tokio::test]
+    async fn test_readonly_droid_hook_rejects_install() {
+        let home = tempfile::tempdir().unwrap();
+        let settings_path = home.path().join(".factory").join("settings.json");
+        let mut hook = DroidHook::with_settings_path(settings_path, true);
+        let callback = std::sync::Arc::new(|_ctx| {});
+        let result = hook.install_session_start_hook(callback).await;
+        assert!(matches!(result, Err(HookError::NotSupported(_))));
     }
 }
