@@ -92,7 +92,7 @@ impl AgentType {
             "opencode" => Some(Self::OpenCode),
             "codex" => Some(Self::Codex),
             "amp" => Some(Self::Amp),
-            "droid" => Some(Self::Droid),
+            "droid" | "factory" | "factory-cli" => Some(Self::Droid),
             "hermes" | "hermes-cli" => Some(Self::Hermes),
             _ => None,
         }
@@ -101,15 +101,15 @@ impl AgentType {
     /// Get the detection layer type for this agent
     pub fn detection_layer(&self) -> DetectionLayer {
         match self {
-            AgentType::ClaudeCode | AgentType::PiMono | AgentType::OhMyPi | AgentType::PiSkills => {
-                DetectionLayer::Native
-            }
+            AgentType::ClaudeCode
+            | AgentType::PiMono
+            | AgentType::OhMyPi
+            | AgentType::PiSkills
+            | AgentType::Droid => DetectionLayer::Native,
             AgentType::Gemini | AgentType::Qwen => DetectionLayer::Monitor,
-            AgentType::OpenCode
-            | AgentType::Codex
-            | AgentType::Amp
-            | AgentType::Droid
-            | AgentType::Hermes => DetectionLayer::CLI,
+            AgentType::OpenCode | AgentType::Codex | AgentType::Amp | AgentType::Hermes => {
+                DetectionLayer::CLI
+            }
             AgentType::Generic => DetectionLayer::CLI,
         }
     }
@@ -126,7 +126,7 @@ impl AgentType {
             AgentType::OpenCode => &["opencode"],
             AgentType::Codex => &["codex", "codex-cli"],
             AgentType::Amp => &["amp"],
-            AgentType::Droid => &["droid"],
+            AgentType::Droid => &["droid", "factory", "factory-cli"],
             AgentType::Hermes => &["hermes", "hermes-cli"],
             AgentType::Generic => &[],
         }
@@ -184,9 +184,10 @@ impl AgentType {
             AgentType::OpenCode
             | AgentType::Codex
             | AgentType::Amp
-            | AgentType::Droid
             | AgentType::Hermes
             | AgentType::Generic => SupportTier::WrapperLifecycle,
+            // Dedicated Factory settings.json lifecycle integration
+            AgentType::Droid => SupportTier::NativeLifecycle,
         }
     }
 }
@@ -429,6 +430,10 @@ mod tests {
             AgentType::PiSkills.support_tier(),
             SupportTier::NativeLifecycle
         );
+        assert_eq!(
+            AgentType::Droid.support_tier(),
+            SupportTier::NativeLifecycle
+        );
 
         // Monitor-only — process detection, no native hooks
         assert_eq!(AgentType::Gemini.support_tier(), SupportTier::MonitorOnly);
@@ -478,14 +483,13 @@ mod tests {
     }
 
     #[test]
-    fn test_wrapper_agents_have_session_end_capability() {
+    fn test_wrapper_agents_have_wrapper_lifecycle_tier() {
         // WrapperLifecycle agents should report session_end capability
         // since CLIHook registers an atexit callback.
         let wrapper_agents = [
             AgentType::OpenCode,
             AgentType::Codex,
             AgentType::Amp,
-            AgentType::Droid,
             AgentType::Hermes,
         ];
         for agent in &wrapper_agents {

@@ -40,6 +40,8 @@ indicatif = "0.17"
 dialoguer = "0.11"
 dirs = { workspace = true }
 tempfile = { workspace = true }
+semver = "1"
+sha2 = "0.10"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
