@@ -15,12 +15,12 @@ use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
+use crate::dream_cycle::{drain_cognition_jobs, run_dream_cycle, DreamCycleRequest};
 use crate::error::AgentError;
 use crate::inbox::InboxScanner;
 use crate::ingest::IngestService;
 use crate::pulse;
 use crate::query::QueryService;
-use crate::runtime::{drain_cognition_jobs, run_dream_cycle, DreamCycleRequest};
 use crate::types::{AgentStatus, QueryIntrospection};
 
 /// How long to wait for tasks to shut down gracefully before force-aborting.
