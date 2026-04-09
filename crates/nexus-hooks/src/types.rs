@@ -144,7 +144,7 @@ impl AgentType {
             AgentType::OpenCode => ".opencode",
             AgentType::Codex => ".codex",
             AgentType::Amp => ".amp",
-            AgentType::Droid => ".droid",
+            AgentType::Droid => ".factory",
             AgentType::Hermes => ".hermes",
             AgentType::Generic => ".nexus",
         }

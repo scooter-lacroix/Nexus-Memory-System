@@ -119,7 +119,11 @@ impl HookFactory {
             | Some(AgentType::Amp)
             | Some(AgentType::Hermes)
             | Some(AgentType::Generic) => Ok(Box::new(CLIHook::new(normalized.clone()))),
-            Some(AgentType::Droid) => Ok(Box::new(DroidHook::new())),
+            Some(AgentType::Droid) => Ok(Box::new(if readonly {
+                DroidHook::new_readonly()
+            } else {
+                DroidHook::new()
+            })),
             None => Err(HookError::AgentNotFound(format!(
                 "Unknown agent type: {}",
                 agent_type

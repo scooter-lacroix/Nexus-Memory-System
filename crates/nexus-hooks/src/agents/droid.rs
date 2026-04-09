@@ -30,16 +30,27 @@ impl DroidHook {
     pub fn new() -> Self {
         Self {
             base: BaseHook::new("droid"),
-            settings_hook_installed: Self::has_settings_hooks(),
+            settings_hook_installed: Self::has_settings_hooks().unwrap_or(false),
             process_monitor: ProcessMonitor::new(),
         }
     }
 
-    fn settings_path() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(Self::CONFIG_DIR)
-            .join("settings.json")
+    pub fn new_readonly() -> Self {
+        Self {
+            base: BaseHook::new("droid"),
+            settings_hook_installed: Self::has_settings_hooks().unwrap_or(false),
+            process_monitor: ProcessMonitor::new(),
+        }
+    }
+
+    fn settings_path() -> Result<PathBuf> {
+        let home = dirs::home_dir().ok_or_else(|| {
+            HookError::InstallationFailed(format!(
+                "Home directory unavailable; cannot resolve {}/settings.json",
+                Self::CONFIG_DIR
+            ))
+        })?;
+        Ok(home.join(Self::CONFIG_DIR).join("settings.json"))
     }
 
     fn find_nexus_binary() -> String {
@@ -105,19 +116,21 @@ impl DroidHook {
         ]
     }
 
-    fn has_settings_hooks() -> bool {
-        let settings_path = Self::settings_path();
-        let Ok(content) = std::fs::read_to_string(settings_path) else {
-            return false;
+    fn has_settings_hooks() -> Result<bool> {
+        let settings_path = Self::settings_path()?;
+        let content = match std::fs::read_to_string(settings_path) {
+            Ok(content) => content,
+            Err(_) => return Ok(false),
         };
-        let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) else {
-            return false;
+        let settings = match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(settings) => settings,
+            Err(_) => return Ok(false),
         };
 
         let commands = Self::desired_commands();
-        commands
+        Ok(commands
             .iter()
-            .all(|(event, command)| Self::settings_has_command(&settings, event, command))
+            .all(|(event, command)| Self::settings_has_command(&settings, event, command)))
     }
 
     fn settings_has_command(settings: &serde_json::Value, event: &str, command: &str) -> bool {
@@ -152,7 +165,11 @@ impl DroidHook {
     }
 
     fn install_settings_hooks(&mut self) -> Result<()> {
-        let settings_path = Self::settings_path();
+        if self.settings_hook_installed && Self::has_settings_hooks().unwrap_or(false) {
+            return Ok(());
+        }
+
+        let settings_path = Self::settings_path()?;
         let mut settings = if settings_path.exists() {
             let content = std::fs::read_to_string(&settings_path).map_err(|e| {
                 HookError::InstallationFailed(format!("Failed to read settings.json: {}", e))

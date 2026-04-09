@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
@@ -209,16 +210,31 @@ impl PersistentBuffer {
 
         if let Some(buffer) = buffers.get(agent_type) {
             let buffer_file = self.buffer_dir.join(format!("{}.json", agent_type));
+            let tmp_file = self.buffer_dir.join(format!(
+                "{}.json.tmp-{}",
+                agent_type,
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
             let json = serde_json::to_string_pretty(buffer)
                 .map_err(|e| HookError::BufferError(format!("Failed to serialize: {}", e)))?;
 
-            let mut file = fs::File::create(&buffer_file)
+            let mut file = fs::File::create(&tmp_file)
                 .await
                 .map_err(|e| HookError::BufferError(format!("Failed to create file: {}", e)))?;
 
             file.write_all(json.as_bytes())
                 .await
                 .map_err(|e| HookError::BufferError(format!("Failed to write: {}", e)))?;
+            file.flush()
+                .await
+                .map_err(|e| HookError::BufferError(format!("Failed to flush: {}", e)))?;
+
+            fs::rename(&tmp_file, &buffer_file)
+                .await
+                .map_err(|e| HookError::BufferError(format!("Failed to replace buffer: {}", e)))?;
 
             // Update last_flush time
             drop(buffers);

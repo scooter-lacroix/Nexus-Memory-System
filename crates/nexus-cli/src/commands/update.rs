@@ -7,6 +7,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 
 const GITHUB_REPO: &str = "scooter-lacroix/Nexus-Memory-System";
@@ -39,6 +40,8 @@ impl InstallMethod {
 }
 
 pub async fn execute(check_only: bool) -> Result<()> {
+    ensure_gh_available()?;
+
     let current = Version::parse(env!("CARGO_PKG_VERSION"))
         .context("Failed to parse current binary version as semver")?;
     let latest = latest_github_version()?;
@@ -81,7 +84,10 @@ fn latest_github_version() -> Result<Version> {
             ".tagName",
         ])
         .output()
-        .context("Failed to execute `gh release view` to get latest release")?;
+        .context(
+            "Failed to execute `gh release view` to get latest release. \
+Install and authenticate GitHub CLI first: `gh auth login`",
+        )?;
 
     if !output.status.success() {
         return Err(anyhow!(
@@ -97,6 +103,32 @@ fn latest_github_version() -> Result<Version> {
 fn parse_version_tag(tag: &str) -> Result<Version> {
     let normalized = tag.trim().trim_start_matches('v');
     Version::parse(normalized).map_err(|e| anyhow!("Invalid release tag '{}': {}", tag, e))
+}
+
+fn ensure_gh_available() -> Result<()> {
+    let which = Command::new("gh").arg("--version").output();
+    match which {
+        Ok(output) if output.status.success() => {}
+        Ok(_) | Err(_) => {
+            return Err(anyhow!(
+                "GitHub CLI (`gh`) is required for `nexus update`. Install it and run `gh auth login`."
+            ));
+        }
+    }
+
+    let auth = Command::new("gh")
+        .args(["auth", "status"])
+        .output()
+        .map_err(|_| {
+            anyhow!("Failed to run `gh auth status`. Authenticate first with `gh auth login`.")
+        })?;
+    if !auth.status.success() {
+        return Err(anyhow!(
+            "`gh` is not authenticated. Run `gh auth login` and retry."
+        ));
+    }
+
+    Ok(())
 }
 
 fn install_method_filename() -> String {
@@ -151,8 +183,9 @@ fn update_via_verified_release_download(
     detected_method: InstallMethod,
 ) -> Result<()> {
     let tag = format!("v{}", latest);
-    let asset_name = select_release_asset_for_current_platform(&tag)?;
-    let checksums_asset = select_release_checksums_asset(&tag)?;
+    let assets = release_assets(&tag)?;
+    let asset_name = select_release_asset_for_current_platform(&assets, &tag)?;
+    let checksums_asset = select_release_checksums_asset(&assets, &asset_name, &tag)?;
     let temp = tempdir().context("Failed to create temporary directory")?;
     let temp_path = temp.path();
 
@@ -174,19 +207,19 @@ fn update_via_verified_release_download(
     Ok(())
 }
 
-fn select_release_asset_for_current_platform(tag: &str) -> Result<String> {
-    let platform = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-    let asset_json = release_assets_json(tag)?;
-    let assets: Vec<serde_json::Value> =
-        serde_json::from_str(&asset_json).context("Failed to parse release asset list JSON")?;
+fn select_release_asset_for_current_platform(
+    assets: &[serde_json::Value],
+    tag: &str,
+) -> Result<String> {
+    let platform_tokens = os_tokens(std::env::consts::OS);
+    let arch_tokens = arch_tokens(std::env::consts::ARCH);
 
     let mut candidates = assets
         .iter()
         .filter_map(|value| value.get("name").and_then(|name| name.as_str()))
         .filter(|name| name.ends_with(".tar.gz"))
-        .filter(|name| name.contains(platform))
-        .filter(|name| name.contains(arch))
+        .filter(|name| platform_tokens.iter().any(|token| name.contains(token)))
+        .filter(|name| arch_tokens.iter().any(|token| name.contains(token)))
         .map(|name| name.to_string())
         .collect::<Vec<_>>();
 
@@ -194,17 +227,29 @@ fn select_release_asset_for_current_platform(tag: &str) -> Result<String> {
     candidates.into_iter().next().ok_or_else(|| {
         anyhow!(
             "No release asset found for {}-{} at tag {}",
-            platform,
-            arch,
+            std::env::consts::OS,
+            std::env::consts::ARCH,
             tag
         )
     })
 }
 
-fn select_release_checksums_asset(tag: &str) -> Result<String> {
-    let asset_json = release_assets_json(tag)?;
-    let assets: Vec<serde_json::Value> =
-        serde_json::from_str(&asset_json).context("Failed to parse release asset list JSON")?;
+fn select_release_checksums_asset(
+    assets: &[serde_json::Value],
+    selected_archive: &str,
+    tag: &str,
+) -> Result<String> {
+    let stem = selected_archive.trim_end_matches(".tar.gz");
+    if let Some(exact) = assets
+        .iter()
+        .filter_map(|value| value.get("name").and_then(|name| name.as_str()))
+        .find(|name| {
+            (name.contains("checksum") || name.contains("sha256"))
+                && (name.contains(stem) || name.contains(selected_archive))
+        })
+    {
+        return Ok(exact.to_string());
+    }
 
     assets
         .iter()
@@ -214,7 +259,7 @@ fn select_release_checksums_asset(tag: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("No checksum asset found at tag {}", tag))
 }
 
-fn release_assets_json(tag: &str) -> Result<String> {
+fn release_assets(tag: &str) -> Result<Vec<serde_json::Value>> {
     let output = Command::new("gh")
         .args([
             "release",
@@ -228,7 +273,10 @@ fn release_assets_json(tag: &str) -> Result<String> {
             ".assets",
         ])
         .output()
-        .context("Failed to fetch release assets via gh")?;
+        .context(
+            "Failed to fetch release assets via `gh`. \
+Install and authenticate GitHub CLI first: `gh auth login`",
+        )?;
 
     if !output.status.success() {
         return Err(anyhow!(
@@ -237,7 +285,8 @@ fn release_assets_json(tag: &str) -> Result<String> {
         ));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    serde_json::from_slice::<Vec<serde_json::Value>>(&output.stdout)
+        .context("Failed to parse release asset list JSON")
 }
 
 fn download_release_asset(tag: &str, asset_name: &str, output_dir: &Path) -> Result<()> {
@@ -367,20 +416,47 @@ fn install_binary_and_method_file(
         current_exe.to_path_buf()
     };
 
-    fs::copy(new_binary, &target_bin).with_context(|| {
+    let unique = format!(
+        ".nexus-update-{}.tmp",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let temp_target = target_bin.with_file_name(format!(
+        "{}{}",
+        target_bin
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("nexus"),
+        unique
+    ));
+
+    fs::copy(new_binary, &temp_target).with_context(|| {
         format!(
             "Failed to install updated binary from {} to {}",
             new_binary.display(),
-            target_bin.display()
+            temp_target.display()
         )
     })?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&target_bin)?.permissions();
+        let mut perms = fs::metadata(&temp_target)?.permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&target_bin, perms)?;
+        fs::set_permissions(&temp_target, perms)?;
+    }
+
+    if let Err(err) = fs::rename(&temp_target, &target_bin) {
+        let _ = fs::remove_file(&temp_target);
+        return Err(err).with_context(|| {
+            format!(
+                "Failed to replace binary at {} with {}",
+                target_bin.display(),
+                temp_target.display()
+            )
+        });
     }
 
     if let Some(parent) = target_bin.parent() {
@@ -394,6 +470,28 @@ fn install_binary_and_method_file(
     }
 
     Ok(())
+}
+
+fn os_tokens(os: &str) -> Vec<String> {
+    match os {
+        "macos" => vec![
+            "darwin".to_string(),
+            "apple-darwin".to_string(),
+            "macos".to_string(),
+        ],
+        "linux" => vec!["linux".to_string(), "unknown-linux".to_string()],
+        "windows" => vec!["windows".to_string(), "pc-windows".to_string()],
+        other => vec![other.to_string()],
+    }
+}
+
+fn arch_tokens(arch: &str) -> Vec<String> {
+    match arch {
+        "aarch64" => vec!["aarch64".to_string(), "arm64".to_string()],
+        "x86_64" => vec!["x86_64".to_string(), "amd64".to_string()],
+        "x86" => vec!["x86".to_string(), "i686".to_string()],
+        other => vec![other.to_string()],
+    }
 }
 
 #[cfg(test)]

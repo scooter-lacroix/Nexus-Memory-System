@@ -925,10 +925,22 @@ required_hooks = {
 }
 
 for hook_name, (command, timeout) in required_hooks.items():
-    # Enforce exactly one canonical command per lifecycle event.
-    # This removes stale paths (/tmp test installs), legacy quoted commands,
-    # and duplicate plugin bridge entries that can trigger hook errors.
-    s['hooks'][hook_name] = [canonical_entry(command, timeout)]
+    existing = s['hooks'].get(hook_name, [])
+    preserved = []
+    for entry in existing:
+        commands = entry_commands(entry)
+        # Keep non-Nexus hooks untouched; remove stale/duplicate Nexus entries only.
+        if any(
+            (shim_path in c)
+            or (session_start_hook_path in c)
+            or ('nexus' in c and ('session' in c or 'ingest-hook-event' in c))
+            for c in commands
+        ):
+            continue
+        preserved.append(entry)
+
+    preserved.append(canonical_entry(command, timeout))
+    s['hooks'][hook_name] = preserved
 
 with open(settings_path, 'w') as f:
     json.dump(s, f, indent=2)
