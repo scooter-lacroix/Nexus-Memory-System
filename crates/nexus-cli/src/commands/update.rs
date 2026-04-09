@@ -44,7 +44,7 @@ pub async fn execute(check_only: bool) -> Result<()> {
     let current_exe = std::env::current_exe().context("Failed to resolve current executable")?;
     let method = detect_install_method(&current_exe);
     let latest = match method {
-        InstallMethod::CargoInstall => latest_cargo_version()?,
+        InstallMethod::CargoInstall => latest_cargo_version().await?,
         InstallMethod::InstallScript | InstallMethod::GitHubRelease => {
             ensure_gh_available()?;
             latest_github_version()?
@@ -122,29 +122,32 @@ fn ensure_gh_available() -> Result<()> {
     Ok(())
 }
 
-fn latest_cargo_version() -> Result<Version> {
-    let output = Command::new("cargo")
-        .args(["search", "nexus-memory", "--limit", "1", "--color", "never"])
-        .output()
-        .context("Failed to execute `cargo search nexus-memory --limit 1`")?;
-    if !output.status.success() {
+async fn latest_cargo_version() -> Result<Version> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .context("Failed to initialize HTTP client for crates.io lookup")?;
+    let response = client
+        .get("https://crates.io/api/v1/crates/nexus-memory")
+        .send()
+        .await
+        .context("Failed to query crates.io for latest nexus-memory version")?;
+    if !response.status().is_success() {
         return Err(anyhow!(
-            "`cargo search` failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "crates.io lookup failed with status {}",
+            response.status()
         ));
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let ver = stdout
-        .lines()
-        .find_map(|line| {
-            let (_, rest) = line.split_once('=')?;
-            let start = rest.find('"')?;
-            let rem = &rest[start + 1..];
-            let end = rem.find('"')?;
-            Some(rem[..end].to_string())
-        })
-        .ok_or_else(|| anyhow!("Failed to parse latest version from cargo search output"))?;
+    let payload: serde_json::Value = response
+        .json()
+        .await
+        .context("Failed to parse crates.io response JSON")?;
+    let ver = payload
+        .get("crate")
+        .and_then(|c| c.get("max_stable_version"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("crates.io response missing crate.max_stable_version"))?
+        .to_string();
     Version::parse(&ver).map_err(|e| anyhow!("Invalid crates.io version '{}': {}", ver, e))
 }
 
@@ -412,6 +415,7 @@ fn find_extracted_nexus_binary(extract_dir: &Path, current_exe: &Path) -> Result
         .and_then(|s| s.to_str())
         .unwrap_or("nexus")
         .to_string();
+    #[cfg(not(windows))]
     let aliases = vec![
         expected_name.clone(),
         "nexus".to_string(),
@@ -419,12 +423,25 @@ fn find_extracted_nexus_binary(extract_dir: &Path, current_exe: &Path) -> Result
     ];
     #[cfg(windows)]
     {
+        let mut aliases = vec![
+            expected_name.clone(),
+            "nexus".to_string(),
+            "nexus-bin".to_string(),
+        ];
         if !expected_name.ends_with(".exe") {
             aliases.push(format!("{}.exe", expected_name));
         }
         aliases.push("nexus.exe".to_string());
+        return find_extracted_nexus_binary_with_aliases(extract_dir, &aliases);
     }
+    #[cfg(not(windows))]
+    return find_extracted_nexus_binary_with_aliases(extract_dir, &aliases);
+}
 
+fn find_extracted_nexus_binary_with_aliases(
+    extract_dir: &Path,
+    aliases: &[String],
+) -> Result<PathBuf> {
     let mut stack = vec![extract_dir.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let entries = fs::read_dir(&dir)
@@ -506,13 +523,23 @@ fn install_binary_and_method_file(
             }
             if let Err(second_err) = fs::rename(&temp_target, &target_bin) {
                 let _ = fs::remove_file(&temp_target);
-                let _ = fs::rename(&old_target, &target_bin);
+                let restore_err = fs::rename(&old_target, &target_bin).err();
                 return Err(second_err).with_context(|| {
-                    format!(
-                        "Failed to replace binary at {} with {}",
-                        target_bin.display(),
-                        temp_target.display()
-                    )
+                    if let Some(restore_err) = restore_err {
+                        format!(
+                            "Failed to replace binary at {} with {}; restore from {} also failed: {}",
+                            target_bin.display(),
+                            temp_target.display(),
+                            old_target.display(),
+                            restore_err
+                        )
+                    } else {
+                        format!(
+                            "Failed to replace binary at {} with {}",
+                            target_bin.display(),
+                            temp_target.display()
+                        )
+                    }
                 });
             }
             let _ = fs::remove_file(&old_target);

@@ -1824,6 +1824,7 @@ dependencies = [
  "nexus-memory-storage",
  "nexus-memory-vectors",
  "nexus-memory-web",
+ "reqwest",
  "semver",
  "serde",
  "serde_json",

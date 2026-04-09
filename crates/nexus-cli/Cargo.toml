@@ -42,6 +42,7 @@ dirs = { workspace = true }
 tempfile = { workspace = true }
 semver = "1"
 sha2 = "0.10"
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

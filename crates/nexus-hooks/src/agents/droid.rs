@@ -4,6 +4,7 @@
 
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
+use tokio::fs;
 
 use crate::base::{AgentHook, BaseHook, LifecycleCapabilities, SessionEndCallback};
 use crate::error::{HookError, Result};
@@ -214,7 +215,7 @@ impl DroidHook {
                 })
     }
 
-    fn install_settings_hooks(&mut self) -> Result<()> {
+    async fn install_settings_hooks(&mut self) -> Result<()> {
         self.ensure_mutable()?;
 
         if self.settings_hook_installed && self.has_settings_hooks().unwrap_or(false) {
@@ -222,8 +223,10 @@ impl DroidHook {
         }
 
         let settings_path = self.settings_path()?;
-        let mut settings = if settings_path.exists() {
-            let content = std::fs::read_to_string(&settings_path).map_err(|e| {
+        let mut settings = if fs::try_exists(&settings_path).await.map_err(|e| {
+            HookError::InstallationFailed(format!("Failed to check settings.json: {}", e))
+        })? {
+            let content = fs::read_to_string(&settings_path).await.map_err(|e| {
                 HookError::InstallationFailed(format!("Failed to read settings.json: {}", e))
             })?;
             serde_json::from_str::<serde_json::Value>(&content).map_err(|e| {
@@ -238,7 +241,7 @@ impl DroidHook {
         }
 
         if let Some(parent) = settings_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
+            fs::create_dir_all(parent).await.map_err(|e| {
                 HookError::InstallationFailed(format!("Failed to create settings dir: {}", e))
             })?;
         }
@@ -247,19 +250,21 @@ impl DroidHook {
             HookError::InstallationFailed(format!("Failed to serialize settings: {}", e))
         })?;
         let tmp_path = settings_path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, serialized).map_err(|e| {
+        fs::write(&tmp_path, serialized).await.map_err(|e| {
             HookError::InstallationFailed(format!("Failed to write temporary settings: {}", e))
         })?;
         #[cfg(windows)]
-        if settings_path.exists() {
-            std::fs::remove_file(&settings_path).map_err(|e| {
+        if fs::try_exists(&settings_path).await.map_err(|e| {
+            HookError::InstallationFailed(format!("Failed to check settings.json: {}", e))
+        })? {
+            fs::remove_file(&settings_path).await.map_err(|e| {
                 HookError::InstallationFailed(format!(
                     "Failed to remove existing settings.json before replace: {}",
                     e
                 ))
             })?;
         }
-        std::fs::rename(&tmp_path, &settings_path).map_err(|e| {
+        fs::rename(&tmp_path, &settings_path).await.map_err(|e| {
             HookError::InstallationFailed(format!("Failed to replace settings.json: {}", e))
         })?;
 
@@ -371,9 +376,7 @@ impl DroidHook {
                 *hooks = filtered_hooks;
             }
 
-            if managed_in_entry && canonical_seen {
-                rewritten.push(entry);
-            } else if !managed_in_entry {
+            if !managed_in_entry || canonical_seen {
                 rewritten.push(entry);
             }
         }
@@ -414,32 +417,32 @@ impl AgentHook for DroidHook {
     async fn install_session_start_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
         self.ensure_mutable()?;
         self.base.add_callback(callback);
-        self.install_settings_hooks()
+        self.install_settings_hooks().await
     }
 
     async fn install_session_end_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
         self.ensure_mutable()?;
         self.base.add_callback(callback);
         self.base.installed = true;
-        self.install_settings_hooks()
+        self.install_settings_hooks().await
     }
 
     async fn install_checkpoint_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
         self.ensure_mutable()?;
         self.base.add_callback(callback);
-        self.install_settings_hooks()
+        self.install_settings_hooks().await
     }
 
     async fn install_compact_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
         self.ensure_mutable()?;
         self.base.add_callback(callback);
-        self.install_settings_hooks()
+        self.install_settings_hooks().await
     }
 
     async fn install_error_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
         self.ensure_mutable()?;
         self.base.add_callback(callback);
-        self.install_settings_hooks()
+        self.install_settings_hooks().await
     }
 
     async fn detect_session_activity(&self) -> Result<SessionActivity> {
