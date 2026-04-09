@@ -18,6 +18,16 @@ fn write_executable(path: &Path, content: &str) {
     fs::set_permissions(path, perms).unwrap();
 }
 
+/// Creates a stub nexus binary that handles `init` (no-op) and `--version`.
+/// Needed because `--skip-build` without `--binary` requires a pre-built binary,
+/// which doesn't exist on CI.
+fn write_stub_nexus(bin_dir: &Path) {
+    write_executable(
+        &bin_dir.join("nexus-stub"),
+        "#!/usr/bin/env bash\nif [[ \"${1:-}\" == \"init\" ]]; then exit 0; fi\nif [[ \"${1:-}\" == \"--version\" ]]; then echo \"nexus 0.0.0-test\"; exit 0; fi\nexit 0\n",
+    );
+}
+
 #[test]
 fn generated_wrapper_runs_session_lifecycle_and_preserves_exit_code() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -55,10 +65,14 @@ fn generated_wrapper_runs_session_lifecycle_and_preserves_exit_code() {
     );
     write_executable(&tool_dir.join("codex"), &tool_script);
 
+    write_stub_nexus(&bin_dir);
+
     let install = Command::new("bash")
         .arg(install_script)
         .arg("--skip-build")
         .arg("--skip-profile")
+        .arg("--binary")
+        .arg(bin_dir.join("nexus-stub"))
         .arg("--bin-dir")
         .arg(&bin_dir)
         .arg("--config-dir")
@@ -246,10 +260,14 @@ fn generated_wrapper_finalizes_session_on_sigterm() {
     let tool_script = "#!/usr/bin/env bash\nsleep 5\n";
     write_executable(&tool_dir.join("codex"), tool_script);
 
+    write_stub_nexus(&bin_dir);
+
     let install = Command::new("bash")
         .arg(install_script)
         .arg("--skip-build")
         .arg("--skip-profile")
+        .arg("--binary")
+        .arg(bin_dir.join("nexus-stub"))
         .arg("--bin-dir")
         .arg(&bin_dir)
         .arg("--config-dir")
@@ -340,10 +358,14 @@ fn generated_wrapper_terminates_spawned_process_group_on_sigterm() {
     );
     write_executable(&tool_dir.join("codex"), &tool_script);
 
+    write_stub_nexus(&bin_dir);
+
     let install = Command::new("bash")
         .arg(install_script)
         .arg("--skip-build")
         .arg("--skip-profile")
+        .arg("--binary")
+        .arg(bin_dir.join("nexus-stub"))
         .arg("--bin-dir")
         .arg(&bin_dir)
         .arg("--config-dir")
@@ -440,10 +462,14 @@ fn generated_wrapper_supports_hermes_generic_cli_lifecycle() {
     );
     write_executable(&tool_dir.join("hermes"), &tool_script);
 
+    write_stub_nexus(&bin_dir);
+
     let install = Command::new("bash")
         .arg(install_script)
         .arg("--skip-build")
         .arg("--skip-profile")
+        .arg("--binary")
+        .arg(bin_dir.join("nexus-stub"))
         .arg("--bin-dir")
         .arg(&bin_dir)
         .arg("--config-dir")
