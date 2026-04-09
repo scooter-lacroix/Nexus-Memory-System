@@ -166,13 +166,6 @@ enum Commands {
         model: Option<String>,
     },
 
-    /// Update nexus to the latest version
-    Update {
-        /// Only check for updates, don't install
-        #[arg(long)]
-        check: bool,
-    },
-
     /// List memories with filters
     List {
         /// Agent/namespace name
@@ -525,9 +518,6 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Eval { provider, model } => {
             commands::eval::execute(provider, model).await?;
-        }
-        Commands::Update { check } => {
-            commands::update::execute(check).await?;
         }
         Commands::List {
             agent,

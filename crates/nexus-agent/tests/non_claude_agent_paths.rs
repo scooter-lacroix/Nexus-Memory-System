@@ -20,7 +20,7 @@ async fn factory_creates_cli_hook_for_wrapper_lifecycle_agents() {
     let factory = HookFactory::new();
 
     // These agents share the CLIHook implementation.
-    let wrapper_agents = ["codex", "amp", "opencode", "hermes"];
+    let wrapper_agents = ["codex", "amp", "opencode", "droid", "hermes"];
 
     for agent in &wrapper_agents {
         let hook = factory
@@ -51,30 +51,6 @@ async fn factory_creates_cli_hook_for_wrapper_lifecycle_agents() {
             "{agent} should not support native checkpoint"
         );
     }
-}
-
-#[tokio::test]
-async fn factory_creates_droid_hook_with_native_lifecycle() {
-    let factory = HookFactory::new();
-
-    let hook = factory
-        .create_hook("droid")
-        .expect("droid should be supported");
-    assert_eq!(hook.agent_type(), "droid");
-    assert_eq!(
-        hook.support_tier(),
-        SupportTier::NativeLifecycle,
-        "droid should report NativeLifecycle support tier"
-    );
-
-    let caps = hook.lifecycle_capabilities();
-    assert!(
-        caps.session_start,
-        "droid should support native session_start"
-    );
-    assert!(caps.session_end, "droid should support native session_end");
-    assert!(caps.checkpoint, "droid should support native checkpoint");
-    assert!(caps.compact, "droid should support native compact");
 }
 
 #[tokio::test]

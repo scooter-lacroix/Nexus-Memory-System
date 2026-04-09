@@ -22,4 +22,3 @@ pub mod session;
 pub mod stats;
 pub mod store;
 pub mod tools;
-pub mod update;

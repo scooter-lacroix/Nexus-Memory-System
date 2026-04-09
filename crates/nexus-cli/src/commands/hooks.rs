@@ -336,7 +336,7 @@ mod tests {
         let factory = HookFactory::new();
 
         // Native lifecycle agents
-        for native in &["claude-code", "pi-mono", "oh-my-pi", "pi-skills", "droid"] {
+        for native in &["claude-code", "pi-mono", "oh-my-pi", "pi-skills"] {
             let hook = factory.create_hook_readonly(native).unwrap();
             assert_eq!(
                 hook.support_tier(),
@@ -358,7 +358,7 @@ mod tests {
         }
 
         // Wrapper lifecycle agents
-        for wrapper in &["codex", "amp", "opencode", "hermes"] {
+        for wrapper in &["codex", "amp", "opencode", "droid", "hermes"] {
             let hook = factory.create_hook_readonly(wrapper).unwrap();
             assert_eq!(
                 hook.support_tier(),

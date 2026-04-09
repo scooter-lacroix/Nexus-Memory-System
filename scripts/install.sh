@@ -1137,9 +1137,6 @@ main() {
     configure_claude_code
     configure_claude_hooks
 
-    # Record install method for `nexus update` command
-    echo "install-script" > "${DATA_DIR}/${INSTALL_METHOD_FILE:-install-method}"
-
     echo
     ok "Installation complete"
     echo

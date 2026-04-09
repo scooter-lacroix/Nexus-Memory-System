@@ -44,7 +44,6 @@ pub enum AgentType {
     PiMono,
     OhMyPi,
     PiSkills,
-    Droid,
 
     // Monitor-only (process detection, no native hooks)
     Gemini,
@@ -54,6 +53,7 @@ pub enum AgentType {
     OpenCode,
     Codex,
     Amp,
+    Droid,
     Hermes,
 
     // Generic
@@ -101,15 +101,15 @@ impl AgentType {
     /// Get the detection layer type for this agent
     pub fn detection_layer(&self) -> DetectionLayer {
         match self {
-            AgentType::ClaudeCode
-            | AgentType::PiMono
-            | AgentType::OhMyPi
-            | AgentType::PiSkills
-            | AgentType::Droid => DetectionLayer::Native,
-            AgentType::Gemini | AgentType::Qwen => DetectionLayer::Monitor,
-            AgentType::OpenCode | AgentType::Codex | AgentType::Amp | AgentType::Hermes => {
-                DetectionLayer::CLI
+            AgentType::ClaudeCode | AgentType::PiMono | AgentType::OhMyPi | AgentType::PiSkills => {
+                DetectionLayer::Native
             }
+            AgentType::Gemini | AgentType::Qwen => DetectionLayer::Monitor,
+            AgentType::OpenCode
+            | AgentType::Codex
+            | AgentType::Amp
+            | AgentType::Droid
+            | AgentType::Hermes => DetectionLayer::CLI,
             AgentType::Generic => DetectionLayer::CLI,
         }
     }
@@ -144,7 +144,7 @@ impl AgentType {
             AgentType::OpenCode => ".opencode",
             AgentType::Codex => ".codex",
             AgentType::Amp => ".amp",
-            AgentType::Droid => ".factory",
+            AgentType::Droid => ".droid",
             AgentType::Hermes => ".hermes",
             AgentType::Generic => ".nexus",
         }
@@ -180,13 +180,11 @@ impl AgentType {
             AgentType::Gemini => SupportTier::MonitorOnly,
             AgentType::Qwen => SupportTier::MonitorOnly,
 
-            // Dedicated hook implementations with settings.json lifecycle events
-            AgentType::Droid => SupportTier::NativeLifecycle,
-
             // Generic CLI wrapper (CLIHook) — atexit + process detection
             AgentType::OpenCode
             | AgentType::Codex
             | AgentType::Amp
+            | AgentType::Droid
             | AgentType::Hermes
             | AgentType::Generic => SupportTier::WrapperLifecycle,
         }
@@ -487,6 +485,7 @@ mod tests {
             AgentType::OpenCode,
             AgentType::Codex,
             AgentType::Amp,
+            AgentType::Droid,
             AgentType::Hermes,
         ];
         for agent in &wrapper_agents {

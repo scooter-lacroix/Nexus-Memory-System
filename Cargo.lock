@@ -1805,7 +1805,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-memory"
-version = "1.2.2"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1838,7 +1838,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-memory-agent"
-version = "1.2.2"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1867,7 +1867,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-memory-core"
-version = "1.2.2"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1883,7 +1883,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-memory-embeddings"
-version = "1.2.2"
+version = "1.2.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -1905,7 +1905,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-memory-hooks"
-version = "1.2.2"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1935,7 +1935,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-memory-lephase"
-version = "1.2.2"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1952,7 +1952,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-memory-llm"
-version = "1.2.2"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1967,7 +1967,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-memory-mcp"
-version = "1.2.2"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1990,7 +1990,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-memory-orchestrator"
-version = "1.2.2"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2014,7 +2014,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-memory-storage"
-version = "1.2.2"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2032,7 +2032,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-memory-vectors"
-version = "1.2.2"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2051,7 +2051,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-memory-web"
-version = "1.2.2"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
