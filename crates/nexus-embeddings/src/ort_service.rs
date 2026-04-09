@@ -44,13 +44,13 @@ impl OrtEmbeddingService {
 
         // Load ONNX session
         let session = Session::builder()
-            .map_err(|e: ort::Error| EmbeddingError::ModelLoadFailed(e.to_string()))?
+            .map_err(|e| EmbeddingError::ModelLoadFailed(e.to_string()))?
             .with_optimization_level(GraphOptimizationLevel::Level3)
-            .map_err(|e: ort::Error| EmbeddingError::ModelLoadFailed(e.to_string()))?
+            .map_err(|e| EmbeddingError::ModelLoadFailed(e.to_string()))?
             .with_intra_threads(config.intra_op_num_threads as usize)
-            .map_err(|e: ort::Error| EmbeddingError::ModelLoadFailed(e.to_string()))?
+            .map_err(|e| EmbeddingError::ModelLoadFailed(e.to_string()))?
             .commit_from_file(&config.model_path)
-            .map_err(|e: ort::Error| EmbeddingError::ModelLoadFailed(e.to_string()))?;
+            .map_err(|e| EmbeddingError::ModelLoadFailed(e.to_string()))?;
 
         debug!("ONNX session created successfully");
 
@@ -139,11 +139,11 @@ impl OrtEmbeddingService {
             let seq_length = input_ids.len();
 
             let input_ids_value = Value::from_array((vec![1usize, seq_length], input_ids))
-                .map_err(|e: ort::Error| EmbeddingError::InferenceError(e.to_string()))?;
+                .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?;
 
             let attention_mask_value =
                 Value::from_array((vec![1usize, seq_length], attention_mask))
-                    .map_err(|e: ort::Error| EmbeddingError::InferenceError(e.to_string()))?;
+                    .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?;
 
             let mut session = session.lock().map_err(|_| {
                 EmbeddingError::InferenceError("Failed to lock session".to_string())
@@ -151,7 +151,7 @@ impl OrtEmbeddingService {
 
             let outputs = session
                 .run(ort::inputs![input_ids_value, attention_mask_value])
-                .map_err(|e: ort::Error| EmbeddingError::InferenceError(e.to_string()))?;
+                .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?;
 
             let (_name, output_value) = outputs.iter().next().ok_or_else(|| {
                 EmbeddingError::InferenceError("No output found in model".to_string())
@@ -159,7 +159,7 @@ impl OrtEmbeddingService {
 
             let (shape, data) = output_value
                 .try_extract_tensor::<f32>()
-                .map_err(|e: ort::Error| EmbeddingError::InferenceError(e.to_string()))?;
+                .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?;
 
             let dims: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
 
