@@ -39,11 +39,17 @@ impl InstallMethod {
 }
 
 pub async fn execute(check_only: bool) -> Result<()> {
-    ensure_gh_available()?;
-
     let current = Version::parse(env!("CARGO_PKG_VERSION"))
         .context("Failed to parse current binary version as semver")?;
-    let latest = latest_github_version()?;
+    let current_exe = std::env::current_exe().context("Failed to resolve current executable")?;
+    let method = detect_install_method(&current_exe);
+    let latest = match method {
+        InstallMethod::CargoInstall => latest_cargo_version()?,
+        InstallMethod::InstallScript | InstallMethod::GitHubRelease => {
+            ensure_gh_available()?;
+            latest_github_version()?
+        }
+    };
 
     println!("Current version: {}", current);
     println!("Latest version:  {}", latest);
@@ -58,8 +64,6 @@ pub async fn execute(check_only: bool) -> Result<()> {
         return Ok(());
     }
 
-    let current_exe = std::env::current_exe().context("Failed to resolve current executable")?;
-    let method = detect_install_method(&current_exe);
     println!("Detected install method: {}", method.as_str());
 
     match method {
@@ -115,19 +119,33 @@ fn ensure_gh_available() -> Result<()> {
         }
     }
 
-    let auth = Command::new("gh")
-        .args(["auth", "status"])
+    Ok(())
+}
+
+fn latest_cargo_version() -> Result<Version> {
+    let output = Command::new("cargo")
+        .args(["search", "nexus-memory", "--limit", "1", "--color", "never"])
         .output()
-        .map_err(|_| {
-            anyhow!("Failed to run `gh auth status`. Authenticate first with `gh auth login`.")
-        })?;
-    if !auth.status.success() {
+        .context("Failed to execute `cargo search nexus-memory --limit 1`")?;
+    if !output.status.success() {
         return Err(anyhow!(
-            "`gh` is not authenticated. Run `gh auth login` and retry."
+            "`cargo search` failed: {}",
+            String::from_utf8_lossy(&output.stderr)
         ));
     }
 
-    Ok(())
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let ver = stdout
+        .lines()
+        .find_map(|line| {
+            let (_, rest) = line.split_once('=')?;
+            let start = rest.find('"')?;
+            let rem = &rest[start + 1..];
+            let end = rem.find('"')?;
+            Some(rem[..end].to_string())
+        })
+        .ok_or_else(|| anyhow!("Failed to parse latest version from cargo search output"))?;
+    Version::parse(&ver).map_err(|e| anyhow!("Invalid crates.io version '{}': {}", ver, e))
 }
 
 fn install_method_filename() -> String {
@@ -199,7 +217,7 @@ fn update_via_verified_release_download(
     fs::create_dir_all(&extract_dir).context("Failed to create extraction directory")?;
     extract_tarball(&archive_path, &extract_dir)?;
 
-    let installed_bin = find_extracted_nexus_binary(&extract_dir)?;
+    let installed_bin = find_extracted_nexus_binary(&extract_dir, current_exe)?;
     install_binary_and_method_file(&installed_bin, current_exe, detected_method)?;
 
     println!("Update completed from GitHub release {}.", tag);
@@ -223,14 +241,22 @@ fn select_release_asset_for_current_platform(
         .collect::<Vec<_>>();
 
     candidates.sort();
-    candidates.into_iter().next().ok_or_else(|| {
-        anyhow!(
+    match candidates.as_slice() {
+        [] => Err(anyhow!(
             "No release asset found for {}-{} at tag {}",
             std::env::consts::OS,
             std::env::consts::ARCH,
             tag
-        )
-    })
+        )),
+        [only] => Ok(only.clone()),
+        _ => Err(anyhow!(
+            "Multiple release assets matched {}-{} at tag {}: {}",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            tag,
+            candidates.join(", ")
+        )),
+    }
 }
 
 fn select_release_checksums_asset(
@@ -380,7 +406,25 @@ fn extract_tarball(archive_path: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn find_extracted_nexus_binary(extract_dir: &Path) -> Result<PathBuf> {
+fn find_extracted_nexus_binary(extract_dir: &Path, current_exe: &Path) -> Result<PathBuf> {
+    let expected_name = current_exe
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("nexus")
+        .to_string();
+    let aliases = vec![
+        expected_name.clone(),
+        "nexus".to_string(),
+        "nexus-bin".to_string(),
+    ];
+    #[cfg(windows)]
+    {
+        if !expected_name.ends_with(".exe") {
+            aliases.push(format!("{}.exe", expected_name));
+        }
+        aliases.push("nexus.exe".to_string());
+    }
+
     let mut stack = vec![extract_dir.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let entries = fs::read_dir(&dir)
@@ -393,7 +437,7 @@ fn find_extracted_nexus_binary(extract_dir: &Path) -> Result<PathBuf> {
                 continue;
             }
             if let Some(file_name) = path.file_name().and_then(|name| name.to_str()) {
-                if file_name == "nexus" || file_name == "nexus-bin" {
+                if aliases.iter().any(|name| name == file_name) {
                     return Ok(path);
                 }
             }
@@ -410,8 +454,12 @@ fn install_binary_and_method_file(
     current_exe: &Path,
     method: InstallMethod,
 ) -> Result<()> {
+    let target_name = current_exe
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("nexus");
     let target_bin = if let Some(parent) = current_exe.parent() {
-        parent.join("nexus")
+        parent.join(target_name)
     } else {
         current_exe.to_path_buf()
     };
@@ -448,14 +496,38 @@ fn install_binary_and_method_file(
     }
 
     if let Err(err) = fs::rename(&temp_target, &target_bin) {
-        let _ = fs::remove_file(&temp_target);
-        return Err(err).with_context(|| {
-            format!(
-                "Failed to replace binary at {} with {}",
-                target_bin.display(),
-                temp_target.display()
-            )
-        });
+        #[cfg(windows)]
+        {
+            // Windows cannot rename-over existing targets; move old binary aside first.
+            let old_target = target_bin.with_extension("old");
+            let _ = fs::remove_file(&old_target);
+            if target_bin.exists() {
+                let _ = fs::rename(&target_bin, &old_target);
+            }
+            if let Err(second_err) = fs::rename(&temp_target, &target_bin) {
+                let _ = fs::remove_file(&temp_target);
+                let _ = fs::rename(&old_target, &target_bin);
+                return Err(second_err).with_context(|| {
+                    format!(
+                        "Failed to replace binary at {} with {}",
+                        target_bin.display(),
+                        temp_target.display()
+                    )
+                });
+            }
+            let _ = fs::remove_file(&old_target);
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = fs::remove_file(&temp_target);
+            return Err(err).with_context(|| {
+                format!(
+                    "Failed to replace binary at {} with {}",
+                    target_bin.display(),
+                    temp_target.display()
+                )
+            });
+        }
     }
 
     if let Some(parent) = target_bin.parent() {

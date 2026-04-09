@@ -97,6 +97,8 @@ impl DroidHook {
         }
 
         let candidates: Vec<PathBuf> = [
+            dirs::home_dir().map(|h| h.join(".cargo").join("bin").join("nexus")),
+            dirs::home_dir().map(|h| h.join(".cargo").join("bin").join("nexus-bin")),
             dirs::home_dir().map(|h| h.join(".local").join("bin").join("nexus")),
             dirs::home_dir().map(|h| h.join(".local").join("bin").join("nexus-bin")),
             Some(PathBuf::from("/usr/local/bin/nexus")),
@@ -122,7 +124,7 @@ impl DroidHook {
 
         let scoped = |base: &str| -> String {
             format!(
-                "bash -lc \"{base} --session-key \\\"${{FACTORY_SESSION_ID:-${{SESSION_ID:-}}}}\\\" --cwd \\\"${{FACTORY_CWD:-${{PWD:-}}}}\\\"\""
+                "bash -c \"{base} --session-key \\\"${{FACTORY_SESSION_ID:-${{SESSION_ID:-}}}}\\\" --cwd \\\"${{FACTORY_CWD:-${{PWD:-}}}}\\\"\""
             )
         };
 
@@ -248,6 +250,15 @@ impl DroidHook {
         std::fs::write(&tmp_path, serialized).map_err(|e| {
             HookError::InstallationFailed(format!("Failed to write temporary settings: {}", e))
         })?;
+        #[cfg(windows)]
+        if settings_path.exists() {
+            std::fs::remove_file(&settings_path).map_err(|e| {
+                HookError::InstallationFailed(format!(
+                    "Failed to remove existing settings.json before replace: {}",
+                    e
+                ))
+            })?;
+        }
         std::fs::rename(&tmp_path, &settings_path).map_err(|e| {
             HookError::InstallationFailed(format!("Failed to replace settings.json: {}", e))
         })?;
@@ -296,14 +307,24 @@ impl DroidHook {
     }
 
     fn replace_existing_event_hook(
-        entries: &mut [serde_json::Value],
+        entries: &mut Vec<serde_json::Value>,
         desired_command: &str,
     ) -> bool {
-        for entry in entries {
+        let mut replaced = false;
+        let mut canonical_seen = false;
+        let mut rewritten = Vec::with_capacity(entries.len());
+
+        for mut entry in entries.drain(..) {
+            let mut managed_in_entry = false;
+
             if let Some(command) = entry.get("command").and_then(|value| value.as_str()) {
                 if Self::is_nexus_managed_command(command) {
-                    let mut new_entry = entry.clone();
-                    if let Some(obj) = new_entry.as_object_mut() {
+                    managed_in_entry = true;
+                    replaced = true;
+                    if canonical_seen {
+                        continue;
+                    }
+                    if let Some(obj) = entry.as_object_mut() {
                         obj.insert(
                             "command".to_string(),
                             serde_json::Value::String(desired_command.to_string()),
@@ -313,8 +334,7 @@ impl DroidHook {
                             serde_json::Value::String("command".into()),
                         );
                     }
-                    *entry = new_entry;
-                    return true;
+                    canonical_seen = true;
                 }
             }
 
@@ -322,12 +342,18 @@ impl DroidHook {
                 .get_mut("hooks")
                 .and_then(|value| value.as_array_mut())
             {
-                for hook in hooks {
-                    if hook
+                let mut filtered_hooks = Vec::with_capacity(hooks.len());
+                for mut hook in hooks.drain(..) {
+                    let managed = hook
                         .get("command")
                         .and_then(|value| value.as_str())
-                        .is_some_and(Self::is_nexus_managed_command)
-                    {
+                        .is_some_and(Self::is_nexus_managed_command);
+                    if managed {
+                        managed_in_entry = true;
+                        replaced = true;
+                        if canonical_seen {
+                            continue;
+                        }
                         if let Some(obj) = hook.as_object_mut() {
                             obj.insert(
                                 "command".to_string(),
@@ -338,13 +364,22 @@ impl DroidHook {
                                 serde_json::Value::String("command".into()),
                             );
                         }
-                        return true;
+                        canonical_seen = true;
                     }
+                    filtered_hooks.push(hook);
                 }
+                *hooks = filtered_hooks;
+            }
+
+            if managed_in_entry && canonical_seen {
+                rewritten.push(entry);
+            } else if !managed_in_entry {
+                rewritten.push(entry);
             }
         }
 
-        false
+        *entries = rewritten;
+        replaced
     }
 
     fn is_nexus_managed_command(command: &str) -> bool {
@@ -494,7 +529,10 @@ mod tests {
         let mut hook = DroidHook::with_settings_path(settings_path, false);
         let callback = std::sync::Arc::new(|_ctx| {});
         let result = hook.install_session_end_hook(callback).await;
-        assert!(result.is_ok() || matches!(result, Err(HookError::InstallationFailed(_))));
+        assert!(
+            result.is_ok(),
+            "install_session_end_hook should succeed in a temp dir: {result:?}"
+        );
     }
 
     #[tokio::test]

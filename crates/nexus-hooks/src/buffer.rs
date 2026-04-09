@@ -224,6 +224,15 @@ impl PersistentBuffer {
                 .await
                 .map_err(|e| HookError::BufferError(format!("Failed to sync file: {}", e)))?;
 
+            #[cfg(windows)]
+            if buffer_file.exists() {
+                fs::remove_file(&buffer_file).await.map_err(|e| {
+                    HookError::BufferError(format!(
+                        "Failed to remove existing buffer file before replace: {}",
+                        e
+                    ))
+                })?;
+            }
             if let Err(err) = fs::rename(&tmp_file, &buffer_file).await {
                 let _ = fs::remove_file(&tmp_file).await;
                 return Err(HookError::BufferError(format!(
