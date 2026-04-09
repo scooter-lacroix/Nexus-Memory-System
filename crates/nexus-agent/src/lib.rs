@@ -31,7 +31,7 @@ pub mod util;
 pub use consolidate::ConsolidateService;
 pub use derive::{DeriveService, DerivedObservation};
 pub use digest::{DigestResult, DigestService};
-pub use dream_cycle::DreamCycleRequest;
+pub use dream_cycle::{run_dream_cycle, DreamCycleRequest};
 pub use error::{AgentError, Result};
 pub use inbox::{InboxScanner, ScanResult};
 pub use ingest::IngestService;
