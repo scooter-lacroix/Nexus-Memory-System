@@ -146,7 +146,7 @@ async fn context_types_preserved_through_flush_recover() {
     let dir = tempdir().unwrap();
     let buffer = PersistentBuffer::new(Some(dir.path().to_path_buf()))
         .unwrap()
-        .with_max_entries(1);
+        .with_max_entries(100); // avoid auto-flush interference; explicit flush below
 
     buffer.start_buffering("test-agent").await.unwrap();
 
