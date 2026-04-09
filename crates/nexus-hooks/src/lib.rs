@@ -89,7 +89,7 @@ pub use types::{AgentType, DetectionLayer, ExtractionSource, SessionActivity, Su
 
 // Re-export agent hooks
 pub use agents::{
-    CLIHook, ClaudeCodeHook, GeminiHook, OhMyPiHook, PiMonoHook, PiSkillsHook, QwenHook,
+    CLIHook, ClaudeCodeHook, DroidHook, GeminiHook, OhMyPiHook, PiMonoHook, PiSkillsHook, QwenHook,
 };
 
 /// Hook version

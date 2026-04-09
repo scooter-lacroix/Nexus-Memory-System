@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::agents::{
-    CLIHook, ClaudeCodeHook, GeminiHook, OhMyPiHook, PiMonoHook, PiSkillsHook, QwenHook,
+    CLIHook, ClaudeCodeHook, DroidHook, GeminiHook, OhMyPiHook, PiMonoHook, PiSkillsHook, QwenHook,
 };
 use crate::base::AgentHook;
 use crate::error::{HookError, Result};
@@ -112,10 +112,11 @@ impl HookFactory {
             } else {
                 PiSkillsHook::new()
             })),
+            Some(AgentType::Droid) => Ok(Box::new(DroidHook::new())),
+
             Some(AgentType::OpenCode)
             | Some(AgentType::Codex)
             | Some(AgentType::Amp)
-            | Some(AgentType::Droid)
             | Some(AgentType::Hermes)
             | Some(AgentType::Generic) => Ok(Box::new(CLIHook::new(normalized.clone()))),
             None => Err(HookError::AgentNotFound(format!(

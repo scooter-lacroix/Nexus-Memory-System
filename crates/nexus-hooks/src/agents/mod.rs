@@ -4,6 +4,7 @@
 
 mod claude;
 mod cli;
+mod droid;
 mod gemini;
 mod oh_my_pi;
 mod pi_mono;
@@ -12,6 +13,7 @@ mod qwen;
 
 pub use claude::ClaudeCodeHook;
 pub use cli::CLIHook;
+pub use droid::DroidHook;
 pub use gemini::GeminiHook;
 pub use oh_my_pi::OhMyPiHook;
 pub use pi_mono::PiMonoHook;
