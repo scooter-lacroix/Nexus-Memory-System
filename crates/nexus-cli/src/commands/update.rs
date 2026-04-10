@@ -588,6 +588,13 @@ fn arch_tokens(arch: &str) -> Vec<String> {
         "aarch64" => vec!["aarch64".to_string(), "arm64".to_string()],
         "x86_64" => vec!["x86_64".to_string(), "amd64".to_string()],
         "x86" => vec!["x86".to_string(), "i686".to_string()],
+        "arm" => vec![
+            "arm".to_string(),
+            "armv7l".to_string(),
+            "armv6l".to_string(),
+            "armv7".to_string(),
+            "armhf".to_string(),
+        ],
         other => vec![other.to_string()],
     }
 }
