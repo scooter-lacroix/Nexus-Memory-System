@@ -209,16 +209,47 @@ impl PersistentBuffer {
 
         if let Some(buffer) = buffers.get(agent_type) {
             let buffer_file = self.buffer_dir.join(format!("{}.json", agent_type));
+            let tmp_file = self.buffer_dir.join(format!("{}.json.tmp", agent_type));
             let json = serde_json::to_string_pretty(buffer)
                 .map_err(|e| HookError::BufferError(format!("Failed to serialize: {}", e)))?;
 
-            let mut file = fs::File::create(&buffer_file)
+            let mut file = fs::File::create(&tmp_file)
                 .await
                 .map_err(|e| HookError::BufferError(format!("Failed to create file: {}", e)))?;
 
             file.write_all(json.as_bytes())
                 .await
                 .map_err(|e| HookError::BufferError(format!("Failed to write: {}", e)))?;
+            file.sync_all()
+                .await
+                .map_err(|e| HookError::BufferError(format!("Failed to sync file: {}", e)))?;
+
+            #[cfg(windows)]
+            if buffer_file.exists() {
+                fs::remove_file(&buffer_file).await.map_err(|e| {
+                    HookError::BufferError(format!(
+                        "Failed to remove existing buffer file before replace: {}",
+                        e
+                    ))
+                })?;
+            }
+            if let Err(err) = fs::rename(&tmp_file, &buffer_file).await {
+                let _ = fs::remove_file(&tmp_file).await;
+                return Err(HookError::BufferError(format!(
+                    "Failed to replace buffer: {}",
+                    err
+                )));
+            }
+
+            #[cfg(unix)]
+            if let Some(parent) = buffer_file.parent() {
+                let dir = fs::File::open(parent).await.map_err(|e| {
+                    HookError::BufferError(format!("Failed to open buffer dir for sync: {}", e))
+                })?;
+                dir.sync_all().await.map_err(|e| {
+                    HookError::BufferError(format!("Failed to sync buffer dir: {}", e))
+                })?;
+            }
 
             // Update last_flush time
             drop(buffers);

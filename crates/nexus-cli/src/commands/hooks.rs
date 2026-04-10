@@ -325,6 +325,11 @@ mod tests {
         // via atexit callback, so they appear in end_agents, not monitor_agents.
         assert!(summary.end_agents.iter().any(|agent| agent == "codex"));
         assert!(summary.end_agents.iter().any(|agent| agent == "opencode"));
+        assert!(summary
+            .checkpoint_agents
+            .iter()
+            .any(|agent| agent == "droid"));
+        assert!(summary.compact_agents.iter().any(|agent| agent == "droid"));
 
         // Monitor-only agents (Gemini, Qwen) have no lifecycle capabilities
         assert!(summary.monitor_agents.iter().any(|agent| agent == "gemini"));
@@ -336,7 +341,7 @@ mod tests {
         let factory = HookFactory::new();
 
         // Native lifecycle agents
-        for native in &["claude-code", "pi-mono", "oh-my-pi", "pi-skills"] {
+        for native in &["claude-code", "pi-mono", "oh-my-pi", "pi-skills", "droid"] {
             let hook = factory.create_hook_readonly(native).unwrap();
             assert_eq!(
                 hook.support_tier(),
@@ -358,7 +363,7 @@ mod tests {
         }
 
         // Wrapper lifecycle agents
-        for wrapper in &["codex", "amp", "opencode", "droid", "hermes"] {
+        for wrapper in &["codex", "amp", "opencode", "hermes"] {
             let hook = factory.create_hook_readonly(wrapper).unwrap();
             assert_eq!(
                 hook.support_tier(),

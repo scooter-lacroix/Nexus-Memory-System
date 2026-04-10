@@ -44,6 +44,7 @@ REINSTALL=0
 RESET_DB=0
 PROFILE_FILE=""
 EXPLICIT_BINARY_PATH=""
+INSTALL_METHOD_FILE="${INSTALL_METHOD_FILE:-install-method}"
 
 # ── Usage ─────────────────────────────────────────────────────────────
 usage() {
@@ -167,6 +168,9 @@ install_binaries() {
 
     # Install the real binary directly as "nexus"
     install -m 0755 "${binary}" "${BIN_DIR}/nexus"
+
+    # Record install origin for `nexus update` detection
+    printf '%s\n' "install-script" > "${BIN_DIR}/${INSTALL_METHOD_FILE}"
 
     # nexus-with: sources env and wraps supported CLIs with best-effort session lifecycle
     cat > "${BIN_DIR}/nexus-with" <<WITH_EOF
@@ -697,7 +701,7 @@ function appendArg(args, flag, value) {
   let args;
   switch (eventName) {
     case "SessionStart":
-      args = ["session", "start", "--agent", agent];
+      args = ["session", "start", "--agent", agent, "--mode", "session"];
       appendArg(args, "--session-key", sessionKey);
       appendArg(args, "--cwd", cwd);
       break;
@@ -729,15 +733,15 @@ function appendArg(args, flag, value) {
     args,
     { input: forwardedInput, encoding: "utf8", env: process.env, timeout: 25000, maxBuffer: 50 * 1024 * 1024 },
   );
-  if (result.status !== 0) {
+  if (result.signal === "SIGTERM") {
+    logFailure(`${agent}/${eventName} timed out after 25s`);
+    console.error(`[nexus-hook] ${agent}/${eventName}: timed out`);
+  } else if (result.status !== 0) {
     const errorMsg = result.stderr || result.stdout || `exit ${result.status}`;
     logFailure(
       `${agent}/${eventName} failed: ${errorMsg}`,
     );
     console.error(`[nexus-hook] ${agent}/${eventName}: ${errorMsg}`);
-  } else if (result.signal === "SIGTERM") {
-    logFailure(`${agent}/${eventName} timed out after 25s`);
-    console.error(`[nexus-hook] ${agent}/${eventName}: timed out`);
   }
   // Always exit 0 to prevent hook failures from blocking the agent
   process.exit(0);
@@ -766,7 +770,8 @@ install_session_start_hook() {
     local hook_path="${hooks_dir}/session-start-delayed.sh"
 
     cat > "${hook_path}" <<'HOOK_EOF'
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 # SessionStart hook - initializes nexus runtime for the session
 # Extracts session_key and cwd from stdin JSON payload for proper session isolation.
 
@@ -778,13 +783,17 @@ fi
 # Extract session_key and cwd from the JSON payload using python3.
 # Falls back to empty string if extraction fails or field is absent.
 extract_field() {
-    python3 -c "
+    python3 -c '
 import sys, json
+raw = sys.argv[1] if len(sys.argv) > 1 else ""
+key1 = sys.argv[2] if len(sys.argv) > 2 else ""
+key2 = sys.argv[3] if len(sys.argv) > 3 else ""
 try:
-    d = json.loads(sys.argv[1])
-    print(d.get(sys.argv[2], d.get(sys.argv[3], '')))
-except: print('')
-" "$input" "$1" "$2" 2>/dev/null || echo ""
+    d = json.loads(raw) if raw.strip() else {}
+    print(d.get(key1, d.get(key2, "")))
+except Exception:
+    print("")
+' "$input" "$1" "$2" 2>/dev/null || echo ""
 }
 
 session_key=$(extract_field "session_id" "sessionId")
@@ -840,20 +849,6 @@ with open(settings_path) as f:
 if 'hooks' not in s:
     s['hooks'] = {}
 
-legacy_markers = [
-    'NEXUS_SERVER_URL',
-    'nexus serve',
-]
-
-# Specific legacy commands to remove (exact or partial match)
-legacy_commands = [
-    "'nexus' session start",
-    '"nexus" session start',
-    'nexus session start --agent',
-    'event-ingest-delayed.js',
-    'event-ingest.js claude-code SessionStart',
-]
-
 def normalize_entry(entry):
     if not isinstance(entry, dict):
         return None
@@ -897,6 +892,16 @@ def entry_commands(entry):
                 commands.append(command)
     return commands
 
+def canonical_entry(command, timeout):
+    return {
+        'matcher': '',
+        'hooks': [{
+            'type': 'command',
+            'command': command,
+            'timeout': timeout,
+        }],
+    }
+
 for hook_name, entries in list(s['hooks'].items()):
     if hook_name == 'SessionCompact':
         del s['hooks'][hook_name]
@@ -907,19 +912,8 @@ for hook_name, entries in list(s['hooks'].items()):
     cleaned = []
     for entry in entries:
         normalized = normalize_entry(entry)
-        if normalized is None:
-            continue
-        commands = entry_commands(normalized)
-        is_legacy = any(
-            any(marker in command for marker in legacy_markers)
-            for command in commands
-        ) or any(
-            any(legacy_cmd in command for legacy_cmd in legacy_commands)
-            for command in commands
-        )
-        if is_legacy:
-            continue
-        cleaned.append(normalized)
+        if normalized is not None:
+            cleaned.append(normalized)
     s['hooks'][hook_name] = cleaned
 
 required_hooks = {
@@ -931,17 +925,22 @@ required_hooks = {
 }
 
 for hook_name, (command, timeout) in required_hooks.items():
-    if hook_name not in s['hooks']:
-        s['hooks'][hook_name] = []
-    if not any(command in candidate for entry in s['hooks'][hook_name] for candidate in entry_commands(entry)):
-        s['hooks'][hook_name].append({
-            'matcher': '',
-            'hooks': [{
-                'type': 'command',
-                'command': command,
-                'timeout': timeout,
-            }],
-        })
+    existing = s['hooks'].get(hook_name, [])
+    preserved = []
+    for entry in existing:
+        commands = entry_commands(entry)
+        # Keep non-Nexus hooks untouched; remove stale/duplicate Nexus entries only.
+        if any(
+            (shim_path in c)
+            or (session_start_hook_path in c)
+            or ('nexus' in c and ('session' in c or 'ingest-hook-event' in c))
+            for c in commands
+        ):
+            continue
+        preserved.append(entry)
+
+    preserved.append(canonical_entry(command, timeout))
+    s['hooks'][hook_name] = preserved
 
 with open(settings_path, 'w') as f:
     json.dump(s, f, indent=2)
@@ -968,6 +967,7 @@ uninstall_components() {
         rm -f "${BIN_DIR}/nexus-with"
         ok "Removed ${BIN_DIR}/nexus-with"
     fi
+    rm -f "${BIN_DIR}/${INSTALL_METHOD_FILE}"
 
     # Remove stale copies from older installs
     rm -f "${BIN_DIR}/nexus-bin" "${HOME}/.local/bin/nexus" "${HOME}/.local/bin/nexus-bin"

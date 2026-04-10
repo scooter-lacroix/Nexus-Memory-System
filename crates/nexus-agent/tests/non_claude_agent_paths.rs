@@ -9,7 +9,7 @@
 //! 4. Factory alias resolution works correctly.
 //! 5. All hooks produce correct `agent_type()` strings.
 
-use nexus_hooks::{AgentHook, CLIHook, GeminiHook, HookFactory, QwenHook, SupportTier};
+use nexus_hooks::{AgentHook, CLIHook, DroidHook, GeminiHook, HookFactory, QwenHook, SupportTier};
 
 // ---------------------------------------------------------------------------
 // Behavior 2: Factory routing
@@ -20,7 +20,7 @@ async fn factory_creates_cli_hook_for_wrapper_lifecycle_agents() {
     let factory = HookFactory::new();
 
     // These agents share the CLIHook implementation.
-    let wrapper_agents = ["codex", "amp", "opencode", "droid", "hermes"];
+    let wrapper_agents = ["codex", "amp", "opencode", "hermes"];
 
     for agent in &wrapper_agents {
         let hook = factory
@@ -75,6 +75,22 @@ async fn factory_creates_dedicated_hooks_for_monitor_only_agents() {
             "{agent} should report MonitorOnly support tier"
         );
     }
+}
+
+#[tokio::test]
+async fn factory_creates_droid_native_hook() {
+    let factory = HookFactory::new();
+    let hook = factory
+        .create_hook("droid")
+        .expect("droid should be supported");
+    assert_eq!(hook.agent_type(), "droid");
+    assert_eq!(hook.support_tier(), SupportTier::NativeLifecycle);
+    let caps = hook.lifecycle_capabilities();
+    assert!(caps.session_start);
+    assert!(caps.session_end);
+    assert!(caps.checkpoint);
+    assert!(caps.compact);
+    assert!(caps.error_hook);
 }
 
 #[tokio::test]
@@ -178,6 +194,17 @@ async fn cli_hook_hermes_detect_activity_returns_hermes_type() {
         format!("{}", activity.agent_type),
         "hermes",
         "SessionActivity agent_type should be hermes"
+    );
+}
+
+#[tokio::test]
+async fn droid_hook_detect_activity_returns_droid_type() {
+    let hook = DroidHook::new();
+    let activity = hook.detect_session_activity().await.unwrap();
+    assert_eq!(
+        format!("{}", activity.agent_type),
+        "droid",
+        "SessionActivity agent_type should be droid"
     );
 }
 

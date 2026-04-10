@@ -345,6 +345,13 @@ enum Commands {
         #[command(subcommand)]
         command: SessionCommands,
     },
+
+    /// Update Nexus based on detected install origin
+    Update {
+        /// Only check whether an update is available
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -625,6 +632,9 @@ async fn main() -> anyhow::Result<()> {
                 commands::session::execute_end(agent, session_key, cwd, reason).await?;
             }
         },
+        Commands::Update { check } => {
+            commands::update::execute(check).await?;
+        }
     }
 
     Ok(())
