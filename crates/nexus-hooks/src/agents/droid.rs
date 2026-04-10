@@ -88,16 +88,20 @@ impl DroidHook {
         }
 
         if let Ok(current_exe) = std::env::current_exe() {
-            if current_exe
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| matches!(name, "nexus" | "nexus-bin"))
-            {
+            let name = current_exe.file_name().and_then(|n| n.to_str());
+            #[cfg(not(windows))]
+            let valid = name.is_some_and(|n| matches!(n, "nexus" | "nexus-bin"));
+            #[cfg(windows)]
+            let valid = name.is_some_and(|n| {
+                matches!(n, "nexus" | "nexus-bin" | "nexus.exe" | "nexus-bin.exe")
+            });
+            if valid {
                 return current_exe.to_string_lossy().to_string();
             }
         }
 
-        let candidates: Vec<PathBuf> = [
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut candidates: Vec<PathBuf> = [
             dirs::home_dir().map(|h| h.join(".cargo").join("bin").join("nexus")),
             dirs::home_dir().map(|h| h.join(".cargo").join("bin").join("nexus-bin")),
             dirs::home_dir().map(|h| h.join(".local").join("bin").join("nexus")),
@@ -108,6 +112,18 @@ impl DroidHook {
         .into_iter()
         .flatten()
         .collect();
+
+        #[cfg(windows)]
+        {
+            if let Some(home) = dirs::home_dir() {
+                candidates.extend([
+                    home.join(".cargo").join("bin").join("nexus.exe"),
+                    home.join(".cargo").join("bin").join("nexus-bin.exe"),
+                    home.join(".local").join("bin").join("nexus.exe"),
+                    home.join(".local").join("bin").join("nexus-bin.exe"),
+                ]);
+            }
+        }
 
         for candidate in candidates {
             if candidate.exists() {
@@ -124,9 +140,19 @@ impl DroidHook {
             .replace('"', "\\\"");
 
         let scoped = |base: &str| -> String {
-            format!(
-                "bash -c \"{base} --session-key \\\"${{FACTORY_SESSION_ID:-${{SESSION_ID:-}}}}\\\" --cwd \\\"${{FACTORY_CWD:-${{PWD:-}}}}\\\"\""
-            )
+            #[cfg(not(windows))]
+            {
+                format!(
+                    "bash -c \"{base} --session-key \\\"${{FACTORY_SESSION_ID:-${{SESSION_ID:-}}}}\\\" --cwd \\\"${{FACTORY_CWD:-${{PWD:-}}}}\\\"\""
+                )
+            }
+            #[cfg(windows)]
+            {
+                // On Windows, invoke the binary directly without bash.
+                // Shell variable expansion is not available; nexus gracefully
+                // handles missing session-key/cwd at runtime via derived keys.
+                format!("{base}")
+            }
         };
 
         [
