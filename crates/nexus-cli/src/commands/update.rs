@@ -89,7 +89,7 @@ fn latest_github_version() -> Result<Version> {
         .output()
         .context(
             "Failed to execute `gh release view` to get latest release. \
-Install and authenticate GitHub CLI first: `gh auth login`",
+Install GitHub CLI: https://cli.github.com",
         )?;
 
     if !output.status.success() {
@@ -114,7 +114,7 @@ fn ensure_gh_available() -> Result<()> {
         Ok(output) if output.status.success() => {}
         Ok(_) | Err(_) => {
             return Err(anyhow!(
-                "GitHub CLI (`gh`) is required for `nexus update`. Install it and run `gh auth login`."
+                "GitHub CLI (`gh`) is required for `nexus update`. Install it from https://cli.github.com"
             ));
         }
     }
@@ -303,7 +303,7 @@ fn release_assets(tag: &str) -> Result<Vec<serde_json::Value>> {
         .output()
         .context(
             "Failed to fetch release assets via `gh`. \
-Install and authenticate GitHub CLI first: `gh auth login`",
+Install GitHub CLI: https://cli.github.com",
         )?;
 
     if !output.status.success() {
