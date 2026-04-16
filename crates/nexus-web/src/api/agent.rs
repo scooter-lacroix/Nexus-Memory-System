@@ -182,7 +182,12 @@ pub async fn agent_boost(
         .ok_or_else(|| WebError::NotFound(format!("Memory {} not found", request.memory_id)))?;
 
     // Resolve project root for cache path
-    let cwd = std::env::current_dir().map_err(|e| WebError::Config(e.to_string()))?;
+    let cwd = request
+        .root_dir
+        .as_ref()
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .ok_or_else(|| WebError::Config("No project root available".to_string()))?;
     let project_identity = nexus_core::ProjectIdentity::resolve(&cwd);
     let nexus_dir = project_identity.root_dir.join(".nexus");
 

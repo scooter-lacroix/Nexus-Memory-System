@@ -150,8 +150,9 @@ pub async fn run_nap(
         Ok(Err(e)) => Err(e),
         Err(_) => {
             warn!(
-                "Nap timed out after {:?}; leased cognition jobs remain in queue ",
-                "and will be re-claimed on the next cycle once their lease expires"
+                "Nap timed out after {:?}; leased cognition jobs remain in queue \
+                 and will be re-claimed on the next cycle once their lease expires",
+                timeout
             );
             Ok(NapResult {
                 memories_processed: 0,
@@ -456,8 +457,9 @@ pub(crate) async fn collect_dream_signals(
                 _ => {}
             }
             // Also count contradictions from times_contradicted field
+            // (avoid double-count: skip if already counted via CognitiveLevel)
             if let Some(cog) = nexus_core::CognitiveMetadata::from_metadata(&memory.metadata) {
-                if cog.times_contradicted > 0 {
+                if cog.times_contradicted > 0 && level != CognitiveLevel::Contradiction {
                     signals.contradiction_count += 1;
                 }
             }

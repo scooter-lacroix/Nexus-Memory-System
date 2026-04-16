@@ -208,10 +208,11 @@ async fn execute_cache_show(project_path: Option<&str>, format: &str) -> Result<
 }
 
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.replace('\n', " ")
+    let normalized = s.replace('\n', " ");
+    if normalized.chars().count() <= max_len {
+        normalized
     } else {
-        let truncated: String = s.chars().take(max_len).collect();
-        format!("{}...", truncated.replace('\n', " "))
+        let truncated: String = normalized.chars().take(max_len).collect();
+        format!("{}...", truncated)
     }
 }

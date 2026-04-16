@@ -415,6 +415,9 @@ pub struct AgentBoostRequest {
     #[serde(default)]
     pub pin: bool,
     pub boost_score: Option<f32>,
+    /// Optional project root path. Falls back to current_dir if omitted.
+    #[serde(default)]
+    pub root_dir: Option<String>,
 }
 
 /// Response from agent boost

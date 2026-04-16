@@ -194,7 +194,7 @@ impl Default for DreamTriggerConfig {
 pub struct CognitiveSystemConfig {
     /// Whether the cognitive system is enabled
     pub enabled: bool,
-    /// System bootstrap mode (silent, chatty)
+    /// System bootstrap mode: "silent" (default) or "chatty" (verbose)
     pub bootstrap_mode: String,
     /// Dream triggers
     pub dream_triggers: DreamTriggerConfig,

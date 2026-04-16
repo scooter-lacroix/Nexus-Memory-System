@@ -84,11 +84,24 @@ pub fn inject_reference(
         content.find(NEXUS_BLOCK_START),
         content.find(NEXUS_BLOCK_END),
     ) {
-        // Replace existing block
-        let mut updated = content[..start].to_string();
-        updated.push_str(&block);
-        updated.push_str(&content[end + NEXUS_BLOCK_END.len()..]);
-        updated
+        if start >= end {
+            // Malformed markers (end before start) — treat as no existing block
+            let mut updated = content;
+            if !updated.is_empty() && !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str(&block);
+            if !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated
+        } else {
+            // Replace existing block
+            let mut updated = content[..start].to_string();
+            updated.push_str(&block);
+            updated.push_str(&content[end + NEXUS_BLOCK_END.len()..]);
+            updated
+        }
     } else {
         // Append to end
         let mut updated = content;
@@ -302,14 +315,22 @@ mod tests {
     #[tokio::test]
     async fn test_on_session_start_creates_structure() {
         let dir = tempdir().unwrap();
-        // Mock home for soul.md
+        // Save and restore HOME to avoid polluting parallel tests
+        let original_home = std::env::var("HOME").ok();
         let home = dir.path().join("home");
         fs::create_dir(&home).unwrap();
         std::env::set_var("HOME", &home);
 
-        on_session_start(dir.path(), "claude-code", "test-session")
-            .await
-            .unwrap();
+        let result = on_session_start(dir.path(), "claude-code", "test-session").await;
+
+        // Restore HOME before assertions
+        if let Some(orig) = original_home {
+            std::env::set_var("HOME", orig);
+        } else {
+            std::env::remove_var("HOME");
+        }
+
+        result.unwrap();
 
         assert!(dir.path().join(".nexus").exists());
         assert!(dir.path().join(".nexus/context.md").exists());

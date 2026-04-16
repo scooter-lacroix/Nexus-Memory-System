@@ -70,7 +70,11 @@ fn execute_edit() -> Result<()> {
 
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
 
-    let status = Command::new(&editor)
+    // Split editor command to handle cases like "code --wait"
+    let mut parts = editor.split_whitespace();
+    let editor_bin = parts.next().unwrap_or("vi");
+    let status = Command::new(editor_bin)
+        .args(parts)
         .arg(&path)
         .status()
         .with_context(|| format!("Failed to launch editor '{}'", editor))?;
@@ -122,7 +126,9 @@ async fn execute_rebuild(force: bool) -> Result<()> {
                     source_project: ns.name.clone(),
                     observation_count: mem.access_count.max(1) as u32,
                     category: mem.category.to_string(),
-                    source_agent: ns.name.clone(),
+                    source_agent: nexus_core::CognitiveMetadata::from_metadata(&mem.metadata)
+                        .map(|c| c.observer.clone())
+                        .unwrap_or_else(|| ns.name.clone()),
                 });
             }
         }

@@ -25,6 +25,10 @@ pub struct ColdRecall {
 
 /// Builds the context.md string from hot and cold memories.
 pub fn build_context_md(hot: &HotCache, cold: &[ColdRecall], max_tokens: usize) -> String {
+    if max_tokens == 0 {
+        return String::new();
+    }
+
     let mut output = String::new();
     let mut current_tokens = 0;
 

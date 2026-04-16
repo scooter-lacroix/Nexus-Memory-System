@@ -5,6 +5,7 @@ use regex::Regex;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use crate::cognitive_cache::{ConfidenceTier, HotCache, HotCacheEntry};
 use crate::error::AgentError;
@@ -152,10 +153,14 @@ pub fn parse_scratch_learnings(content: &str) -> Vec<ScratchLearning> {
     learnings
 }
 
+/// Monotonically decreasing counter for scratch-promoted memory IDs.
+/// Negative values guarantee no collision with DB-assigned positive IDs.
+static SCRATCH_MEMORY_ID: AtomicI64 = AtomicI64::new(-1);
+
 /// Promote a single learning to the hot cache.
 pub fn promote_to_hot_cache(hot: &mut HotCache, learning: ScratchLearning, max_entries: usize) {
     let entry = HotCacheEntry {
-        memory_id: Utc::now().timestamp_nanos_opt().unwrap_or(0), // Temporary ID for session learnings
+        memory_id: SCRATCH_MEMORY_ID.fetch_sub(1, Ordering::Relaxed),
         content: learning.content,
         relevance_score: learning.confidence,
         tier: ConfidenceTier::from_score(learning.confidence),

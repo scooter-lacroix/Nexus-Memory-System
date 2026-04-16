@@ -172,7 +172,10 @@ impl BaseHook {
     pub fn record_activity_with_content(&self, content: &str) {
         if let Ok(mut monitor) = self.activity_monitor.lock() {
             monitor.record_activity();
-            let _ = monitor.save();
+            // Clone the monitor so we can save outside the lock
+            let snapshot = monitor.clone();
+            drop(monitor);
+            let _ = snapshot.save();
         }
 
         // Trigger real-time re-scoring if drift detected
@@ -239,7 +242,13 @@ impl BaseHook {
                                 let llm_result = nexus_llm::create_client_auto_with_fallback();
                                 let llm = match llm_result {
                                     Ok(client) => client,
-                                    Err(_) => return,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Failed to create LLM client for session-end nap: {}",
+                                            e
+                                        );
+                                        return;
+                                    }
                                 };
                                 let embeddings = if config.embedding.enabled {
                                     nexus_memory_agent::runtime::create_embedding_service(&config)
