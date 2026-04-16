@@ -44,7 +44,9 @@ impl CognitionSnapshot {
             level,
             confidence: cognitive.as_ref().and_then(|value| value.confidence),
             perspective,
-            generated_by: cognitive.as_ref().map(|value| value.generated_by.clone()),
+            generated_by: cognitive
+                .as_ref()
+                .and_then(|value| value.generated_by.clone()),
             times_reinforced: cognitive
                 .as_ref()
                 .map(|value| value.times_reinforced)

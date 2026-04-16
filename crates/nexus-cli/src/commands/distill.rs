@@ -391,28 +391,33 @@ mod tests {
 
         assert_eq!(cognitive.level, CognitiveLevel::SummaryShort);
         assert_eq!(cognitive.observer, "claude");
-        assert_eq!(cognitive.subject, "claude");
+        // Digest source defaults subject to "session_consolidation" via infer_perspective
+        assert_eq!(cognitive.subject, "session_consolidation");
         assert_eq!(cognitive.session_key, Some("sess-abc-123".to_string()));
         assert_eq!(cognitive.source_memory_ids, ids);
         assert!((cognitive.confidence.unwrap() - 0.8).abs() < f32::EPSILON);
-        assert_eq!(cognitive.generated_by, "nexus:distill-v1");
+        assert_eq!(cognitive.source_stage, "nexus:distill-v1");
         assert_eq!(cognitive.times_reinforced, 0);
         assert_eq!(cognitive.times_contradicted, 0);
-        assert!(cognitive.derived_at.is_some());
+        // derived_at is None from new(); set by callers after successful derivation
     }
 
     #[test]
     fn test_build_distill_cognitive_metadata_perspective_defaults_subject_to_observer() {
         let cognitive = build_distill_cognitive_metadata("codex", "sess-xyz-789", &[1]);
 
-        // Digest source defaults subject to observer when no subject_hint is provided
+        // Digest source defaults subject to "session_consolidation", not the agent name
         assert_eq!(cognitive.observer, "codex");
-        assert_eq!(cognitive.subject, "codex");
+        assert_eq!(cognitive.subject, "session_consolidation");
         assert_eq!(cognitive.session_key, Some("sess-xyz-789".to_string()));
 
-        let perspective = cognitive.perspective();
+        let perspective = nexus_core::PerspectiveKey {
+            observer: cognitive.observer.clone(),
+            subject: cognitive.subject.clone(),
+            session_key: cognitive.session_key.clone(),
+        };
         assert_eq!(perspective.observer, "codex");
-        assert_eq!(perspective.subject, "codex");
+        assert_eq!(perspective.subject, "session_consolidation");
     }
 
     #[test]
@@ -434,7 +439,9 @@ mod tests {
         let cog = &merged["cognitive"];
         assert_eq!(cog["level"], "summary_short");
         assert_eq!(cog["observer"], "gemini");
-        assert_eq!(cog["generated_by"], "nexus:distill-v1");
+        // generated_by is None by default (set later by callers), so not serialized
+        // source_stage carries the pipeline identifier instead
+        assert_eq!(cog["source_stage"], "nexus:distill-v1");
         assert!((cog["confidence"].as_f64().unwrap() - 0.8).abs() < 1e-6);
         assert_eq!(cog["source_memory_ids"], serde_json::json!([42]));
 

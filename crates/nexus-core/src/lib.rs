@@ -5,11 +5,13 @@
 
 pub mod config;
 pub mod error;
+pub mod project_identity;
 pub mod traits;
 pub mod types;
 
 pub use config::Config;
 pub use error::{NexusError, Result};
+pub use project_identity::ProjectIdentity;
 pub use traits::*;
 pub use types::*;
 

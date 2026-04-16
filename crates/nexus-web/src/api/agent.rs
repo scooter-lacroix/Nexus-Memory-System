@@ -7,8 +7,8 @@ use tracing::error;
 
 use crate::error::{Result, WebError};
 use crate::models::{
-    AgentConsolidateResponse, AgentIngestRequest, AgentIngestResponse, AgentQueryRequest,
-    AgentQueryResponse, AgentStatusResponse,
+    AgentBoostRequest, AgentBoostResponse, AgentConsolidateResponse, AgentIngestRequest,
+    AgentIngestResponse, AgentQueryRequest, AgentQueryResponse, AgentStatusResponse,
 };
 use crate::state::AppState;
 
@@ -160,6 +160,62 @@ pub async fn agent_consolidate(
             }))
         }
     }
+}
+
+/// POST /api/agent/boost — Pin or boost a memory in cognitive cache
+pub async fn agent_boost(
+    State(state): State<Arc<RwLock<AppState>>>,
+    Json(request): Json<AgentBoostRequest>,
+) -> Result<Json<AgentBoostResponse>> {
+    let state = state.read().await;
+
+    let _supervisor = state
+        .agent_supervisor
+        .as_ref()
+        .ok_or_else(|| WebError::InvalidRequest("Agent is not enabled".to_string()))?;
+
+    let memory_repo = nexus_storage::MemoryRepository::new(state.pool().clone());
+    let memory = memory_repo
+        .get_by_id(request.memory_id)
+        .await
+        .map_err(|e| WebError::Storage(e.to_string()))?
+        .ok_or_else(|| WebError::NotFound(format!("Memory {} not found", request.memory_id)))?;
+
+    // Resolve project root for cache path
+    let cwd = std::env::current_dir().map_err(|e| WebError::Config(e.to_string()))?;
+    let project_identity = nexus_core::ProjectIdentity::resolve(&cwd);
+    let nexus_dir = project_identity.root_dir.join(".nexus");
+
+    let mut cache = nexus_agent::CognitiveCache::load_or_init(&nexus_dir);
+
+    let relevance_score = request
+        .boost_score
+        .unwrap_or(memory.relevance_score.unwrap_or(0.85));
+    let tier = nexus_agent::ConfidenceTier::from_score(relevance_score);
+
+    cache.hot_cache.promote(
+        nexus_agent::HotCacheEntry {
+            memory_id: memory.id,
+            content: memory.content,
+            relevance_score,
+            tier,
+            promoted_at: chrono::Utc::now(),
+            last_surfaced: chrono::Utc::now(),
+            hot_streak: 1,
+            pinned: request.pin,
+            source_agent: Some("web-ui".to_string()),
+        },
+        20,
+    ); // Default hot cache limit
+
+    cache
+        .save(&nexus_dir)
+        .map_err(|e| WebError::Storage(e.to_string()))?;
+
+    Ok(Json(AgentBoostResponse {
+        success: true,
+        error: None,
+    }))
 }
 
 /// GET /api/agent/status — Get agent status

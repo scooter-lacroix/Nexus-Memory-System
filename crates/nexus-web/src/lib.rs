@@ -47,10 +47,11 @@ pub use models::*;
 pub use state::AppState;
 
 use api::{
-    agent_consolidate, agent_ingest, agent_query, agent_status, cognition_overview, create_memory,
-    create_namespace, dashboard, delete_memory, get_agent_stats, get_memory, get_namespace,
-    get_stats, health_check, job_summary, list_digests, list_jobs, list_memories, list_namespaces,
-    query_introspection, reflection_state, runtime_health, search_memories, update_memory,
+    agent_boost, agent_consolidate, agent_ingest, agent_query, agent_status, cognition_overview,
+    create_memory, create_namespace, dashboard, delete_memory, get_agent_stats, get_memory,
+    get_namespace, get_stats, health_check, job_summary, list_digests, list_jobs, list_memories,
+    list_namespaces, query_introspection, reflection_state, runtime_health, search_memories,
+    update_memory,
 };
 use websocket::websocket_handler;
 
@@ -126,6 +127,7 @@ impl WebDashboard {
             .route("/agent/ingest", post(agent_ingest))
             .route("/agent/query", post(agent_query))
             .route("/agent/consolidate", post(agent_consolidate))
+            .route("/agent/boost", post(agent_boost))
             .route("/agent/status", get(agent_status))
             // Cognition observability endpoints
             .route("/cognition/jobs", get(list_jobs))

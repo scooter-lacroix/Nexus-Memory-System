@@ -51,8 +51,21 @@ impl ClaudeCodeHook {
     /// Skills subdirectory
     pub const SKILLS_DIR: &'static str = "skills";
 
-    /// Create a new Claude Code hook
+    /// Create a new Claude Code hook with full installation.
     pub fn new() -> Self {
+        Self::new_with_install(true)
+    }
+
+    /// Create a new Claude Code hook without mutating user state.
+    ///
+    /// Skips skill installation and session-start injection so the
+    /// hook can be used for inspection/status reporting without side
+    /// effects on the filesystem.
+    pub fn new_readonly() -> Self {
+        Self::new_with_install(false)
+    }
+
+    fn new_with_install(should_install: bool) -> Self {
         let skill_path = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(Self::CONFIG_DIR)
@@ -67,9 +80,23 @@ impl ClaudeCodeHook {
             process_monitor: ProcessMonitor::new(),
         };
 
-        // Try to install skill
-        if let Err(e) = hook.install_skill() {
-            tracing::warn!("Failed to install Claude Code skill: {}", e);
+        if should_install {
+            // Try to install skill
+            if let Err(e) = hook.install_skill() {
+                tracing::warn!("Failed to install Claude Code skill: {}", e);
+            }
+
+            // Trigger session start injection
+            let session_id = uuid::Uuid::new_v4().to_string();
+            if let Ok(cwd) = std::env::current_dir() {
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move {
+                        let _ =
+                            crate::injection::on_session_start(&cwd, "claude-code", &session_id)
+                                .await;
+                    });
+                }
+            }
         }
 
         hook
@@ -499,6 +526,20 @@ impl AgentHook for ClaudeCodeHook {
     }
 
     async fn detect_session_activity(&self) -> Result<SessionActivity> {
+        // Also check for session file to get recent turn content
+        let mut recent_content = "claude session active".to_string();
+        if let Some(session) = self.read_session_file() {
+            if let Some(messages) = session.get("messages").and_then(|m| m.as_array()) {
+                if let Some(last_msg) = messages.last() {
+                    if let Some(content) = last_msg.get("content").and_then(|c| c.as_str()) {
+                        recent_content = content.to_string();
+                    }
+                }
+            }
+        }
+
+        self.base.record_activity_with_content(&recent_content);
+
         // Refresh process monitor
         let mut monitor = self.process_monitor.clone();
         let processes = monitor.find_agent_processes(AgentType::ClaudeCode);

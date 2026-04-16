@@ -334,6 +334,11 @@ enum Commands {
         introspect: bool,
     },
 
+    /// Manage the unified soul.md identity file
+    Soul {
+        #[command(subcommand)]
+        command: commands::soul::SoulCommands,
+    },
     /// Inspect evidence lineage for a memory
     Lineage {
         /// Memory ID whose lineage should be shown
@@ -344,6 +349,12 @@ enum Commands {
     Session {
         #[command(subcommand)]
         command: SessionCommands,
+    },
+
+    /// Inspect the autonomous cognitive system
+    Cognitive {
+        #[command(subcommand)]
+        command: commands::cognitive::CognitiveCommands,
     },
 }
 
@@ -574,6 +585,9 @@ async fn main() -> anyhow::Result<()> {
         } => {
             commands::dream::execute(agent, session_key, format).await?;
         }
+        Commands::Soul { command } => {
+            commands::soul::execute(command).await?;
+        }
         Commands::Represent {
             agent,
             query,
@@ -625,6 +639,9 @@ async fn main() -> anyhow::Result<()> {
                 commands::session::execute_end(agent, session_key, cwd, reason).await?;
             }
         },
+        Commands::Cognitive { command } => {
+            commands::cognitive::execute(command).await?;
+        }
     }
 
     Ok(())

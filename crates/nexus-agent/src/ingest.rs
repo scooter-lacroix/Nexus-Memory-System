@@ -88,6 +88,7 @@ impl IngestService {
             "ingest_service",
         );
         cognitive.confidence = Some(extraction.importance_score);
+        cognitive.generated_by = Some("ingest_service".to_string());
 
         // Step 3: Build metadata with agent extraction info
         let metadata = cognitive.merge_into(&serde_json::json!({

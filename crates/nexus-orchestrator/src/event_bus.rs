@@ -15,6 +15,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use tokio::sync::broadcast;
 use tracing::{debug, error, trace, warn};
 use uuid::Uuid;
@@ -77,6 +78,11 @@ pub enum EventType {
     SystemReady,
     SystemError,
     SystemWarning,
+
+    // Cognitive events
+    CognitiveDrift,
+    DreamCompleted,
+    MorningRecall,
 }
 
 impl std::fmt::Display for EventType {
@@ -97,6 +103,9 @@ impl std::fmt::Display for EventType {
             EventType::SystemReady => write!(f, "system.ready"),
             EventType::SystemError => write!(f, "system.error"),
             EventType::SystemWarning => write!(f, "system.warning"),
+            EventType::CognitiveDrift => write!(f, "cognitive.drift"),
+            EventType::DreamCompleted => write!(f, "cognitive.dream_completed"),
+            EventType::MorningRecall => write!(f, "cognitive.morning_recall"),
         }
     }
 }
@@ -221,7 +230,22 @@ pub struct EventBus {
     config: EventBusConfig,
 }
 
+/// Global shared EventBus singleton.
+///
+/// All callers that need to publish or subscribe to orchestrator events
+/// should use `EventBus::global()` to ensure they share the same broadcast
+/// channel. Creating `EventBus::new(...)` directly is still available for
+/// tests or isolated subsystems.
+static GLOBAL_EVENT_BUS: OnceLock<EventBus> = OnceLock::new();
+
 impl EventBus {
+    /// Get the global shared EventBus instance.
+    ///
+    /// All calls return the same `EventBus`, ensuring publishers and
+    /// subscribers share the same broadcast channel.
+    pub fn global() -> &'static Self {
+        GLOBAL_EVENT_BUS.get_or_init(|| EventBus::new(256))
+    }
     /// Create a new event bus with the specified capacity
     pub fn new(capacity: usize) -> Self {
         let (sender, _) = broadcast::channel(capacity);

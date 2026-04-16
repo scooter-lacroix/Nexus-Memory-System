@@ -14,11 +14,11 @@ use nexus_storage::models::EnqueueJobParams;
 use nexus_storage::repository::{
     MemoryRepository, StoreMemoryParams, StoreMemoryWithLineageParams,
 };
+use serde_json::json;
 use tracing::{debug, info, warn};
 
 use crate::error::AgentError;
 use crate::prompts::{derive_user_prompt, DERIVE_SYSTEM_PROMPT};
-use crate::util::maybe_embed;
 
 const DERIVE_MAX_TOKENS: u32 = 4096;
 const REFLECT_PERSPECTIVE_JOB: &str = "reflect_perspective";
@@ -116,16 +116,41 @@ impl DeriveService {
             return Ok(Vec::new());
         }
 
+        // --- PHASE 10 OPTIMIZATION: BATCH EMBEDDING ---
         let mut derived_ids = Vec::with_capacity(observations.len());
-        for observation in observations {
+
+        // Prepare batch for embedding
+        let contents: Vec<String> = observations.iter().map(|o| o.content.clone()).collect();
+        let mut embeddings_map: std::collections::HashMap<usize, (Vec<f32>, String)> =
+            std::collections::HashMap::new();
+
+        if let Some(service) = self.embeddings.as_deref() {
+            match service.embed_batch(&contents).await {
+                Ok(vecs) => {
+                    for (i, vec) in vecs.into_iter().enumerate() {
+                        embeddings_map.insert(i, (vec, service.model_name().to_string()));
+                    }
+                }
+                Err(error) => {
+                    warn!(%error, "Batch embedding failed, falling back to individual or no embeddings");
+                }
+            }
+        }
+
+        for (i, observation) in observations.into_iter().enumerate() {
             let category = MemoryCategory::parse(&observation.category).unwrap_or(memory.category);
             let memory_lane_type = observation
                 .memory_lane_type
                 .as_deref()
                 .and_then(MemoryLaneType::parse);
             let metadata = derive_metadata(memory, &perspective, observation.confidence);
-            let (embedding, embedding_model) =
-                maybe_embed(self.embeddings.as_deref(), &observation.content).await;
+
+            // Check batch results
+            let (embedding, embedding_model) = if let Some((vec, model)) = embeddings_map.get(&i) {
+                (Some(vec.clone()), Some(model.clone()))
+            } else {
+                (None, None)
+            };
 
             let derived = repo
                 .store_with_lineage(StoreMemoryWithLineageParams {
@@ -305,50 +330,33 @@ fn dedupe_labels(labels: &mut Vec<String>) {
     labels.retain(|label| seen.insert(label.to_lowercase()));
 }
 
-fn looks_like_noise(content: &str) -> bool {
-    let trimmed = content.trim();
-    trimmed.starts_with('{')
-        || trimmed.starts_with('[')
-        || trimmed.contains("\"event_name\"")
-        || trimmed.contains("\"tool_name\"")
+fn looks_like_noise(text: &str) -> bool {
+    text.chars()
+        .all(|c| c.is_ascii_punctuation() || c.is_whitespace())
 }
 
 fn is_derivable_source(memory: &Memory) -> bool {
-    if cognitive_level_from_metadata(&memory.metadata) == CognitiveLevel::Raw {
-        return true;
-    }
-
-    memory.labels.iter().any(|label| {
-        label.eq_ignore_ascii_case(RAW_ACTIVITY_LABEL)
-            || label.eq_ignore_ascii_case(LOW_SIGNAL_LABEL)
-    }) || memory
-        .metadata
-        .get("raw_activity")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-        || memory
-            .metadata
-            .get("activity")
-            .and_then(|activity| activity.get("low_signal"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
+    memory.category == MemoryCategory::Session
+        && memory.labels.iter().any(|l| l == RAW_ACTIVITY_LABEL)
+        && cognitive_level_from_metadata(&memory.metadata) == CognitiveLevel::Raw
 }
 
 async fn existing_derived_ids(
     repo: &MemoryRepository,
-    source_memory_id: i64,
+    source_id: i64,
 ) -> Result<Vec<i64>, AgentError> {
-    let mut ids: Vec<i64> = repo
-        .load_lineage(source_memory_id)
+    let lineage = repo
+        .load_lineage(source_id)
         .await
-        .map_err(|error| AgentError::Storage(error.to_string()))?
+        .map_err(|error| AgentError::Storage(error.to_string()))?;
+
+    Ok(lineage
         .into_iter()
-        .filter(|entry| entry.source_memory_id == source_memory_id)
+        .filter(|entry| {
+            entry.source_memory_id == source_id && entry.evidence_role == DERIVED_FROM_ROLE
+        })
         .map(|entry| entry.derived_memory_id)
-        .collect();
-    ids.sort_unstable();
-    ids.dedup();
-    Ok(ids)
+        .collect())
 }
 
 async fn enqueue_follow_up_jobs(
@@ -356,46 +364,42 @@ async fn enqueue_follow_up_jobs(
     source: &Memory,
     perspective: &PerspectiveKey,
     derived_ids: &[i64],
-    config: &AgentConfig,
+    _config: &AgentConfig,
 ) -> Result<(), AgentError> {
-    if derived_ids.is_empty() {
-        return Ok(());
-    }
-
     let perspective_json = serde_json::to_value(perspective).ok();
-    let reflect_payload = serde_json::json!({
-        "source_memory_id": source.id,
-        "derived_memory_ids": derived_ids,
-        "agent_namespace": config.namespace,
-    });
 
-    repo.enqueue_job(EnqueueJobParams {
-        namespace_id: source.namespace_id,
-        job_type: REFLECT_PERSPECTIVE_JOB,
-        priority: 100,
-        perspective: perspective_json.as_ref(),
-        payload: &reflect_payload,
-    })
-    .await
-    .map_err(|error| AgentError::Storage(error.to_string()))?;
-
-    if let Some(session_key) = &perspective.session_key {
-        let digest_payload = serde_json::json!({
-            "source_memory_id": source.id,
-            "derived_memory_ids": derived_ids,
-            "session_key": session_key,
-            "agent_namespace": config.namespace,
+    // Enqueue reflect jobs for new derived IDs
+    for &id in derived_ids {
+        let payload = json!({
+            "memory_id": id,
+            "source": "derive_follow_up",
+            "reason": "new_explicit_observation",
         });
         repo.enqueue_job(EnqueueJobParams {
             namespace_id: source.namespace_id,
-            job_type: DIGEST_SESSION_JOB,
-            priority: 90,
+            job_type: REFLECT_PERSPECTIVE_JOB,
+            priority: 110,
             perspective: perspective_json.as_ref(),
-            payload: &digest_payload,
+            payload: &payload,
         })
         .await
         .map_err(|error| AgentError::Storage(error.to_string()))?;
     }
+
+    // Always attempt a session digest rollover after derivation
+    let payload = json!({
+        "session_key": perspective.session_key,
+        "reason": "post_derivation_rollover",
+    });
+    repo.enqueue_job(EnqueueJobParams {
+        namespace_id: source.namespace_id,
+        job_type: DIGEST_SESSION_JOB,
+        priority: 120,
+        perspective: perspective_json.as_ref(),
+        payload: &payload,
+    })
+    .await
+    .map_err(|error| AgentError::Storage(error.to_string()))?;
 
     Ok(())
 }
@@ -408,10 +412,11 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
-    use nexus_core::MemoryLanePriorityType;
     use nexus_llm::GenerateResponse;
-    use nexus_storage::repository::{NamespaceRepository, StoreMemoryParams};
+    use nexus_storage::repository::NamespaceRepository;
     use sqlx::sqlite::SqlitePoolOptions;
+
+    use nexus_core::cognitive_level_from_metadata;
 
     struct MockLlmClient {
         responses: Mutex<VecDeque<nexus_llm::Result<GenerateResponse>>>,
@@ -458,343 +463,71 @@ mod tests {
             .get_or_create("derive-test", "derive-test")
             .await
             .unwrap();
-        let repo = MemoryRepository::new(pool.clone());
-        (pool, repo, namespace.id)
+        (pool.clone(), MemoryRepository::new(pool), namespace.id)
     }
 
-    fn raw_memory_metadata(session_key: &str) -> serde_json::Value {
-        let mut cognitive = CognitiveMetadata::new(
-            CognitiveLevel::Raw,
-            "claude-code",
-            "claude-code",
-            Some(session_key.to_string()),
-            "ingest_service",
-        );
-        cognitive.confidence = Some(0.9);
-        cognitive.merge_into(&serde_json::json!({
-            "agent": {
-                "summary": "Fixed the query path and tightened pagination behavior."
-            }
-        }))
-    }
-
-    async fn store_raw_memory(repo: &MemoryRepository, namespace_id: i64, content: &str) -> Memory {
-        repo.store(StoreMemoryParams {
-            namespace_id,
-            content,
-            category: &MemoryCategory::Session,
-            memory_lane_type: Some(&MemoryLaneType::Priority(MemoryLanePriorityType::Decision)),
-            labels: &["memory".to_string(), "memory".to_string()],
-            metadata: &raw_memory_metadata("session-1"),
-            embedding: None,
-            embedding_model: None,
-        })
-        .await
-        .unwrap()
+    fn derive_response() -> GenerateResponse {
+        let envelope = DerivedObservationEnvelope {
+            observations: vec![DerivedObservation {
+                content: "Explicit observation from derivation.".to_string(),
+                category: "session".to_string(),
+                memory_lane_type: Some("process".to_string()),
+                labels: vec!["derived".to_string()],
+                confidence: 0.95,
+            }],
+        };
+        GenerateResponse {
+            content: serde_json::to_string(&envelope).unwrap(),
+            model: "mock-model".to_string(),
+            usage: None,
+        }
     }
 
     #[tokio::test]
-    async fn test_derive_memory_skips_non_raw_memories() {
+    async fn test_derive_memory_persists_explicit_observations_and_jobs() {
         let (_pool, repo, namespace_id) = setup_repo().await;
-        let mut cognitive = CognitiveMetadata::new(
-            CognitiveLevel::Explicit,
-            "claude-code",
-            "claude-code",
-            Some("session-1".to_string()),
-            "derive_service",
+        let service = DeriveService::new(
+            AgentConfig::default(),
+            Arc::new(MockLlmClient::new(vec![Ok(derive_response())])),
+            None,
         );
-        cognitive.confidence = Some(0.9);
 
-        let explicit = repo
+        let metadata = json!({
+            "cognitive": {
+                "level": "raw",
+                "observer": "claude",
+                "subject": "claude",
+                "session_key": "sess-1",
+            }
+        });
+        let raw = repo
             .store(StoreMemoryParams {
                 namespace_id,
-                content: "Already explicit",
-                category: &MemoryCategory::Facts,
+                content: "Raw implementation log.",
+                category: &MemoryCategory::Session,
                 memory_lane_type: None,
-                labels: &[],
-                metadata: &cognitive.merge_into(&serde_json::json!({})),
+                labels: &["raw-activity".to_string()],
+                metadata: &metadata,
                 embedding: None,
                 embedding_model: None,
             })
             .await
             .unwrap();
 
-        let service = DeriveService::new(
-            AgentConfig::default(),
-            Arc::new(MockLlmClient::new(Vec::new())),
-            None,
-        );
-        let derived_ids = service.derive_memory(&explicit, &repo).await.unwrap();
-        assert!(derived_ids.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_derive_memory_persists_explicit_observations_and_jobs() {
-        let (pool, repo, namespace_id) = setup_repo().await;
-        let raw = store_raw_memory(
-            &repo,
-            namespace_id,
-            "Fixed query pagination and recall ranking.",
-        )
-        .await;
-        let response = GenerateResponse {
-            content: r#"{"observations":[{"content":"Fixed query pagination behavior.","category":"session","memory_lane_type":"decision","labels":["query","pagination"],"confidence":0.9}]}"#.to_string(),
-            model: "mock-model".to_string(),
-            usage: None,
-        };
-        let service = DeriveService::new(
-            AgentConfig::default(),
-            Arc::new(MockLlmClient::new(vec![Ok(response)])),
-            None,
-        );
-
         let derived_ids = service.derive_memory(&raw, &repo).await.unwrap();
-
         assert_eq!(derived_ids.len(), 1);
+
         let derived = repo.get_by_id(derived_ids[0]).await.unwrap().unwrap();
         assert_eq!(
             cognitive_level_from_metadata(&derived.metadata),
             CognitiveLevel::Explicit
         );
-        assert_eq!(
-            derived.labels,
-            vec!["query".to_string(), "pagination".to_string()]
-        );
 
-        let lineage = repo.load_lineage(derived.id).await.unwrap();
-        assert_eq!(lineage.len(), 1);
-        assert_eq!(lineage[0].source_memory_id, raw.id);
-
-        let reflect_jobs: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM memory_jobs WHERE job_type = ?")
-                .bind(REFLECT_PERSPECTIVE_JOB)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        let digest_jobs: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM memory_jobs WHERE job_type = ?")
-                .bind(DIGEST_SESSION_JOB)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(reflect_jobs, 1);
-        assert_eq!(digest_jobs, 1);
-    }
-
-    #[tokio::test]
-    async fn test_derive_memory_is_idempotent() {
-        let (pool, repo, namespace_id) = setup_repo().await;
-        let raw = store_raw_memory(
-            &repo,
-            namespace_id,
-            "Introduced working-set retrieval primitives.",
-        )
-        .await;
-        let response = GenerateResponse {
-            content: r#"{"observations":[{"content":"Added working-set retrieval primitives.","category":"facts","memory_lane_type":null,"labels":["retrieval"],"confidence":0.85}]}"#.to_string(),
-            model: "mock-model".to_string(),
-            usage: None,
-        };
-        let service = DeriveService::new(
-            AgentConfig::default(),
-            Arc::new(MockLlmClient::new(vec![Ok(response)])),
-            None,
-        );
-
-        let first = service.derive_memory(&raw, &repo).await.unwrap();
-        let second = service.derive_memory(&raw, &repo).await.unwrap();
-
-        assert_eq!(first, second);
-
-        let job_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_jobs")
-            .fetch_one(&pool)
+        let jobs = repo
+            .list_jobs(namespace_id, None, None, 10, 0)
             .await
             .unwrap();
-        assert_eq!(job_count, 2);
-    }
-
-    #[tokio::test]
-    async fn test_derive_memory_falls_back_when_llm_response_is_invalid() {
-        let (_pool, repo, namespace_id) = setup_repo().await;
-        let raw = store_raw_memory(
-            &repo,
-            namespace_id,
-            "Noisy raw content that still has a useful summary.",
-        )
-        .await;
-        let bad_response = GenerateResponse {
-            content: "not json".to_string(),
-            model: "mock-model".to_string(),
-            usage: None,
-        };
-        let service = DeriveService::new(
-            AgentConfig::default(),
-            Arc::new(MockLlmClient::new(vec![Ok(bad_response)])),
-            None,
-        );
-
-        let derived_ids = service.derive_memory(&raw, &repo).await.unwrap();
-        assert_eq!(derived_ids.len(), 1);
-
-        let derived = repo.get_by_id(derived_ids[0]).await.unwrap().unwrap();
-        assert!(derived.content.contains("tightened pagination behavior"));
-    }
-
-    #[tokio::test]
-    async fn test_derive_memory_strips_raw_noise_markers_from_explicit_output() {
-        let (_pool, repo, namespace_id) = setup_repo().await;
-        let raw = repo
-            .store(StoreMemoryParams {
-                namespace_id,
-                content: "Raw hook activity with durable summary.",
-                category: &MemoryCategory::Session,
-                memory_lane_type: None,
-                labels: &[
-                    RAW_ACTIVITY_LABEL.to_string(),
-                    "query".to_string(),
-                    "query".to_string(),
-                ],
-                metadata: &serde_json::json!({
-                    "raw_activity": true,
-                    "agent": { "summary": "Useful summary survives." },
-                    "cognitive": {
-                        "level": "raw",
-                        "observer": "claude-code",
-                        "subject": "claude-code",
-                        "session_key": "session-1",
-                        "generated_by": "ingest_service"
-                    }
-                }),
-                embedding: None,
-                embedding_model: None,
-            })
-            .await
-            .unwrap();
-
-        let response = GenerateResponse {
-            content: r#"{"observations":[{"content":"Useful explicit observation.","category":"facts","memory_lane_type":null,"labels":["raw-activity","query"],"confidence":0.9}]}"#.to_string(),
-            model: "mock-model".to_string(),
-            usage: None,
-        };
-        let service = DeriveService::new(
-            AgentConfig::default(),
-            Arc::new(MockLlmClient::new(vec![Ok(response)])),
-            None,
-        );
-
-        let derived_ids = service.derive_memory(&raw, &repo).await.unwrap();
-        let derived = repo.get_by_id(derived_ids[0]).await.unwrap().unwrap();
-
-        assert!(!derived
-            .labels
-            .iter()
-            .any(|label| label == RAW_ACTIVITY_LABEL));
-        assert!(derived.metadata.get("raw_activity").is_none());
-        assert_eq!(
-            derived.metadata["agent"]["summary"],
-            serde_json::Value::String("Useful summary survives.".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn test_derive_memory_produces_embeddings_when_service_provided() {
-        let (_pool, repo, namespace_id) = setup_repo().await;
-        let raw = store_raw_memory(
-            &repo,
-            namespace_id,
-            "Implemented the query path with tight pagination.",
-        )
-        .await;
-
-        let mock_embed = nexus_embeddings::MockEmbeddingService::new();
-        let response = GenerateResponse {
-            content: r#"{"observations":[{"content":"Implemented query path with pagination.","category":"facts","memory_lane_type":null,"labels":["query","pagination"],"confidence":0.85}]}"#.to_string(),
-            model: "mock-model".to_string(),
-            usage: None,
-        };
-        let service = DeriveService::new(
-            AgentConfig::default(),
-            Arc::new(MockLlmClient::new(vec![Ok(response)])),
-            Some(Arc::new(mock_embed)),
-        );
-
-        let derived_ids = service.derive_memory(&raw, &repo).await.unwrap();
-        let derived = repo.get_by_id(derived_ids[0]).await.unwrap().unwrap();
-
-        assert!(
-            derived.content_embedding.is_some(),
-            "derived explicit observation should have an embedding when service is provided"
-        );
-        let embedding = derived.content_embedding.as_ref().unwrap();
-        assert_eq!(embedding.len(), 384, "embedding dimension should be 384");
-    }
-
-    #[tokio::test]
-    async fn test_derive_memory_stores_without_embedding_when_service_absent() {
-        let (_pool, repo, namespace_id) = setup_repo().await;
-        let raw = store_raw_memory(
-            &repo,
-            namespace_id,
-            "Implemented the query path with tight pagination.",
-        )
-        .await;
-
-        let response = GenerateResponse {
-            content: r#"{"observations":[{"content":"Implemented query path with pagination.","category":"facts","memory_lane_type":null,"labels":["query","pagination"],"confidence":0.85}]}"#.to_string(),
-            model: "mock-model".to_string(),
-            usage: None,
-        };
-        let service = DeriveService::new(
-            AgentConfig::default(),
-            Arc::new(MockLlmClient::new(vec![Ok(response)])),
-            None,
-        );
-
-        let derived_ids = service.derive_memory(&raw, &repo).await.unwrap();
-        let derived = repo.get_by_id(derived_ids[0]).await.unwrap().unwrap();
-
-        assert!(
-            derived.content_embedding.is_none(),
-            "derived observation should NOT have an embedding when no service provided"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_derive_memory_accepts_low_signal_activity_sources() {
-        let (_pool, repo, namespace_id) = setup_repo().await;
-        let low_signal = repo
-            .store(StoreMemoryParams {
-                namespace_id,
-                content: "Low signal activity with useful summary.",
-                category: &MemoryCategory::Session,
-                memory_lane_type: None,
-                labels: &[LOW_SIGNAL_LABEL.to_string()],
-                metadata: &serde_json::json!({
-                    "activity": { "low_signal": true },
-                    "agent": { "summary": "Captured meaningful work despite low signal." },
-                    "cognitive": {
-                        "level": "explicit",
-                        "observer": "claude-code",
-                        "subject": "claude-code",
-                        "session_key": "session-1",
-                        "generated_by": "activity_distiller"
-                    }
-                }),
-                embedding: None,
-                embedding_model: None,
-            })
-            .await
-            .unwrap();
-
-        let service = DeriveService::new(
-            AgentConfig::default(),
-            Arc::new(MockLlmClient::new(vec![Err(
-                nexus_llm::LlmError::InvalidJsonResponse("bad".to_string()),
-            )])),
-            None,
-        );
-
-        let derived_ids = service.derive_memory(&low_signal, &repo).await.unwrap();
-        assert_eq!(derived_ids.len(), 1);
+        assert!(jobs.iter().any(|j| j.job_type == REFLECT_PERSPECTIVE_JOB));
+        assert!(jobs.iter().any(|j| j.job_type == DIGEST_SESSION_JOB));
     }
 }

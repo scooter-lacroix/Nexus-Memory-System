@@ -139,6 +139,21 @@ impl AppState {
                     data,
                 ))
             }
+            EventType::CognitiveDrift => {
+                let similarity = event.get::<f32>("similarity").unwrap_or(0.0);
+                let agent_type = event.get::<String>("agent_type").unwrap_or_default();
+                Some(WebSocketMessage::cognitive_drift(similarity, &agent_type))
+            }
+            EventType::DreamCompleted => {
+                let namespace = event.get::<String>("namespace").unwrap_or_default();
+                let processed = event.get::<usize>("processed").unwrap_or(0);
+                Some(WebSocketMessage::dream_completed(&namespace, processed))
+            }
+            EventType::MorningRecall => {
+                let namespace = event.get::<String>("namespace").unwrap_or_default();
+                let count = event.get::<usize>("count").unwrap_or(0);
+                Some(WebSocketMessage::morning_recall(&namespace, count))
+            }
             _ => None,
         }
     }

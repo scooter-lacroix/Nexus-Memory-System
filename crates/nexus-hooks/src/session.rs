@@ -51,6 +51,10 @@ pub struct SessionContext {
 
     /// Reliability score (0.0-1.0)
     pub reliability_score: f32,
+
+    /// Optional re-scorer for active sessions
+    #[serde(skip)]
+    pub rescorer: Option<std::sync::Arc<crate::rescorer::SessionRescorer>>,
 }
 
 impl Default for SessionContext {
@@ -71,6 +75,7 @@ impl Default for SessionContext {
             custom: HashMap::new(),
             extraction_source: "unknown".to_string(),
             reliability_score: 1.0,
+            rescorer: None,
         }
     }
 }
@@ -103,11 +108,24 @@ impl SessionContext {
 
     /// Add a conversation message
     pub fn add_message(&mut self, role: impl Into<String>, content: impl Into<String>) {
+        let content_str = content.into();
         self.conversation.push(ConversationMessage {
             role: role.into(),
-            content: content.into(),
+            content: content_str.clone(),
             timestamp: Utc::now(),
         });
+
+        // Trigger re-score if rescorer is present
+        if let Some(rescorer) = self.rescorer.as_ref() {
+            let rescorer = rescorer.clone();
+            tokio::spawn(async move {
+                // In a real session, we'd have access to an embedder.
+                // For now, we use a best-effort approach with the interval trigger.
+                if rescorer.on_turn(&content_str, None).await {
+                    let _ = rescorer.rescore(None).await;
+                }
+            });
+        }
     }
 
     /// Add a decision
