@@ -133,10 +133,10 @@ pub async fn run_nap(
             (window_size * services.cognitive_system.context_allocation_pct) as usize;
         let context_md = build_context_md(&cache.hot_cache, &[], max_context_tokens);
         let context_path = nexus_dir.join("context.md");
-        let _ = std::fs::write(context_path, context_md);
+        std::fs::write(context_path, context_md)?;
 
         // 4. Save cache
-        let _ = cache.save(&nexus_dir);
+        cache.save(&nexus_dir)?;
 
         Ok::<NapResult, AgentError>(NapResult {
             memories_processed: processed,
@@ -190,15 +190,15 @@ pub async fn run_dream(
     let cache = CognitiveCache::load_or_init(&nexus_dir);
 
     // 3. Update context.md
-        let window_size = TokenBudget::estimate_window(&services.agent.namespace) as f32;
+    let window_size = TokenBudget::estimate_window(&services.agent.namespace) as f32;
     let max_context_tokens =
         (window_size * services.cognitive_system.context_allocation_pct) as usize;
     let context_md = build_context_md(&cache.hot_cache, &[], max_context_tokens);
     let context_path = nexus_dir.join("context.md");
-    let _ = std::fs::write(context_path, context_md);
+    std::fs::write(context_path, context_md)?;
 
     // 4. Save cache
-    let _ = cache.save(&nexus_dir);
+    cache.save(&nexus_dir)?;
 
     Ok(DreamResult {
         memories_derived: processed,
@@ -568,7 +568,8 @@ pub async fn run_deep_dream(
         }
     }
 
-    let candidates = extract_cross_project_patterns(memories_by_project, embeddings.as_deref()).await;
+    let candidates =
+        extract_cross_project_patterns(memories_by_project, embeddings.as_deref()).await;
     let total_patterns = candidates.len();
 
     // 3. Rebuild Soul
@@ -669,19 +670,9 @@ pub async fn run_deep_dream(
             }
         }
 
-        // Merge: keep existing entries whose memories are still valid,
-        // add new entries, update timestamp
-        let existing_ids: HashSet<i64> = cache
-            .cold_index
-            .entries
-            .iter()
-            .map(|e| e.memory_id)
-            .collect();
-        for entry in fresh_entries {
-            if !existing_ids.contains(&entry.memory_id) {
-                cache.cold_index.entries.push(entry);
-            }
-        }
+        // Reindex: cold cache is now exactly the fresh set.
+        // This replaces the old merge strategy that accumulated stale entries.
+        cache.cold_index.entries = fresh_entries;
         cache.cold_index.last_reindexed = Some(chrono::Utc::now());
 
         if cache.save(&nexus_dir).is_ok() && !cache.cold_index.entries.is_empty() {
@@ -1008,11 +999,19 @@ pub(crate) async fn compute_adaptive_dream_interval(
         let contradiction_count = recent_memories
             .iter()
             .filter(|m| {
-                m.metadata
-                    .get("cognitive")
-                    .and_then(|c| c.get("times_contradicted"))
-                    .and_then(|t| t.as_i64())
-                    .is_some_and(|t| t > 0)
+                // Count if explicitly marked as Contradiction level
+                if nexus_core::cognitive_level_from_metadata(&m.metadata)
+                    == CognitiveLevel::Contradiction
+                {
+                    return true;
+                }
+                // Or if times_contradicted field indicates contradiction
+                if let Some(cog) = nexus_core::CognitiveMetadata::from_metadata(&m.metadata) {
+                    if cog.times_contradicted > 0 {
+                        return true;
+                    }
+                }
+                false
             })
             .count();
 

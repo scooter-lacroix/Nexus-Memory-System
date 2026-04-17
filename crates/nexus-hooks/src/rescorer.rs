@@ -74,7 +74,11 @@ impl SessionRescorer {
     }
 
     /// Execute the re-scoring pipeline.
-    pub async fn rescore(&self, embedder: Option<&dyn EmbeddingService>, agent_type: &str) -> anyhow::Result<()> {
+    pub async fn rescore(
+        &self,
+        embedder: Option<&dyn EmbeddingService>,
+        agent_type: &str,
+    ) -> anyhow::Result<()> {
         let _start = std::time::Instant::now();
 
         // 1. Load current cache
@@ -111,7 +115,8 @@ impl SessionRescorer {
         // 3. Rebuild context.md
         let config = nexus_core::Config::from_env().unwrap_or_default();
         let window_size = TokenBudget::estimate_window(agent_type) as f32;
-        let max_context_tokens = (window_size * config.cognitive_system.context_allocation_pct) as usize;
+        let max_context_tokens =
+            (window_size * config.cognitive_system.context_allocation_pct) as usize;
         let context_md = build_context_md(&cache.hot_cache, &[], max_context_tokens);
 
         // 4. Atomic write

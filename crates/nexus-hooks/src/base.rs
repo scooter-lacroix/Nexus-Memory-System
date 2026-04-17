@@ -184,13 +184,13 @@ impl BaseHook {
             let content = content.to_string();
             let agent_type = self.agent_type.clone();
             tokio::spawn(async move {
-                if rescorer.on_turn(&content, None).await {
-                    let config = nexus_core::Config::from_env().unwrap_or_default();
-                    let embeddings = if config.embedding.enabled {
-                        nexus_memory_agent::runtime::create_embedding_service(&config).await
-                    } else {
-                        None
-                    };
+                let config = nexus_core::Config::from_env().unwrap_or_default();
+                let embeddings = if config.embedding.enabled {
+                    nexus_memory_agent::runtime::create_embedding_service(&config).await
+                } else {
+                    None
+                };
+                if rescorer.on_turn(&content, embeddings.as_deref()).await {
                     let _ = rescorer.rescore(embeddings.as_deref(), &agent_type).await;
 
                     // PHASE 11: Notify orchestrator of drift
@@ -271,25 +271,33 @@ impl BaseHook {
                                     run_nap(&session_id, &cwd, namespace.id, &services, timeout)
                                         .await
                                 {
-                                    // PHASE 11: Notify of dream completion
-                                    let mut data = std::collections::HashMap::new();
-                                    data.insert(
-                                        "namespace".to_string(),
-                                        serde_json::json!(config.agent.namespace),
-                                    );
-                                    data.insert(
-                                        "processed".to_string(),
-                                        serde_json::json!(nap_result.memories_processed),
-                                    );
+                                    if nap_result.timed_out {
+                                        tracing::warn!(
+                                            session_id = %session_id,
+                                            "nap timed out; not publishing DreamCompleted"
+                                        );
+                                    } else {
+                                        // PHASE 11: Notify of dream completion
+                                        let mut data = std::collections::HashMap::new();
+                                        data.insert(
+                                            "namespace".to_string(),
+                                            serde_json::json!(config.agent.namespace),
+                                        );
+                                        data.insert(
+                                            "processed".to_string(),
+                                            serde_json::json!(nap_result.memories_processed),
+                                        );
 
-                                    let event = nexus_orchestrator::Event::with_data(
-                                        nexus_orchestrator::EventType::DreamCompleted,
-                                        data,
-                                    )
-                                    .with_source("agent_supervisor");
+                                        let event = nexus_orchestrator::Event::with_data(
+                                            nexus_orchestrator::EventType::DreamCompleted,
+                                            data,
+                                        )
+                                        .with_source("agent_supervisor");
 
-                                    let orchestrator = nexus_orchestrator::Orchestrator::default();
-                                    let _ = orchestrator.event_bus.publish(event);
+                                        let orchestrator =
+                                            nexus_orchestrator::Orchestrator::default();
+                                        let _ = orchestrator.event_bus.publish(event);
+                                    }
                                 }
                             }
                         }

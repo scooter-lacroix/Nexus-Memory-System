@@ -1298,10 +1298,7 @@ impl MemoryRepository {
 
         let mut memories: Vec<Memory> = Vec::with_capacity(rows.len());
         for row in rows {
-            match self.row_to_memory(row) {
-                Ok(m) => memories.push(m),
-                Err(e) => tracing::warn!("Failed to convert memory row: {}", e),
-            }
+            memories.push(self.row_to_memory(row)?);
         }
 
         Ok(memories)

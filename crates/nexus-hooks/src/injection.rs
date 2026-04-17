@@ -227,18 +227,18 @@ pub async fn on_session_start(
     if let Some(target) = AgentInjectionTarget::find(agent_type) {
         // Project config
         let project_config = project.root_dir.join(&target.project_config_filename);
-        let _ = inject_reference(&project_config, &soul_path, &context_path);
+        inject_reference(&project_config, &soul_path, &context_path)?;
 
         // Global config
         if let Some(global_config) = target.global_config {
-            let _ = inject_reference(&global_config, &soul_path, &context_path);
+            inject_reference(&global_config, &soul_path, &context_path)?;
         }
     }
 
     // 7. Start session scratch file
     let session_manager =
         nexus_memory_agent::session_manager::SessionManager::new(&project.root_dir);
-    let _ = session_manager.start_session(session_id, agent_type);
+    session_manager.start_session(session_id, agent_type)?;
 
     // 8. Initialize Rescorer (if enabled)
     if config.cognitive_system.mid_session_rescore_enabled {

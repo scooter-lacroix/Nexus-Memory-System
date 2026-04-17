@@ -96,6 +96,7 @@ impl HotCache {
             existing.tier = entry.tier;
             existing.hot_streak += 1;
             existing.last_surfaced = Utc::now();
+            existing.pinned = entry.pinned; // propagate pinned flag
             return;
         }
 
@@ -114,8 +115,8 @@ impl HotCache {
                 candidates
                     .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
                 self.entries.remove(candidates[0].0);
-            } else if !entry.pinned {
-                // All entries are pinned and new one is not - drop it
+            } else {
+                // All existing entries are pinned; do not exceed capacity.
                 return;
             }
         }
