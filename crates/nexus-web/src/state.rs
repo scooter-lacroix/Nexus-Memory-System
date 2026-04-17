@@ -192,7 +192,11 @@ impl AppState {
             .await
             .map_err(|e| WebError::Storage(e.to_string()))?;
 
-        let mut supervisor = AgentSupervisor::new(config.agent, llm, pool.clone(), namespace.id);
+        let project_root =
+            nexus_core::ProjectIdentity::resolve(&std::env::current_dir().unwrap_or_default())
+                .root_dir;
+        let mut supervisor =
+            AgentSupervisor::new(config.agent, llm, pool.clone(), namespace.id, project_root);
         if let Some(embedder) = query_embedder {
             supervisor = supervisor.with_query_embedder(embedder);
         }

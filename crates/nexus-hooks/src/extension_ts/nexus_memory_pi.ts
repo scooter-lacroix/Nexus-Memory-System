@@ -24,6 +24,7 @@ export default function nexusMemory(pi: ExtensionAPI): void {
   let lastIngestedContent: string | null = null;
   let ingestQueue: NexusPayload[] = [];
   let lastIngestTime = 0;
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
   const INGEST_DEBOUNCE_MS = 2000;
   const MAX_QUEUE_SIZE = 100;
 
@@ -288,10 +289,28 @@ export default function nexusMemory(pi: ExtensionAPI): void {
       if (ingestQueue.length < MAX_QUEUE_SIZE) {
         ingestQueue.push(payload);
       }
+      // Schedule a flush if not already pending
+      if (!flushTimer) {
+        const delay = INGEST_DEBOUNCE_MS - (now - lastIngestTime);
+        flushTimer = setTimeout(async () => {
+          flushTimer = null;
+          if (ingestQueue.length > 0) {
+            const queued = ingestQueue.splice(0);
+            for (const p of queued) {
+              await ingestPayload(p);
+            }
+          }
+        }, delay);
+      }
       return;
     }
 
     lastIngestTime = now;
+    // Cancel any pending flush since we're flushing now
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
 
     // Flush any queued items first
     if (ingestQueue.length > 0) {

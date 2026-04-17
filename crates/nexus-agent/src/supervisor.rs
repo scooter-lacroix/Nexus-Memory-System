@@ -34,6 +34,7 @@ pub struct AgentSupervisor {
     query_embedder: Option<Arc<dyn EmbeddingService>>,
     pool: SqlitePool,
     namespace_id: i64,
+    project_root: std::path::PathBuf,
     status: Arc<RwLock<AgentStatus>>,
     cancel_token: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
@@ -45,6 +46,7 @@ impl AgentSupervisor {
         llm: Arc<dyn LlmClient>,
         pool: SqlitePool,
         namespace_id: i64,
+        project_root: std::path::PathBuf,
     ) -> Self {
         let status = Arc::new(RwLock::new(AgentStatus {
             enabled: config.enabled,
@@ -64,6 +66,7 @@ impl AgentSupervisor {
             query_embedder: None,
             pool,
             namespace_id,
+            project_root,
             status,
             cancel_token: CancellationToken::new(),
             tasks: Vec::new(),
@@ -233,6 +236,7 @@ impl AgentSupervisor {
         let llm = self.llm.clone();
         let pool = self.pool.clone();
         let namespace_id = self.namespace_id;
+        let project_root = self.project_root.clone();
         let status = self.status.clone();
         let base_interval_secs = config.consolidation_interval_mins * 60;
         let cancel = self.cancel_token.clone();
@@ -260,23 +264,24 @@ impl AgentSupervisor {
                         if count_usize >= cognitive_system.dream_triggers.dream_memory_threshold
                             && count_usize != last_dream_count
                         {
-                            last_dream_count = count_usize;
                             info!(
                                 "Dream threshold reached ({} memories). Running dream cycle.",
                                 count
                             );
-                            if let Ok(cwd) = std::env::current_dir() {
-                                let services = crate::dream_cycle::DreamServices {
-                                    pool: pool.clone(),
-                                    cognition: cognition.clone(),
-                                    agent: config.clone(),
-                                    llm: llm.clone(),
-                                    embeddings: None,
-                                    cognitive_system: cognitive_system.clone(),
-                                };
-                                let _ =
-                                    crate::dream_cycle::run_dream(&cwd, namespace_id, &services)
-                                        .await;
+                            let cwd = project_root.clone();
+                            let services = crate::dream_cycle::DreamServices {
+                                pool: pool.clone(),
+                                cognition: cognition.clone(),
+                                agent: config.clone(),
+                                llm: llm.clone(),
+                                embeddings: None,
+                                cognitive_system: cognitive_system.clone(),
+                            };
+                            if crate::dream_cycle::run_dream(&cwd, namespace_id, &services)
+                                .await
+                                .is_ok()
+                            {
+                                last_dream_count = count_usize;
                             }
                         }
                     }

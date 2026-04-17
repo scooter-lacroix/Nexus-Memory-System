@@ -22,7 +22,7 @@ The system operates like a human memory/subconscious — it just works, learning
 
 ## 2. Architecture Overview
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                        USER'S CLI AGENTS                                │
 │   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
@@ -484,7 +484,7 @@ Do NOT wrap in JSON. Output raw markdown only."#;
 
 #### 3.3.1 Directory Structure
 
-```
+```text
 project-root/
 ├── .nexus/
 │   ├── project.toml          # Optional project identity override
@@ -495,7 +495,7 @@ project-root/
 │   └── sessions/
 │       ├── <session-id-1>.md  # Session scratch (active session)
 │       └── <session-id-2>.md  # Session scratch (previous, awaiting merge)
-```
+```text
 
 #### 3.3.2 Hot/Cold Cache Data Model
 
@@ -1875,6 +1875,7 @@ cargo test --workspace
 ## 6. File Index — New & Modified Files
 
 ### New Files
+
 | File | Phase | Purpose |
 |------|-------|---------|
 | `crates/nexus-core/src/project_identity.rs` | 1 | Project identity resolution |
@@ -1889,6 +1890,7 @@ cargo test --workspace
 
 ### Modified Files
 | File | Phase | Changes |
+
 |------|-------|---------|
 | `crates/nexus-core/src/config.rs` | 1 | Add `CognitiveSystemConfig`, `DreamTriggerConfig` |
 | `crates/nexus-core/src/lib.rs` | 1 | Add `pub mod project_identity` |
