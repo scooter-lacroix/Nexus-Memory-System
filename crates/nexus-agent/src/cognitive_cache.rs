@@ -273,6 +273,42 @@ impl CognitiveCache {
                     })
                     .collect();
             }
+
+            // Also include cold_index entries if no results from fallback
+            if results.is_empty() {
+                let cold_ids: Vec<i64> = self
+                    .cold_index
+                    .entries
+                    .iter()
+                    .map(|e| e.memory_id)
+                    .filter(|id| !hot_ids.contains(id))
+                    .collect();
+
+                if !cold_ids.is_empty() {
+                    match memory_repo.get_by_ids(&cold_ids).await {
+                        Ok(cold_memories) => {
+                            let cold_memory_by_id: HashMap<i64, Memory> =
+                                cold_memories.into_iter().map(|m| (m.id, m)).collect();
+
+                            for cold_entry in &self.cold_index.entries {
+                                if let Some(m) = cold_memory_by_id.get(&cold_entry.memory_id) {
+                                    results.push(ColdRecall {
+                                        memory_id: m.id,
+                                        content: m.content.clone(),
+                                        relevance_score: cold_entry.project_relevance,
+                                        tier: ConfidenceTier::from_score(
+                                            cold_entry.project_relevance,
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            debug!("get_by_ids failed for cold_index in morning_recall: {}", e);
+                        }
+                    }
+                }
+            }
         }
 
         debug!(

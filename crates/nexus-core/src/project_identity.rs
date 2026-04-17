@@ -62,37 +62,22 @@ impl ProjectIdentity {
 
     /// Extract git remote origin URL. Never fails — returns None on error.
     fn detect_git_remote(root: &Path) -> Option<String> {
-        use std::process::Command;
-        use std::time::{Duration, Instant};
+        let output = std::process::Command::new("git")
+            .args(["config", "--get", "remote.origin.url"])
+            .current_dir(root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
 
-        let root = root.to_path_buf();
-        let handle = std::thread::spawn(move || {
-            Command::new("git")
-                .args(["remote", "get-url", "origin"])
-                .current_dir(&root)
-                .output()
-                .ok()
-        });
-
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            if handle.is_finished() {
-                break;
-            }
-            if Instant::now() > deadline {
-                // Thread will finish on its own; we just stop waiting.
-                return None;
-            }
-            std::thread::sleep(Duration::from_millis(50));
+        if !output.status.success() {
+            return None;
         }
 
-        match handle.join() {
-            Ok(Some(output)) if output.status.success() => String::from_utf8(output.stdout)
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty()),
-            _ => None,
-        }
+        String::from_utf8(output.stdout)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 
     fn derive_display_name(root: &Path) -> String {

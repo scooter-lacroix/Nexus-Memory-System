@@ -128,10 +128,7 @@ pub async fn run_nap(
         )?;
 
         // 3. Update context.md
-        // Dream cycles run autonomously and don't know the active agent type.
-        // Using namespace gives the conservative 128k default, which is appropriate
-        // for background consolidation that shouldn't consume the full context budget.
-        let window_size = TokenBudget::estimate_window(&services.agent.namespace) as f32;
+        let window_size = TokenBudget::estimate_window(&services.agent.agent_type) as f32;
         let max_context_tokens =
             (window_size * services.cognitive_system.context_allocation_pct) as usize;
         let context_md = build_context_md(&cache.hot_cache, &[], max_context_tokens);
@@ -193,8 +190,7 @@ pub async fn run_dream(
     let cache = CognitiveCache::load_or_init(&nexus_dir);
 
     // 3. Update context.md
-    // Note: namespace used for window estimation — see run_nap for rationale.
-    let window_size = TokenBudget::estimate_window(&services.agent.namespace) as f32;
+    let window_size = TokenBudget::estimate_window(&services.agent.agent_type) as f32;
     let max_context_tokens =
         (window_size * services.cognitive_system.context_allocation_pct) as usize;
     let context_md = build_context_md(&cache.hot_cache, &[], max_context_tokens);

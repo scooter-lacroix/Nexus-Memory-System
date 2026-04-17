@@ -99,12 +99,20 @@ impl SoulBuilder {
 
         let response = self.llm.generate(params).await?;
 
-        let clean_response = response
-            .content
-            .trim()
-            .trim_start_matches("```json")
-            .trim_end_matches("```")
-            .trim();
+        let content = response.content.trim();
+        let clean_response = if let Some(start) = content.find('{') {
+            if let Some(end) = content.rfind('}') {
+                if end > start {
+                    &content[start..=end]
+                } else {
+                    content
+                }
+            } else {
+                content
+            }
+        } else {
+            content
+        };
 
         match serde_json::from_str::<NormalizationResponse>(clean_response) {
             Ok(res) => {

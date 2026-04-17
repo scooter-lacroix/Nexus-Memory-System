@@ -176,6 +176,10 @@ pub async fn on_session_start(
 
     // 2. Initialize Repositories (for Morning Recall)
     let config = nexus_core::Config::from_env().unwrap_or_default();
+    // SQLite create_if_missing won't create parent dirs
+    if let Some(parent) = config.database.path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
     let mut storage = nexus_storage::StorageManager::from_url(&config.database_url()).await?;
     storage.initialize().await?;
     let memory_repo = nexus_storage::repository::MemoryRepository::new(storage.pool().clone());

@@ -297,12 +297,15 @@ impl AgentSupervisor {
                             embeddings: None,
                             cognitive_system: cognitive_system.clone(),
                         };
-                        let _ = crate::dream_cycle::run_deep_dream(
+                        if let Err(e) = crate::dream_cycle::run_deep_dream(
                             &services,
                             &soul_builder,
                             &mut activity_monitor,
                         )
-                        .await;
+                        .await
+                        {
+                            tracing::warn!(error = %e, "Deep dream cycle failed");
+                        }
                     }
                 }
 

@@ -43,6 +43,8 @@ pub struct AgentConfig {
     pub enabled: bool,
     /// Namespace name for agent-generated memories
     pub namespace: String,
+    /// Agent type label for token budget estimation (e.g. "claude-code", "gemini")
+    pub agent_type: String,
     /// Directory to watch for new files
     pub inbox_dir: String,
     /// File scan interval in seconds
@@ -60,6 +62,8 @@ impl Default for AgentConfig {
         Self {
             enabled: false,
             namespace: "nexus-agent".to_string(),
+            agent_type: std::env::var("NEXUS_AGENT_TYPE")
+                .unwrap_or_else(|_| "nexus-agent".to_string()),
             inbox_dir: "./inbox".to_string(),
             scan_interval_secs: 5,
             consolidation_interval_mins: 30,
@@ -508,6 +512,13 @@ impl Config {
             config.cognitive_system.rescore_turn_interval = interval
                 .parse()
                 .unwrap_or(CognitiveSystemConfig::default().rescore_turn_interval);
+        }
+        if let Ok(threshold) = std::env::var("NEXUS_RESCORE_DRIFT_THRESHOLD") {
+            config.cognitive_system.rescore_drift_threshold = threshold
+                .parse()
+                .ok()
+                .filter(|&v: &f32| (0.0..=1.0).contains(&v))
+                .unwrap_or(CognitiveSystemConfig::default().rescore_drift_threshold);
         }
         if let Ok(threshold) = std::env::var("NEXUS_DREAM_THRESHOLD") {
             config

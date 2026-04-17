@@ -495,7 +495,7 @@ project-root/
 │   └── sessions/
 │       ├── <session-id-1>.md  # Session scratch (active session)
 │       └── <session-id-2>.md  # Session scratch (previous, awaiting merge)
-```text
+```
 
 #### 3.3.2 Hot/Cold Cache Data Model
 

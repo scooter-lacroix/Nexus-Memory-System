@@ -177,7 +177,10 @@ pub fn parse_scratch_learnings(content: &str) -> Vec<ScratchLearning> {
 /// Uses UUID-based negative IDs that survive process restarts without collision.
 pub fn promote_to_hot_cache(hot: &mut HotCache, learning: ScratchLearning, max_entries: usize) {
     let entry = HotCacheEntry {
-        memory_id: -(uuid::Uuid::new_v4().as_u128() as i64),
+        memory_id: {
+            let raw = (uuid::Uuid::new_v4().as_u128() & (i64::MAX as u128)) as i64;
+            -(raw.max(1))
+        },
         content: learning.content,
         relevance_score: learning.confidence,
         tier: ConfidenceTier::from_score(learning.confidence),
