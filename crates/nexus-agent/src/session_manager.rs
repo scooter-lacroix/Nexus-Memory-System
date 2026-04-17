@@ -73,6 +73,8 @@ impl SessionManager {
         content: &str,
         confidence: f32,
     ) -> io::Result<()> {
+        Self::validate_session_id(session_id)?;
+
         let scratch_path = self
             .nexus_dir
             .join("sessions")
@@ -96,6 +98,8 @@ impl SessionManager {
         hot_cache: &mut HotCache,
         max_entries: usize,
     ) -> Result<usize, AgentError> {
+        Self::validate_session_id(session_id)?;
+
         let sessions_dir = self.nexus_dir.join("sessions");
         let scratch_path = sessions_dir.join(format!("{}.md", session_id));
 

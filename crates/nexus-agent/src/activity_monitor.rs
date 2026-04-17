@@ -90,6 +90,11 @@ impl ActivityMonitor {
     /// the inactivity threshold is relaxed from 30 min to 10 min since
     /// the user is likely away during their sleep window.
     pub fn should_deep_dream(&self) -> bool {
+        // No activity samples — cannot determine inactivity, don't trigger
+        if self.activity_log.is_empty() {
+            return false;
+        }
+
         let now = Utc::now();
 
         // 1. Cooldown check

@@ -96,7 +96,7 @@ impl HotCache {
             existing.tier = entry.tier;
             existing.hot_streak += 1;
             existing.last_surfaced = Utc::now();
-            existing.pinned = entry.pinned; // propagate pinned flag
+            existing.pinned = existing.pinned || entry.pinned; // preserve existing pin
             return;
         }
 
@@ -290,7 +290,13 @@ impl CognitiveCache {
                             let cold_memory_by_id: HashMap<i64, Memory> =
                                 cold_memories.into_iter().map(|m| (m.id, m)).collect();
 
-                            for cold_entry in &self.cold_index.entries {
+                            for cold_entry in self
+                                .cold_index
+                                .entries
+                                .iter()
+                                .filter(|e| e.project_relevance >= 0.3)
+                                .take(10)
+                            {
                                 if let Some(m) = cold_memory_by_id.get(&cold_entry.memory_id) {
                                     results.push(ColdRecall {
                                         memory_id: m.id,

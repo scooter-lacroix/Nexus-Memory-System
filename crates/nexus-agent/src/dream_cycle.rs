@@ -519,7 +519,10 @@ pub async fn run_deep_dream(
     let ns_repo = nexus_storage::repository::NamespaceRepository::new(services.pool.clone());
 
     // Fetch all namespaces once for reuse across all deep-dream stages
-    let namespaces = ns_repo.list_all().await.unwrap_or_default();
+    let namespaces = ns_repo
+        .list_all()
+        .await
+        .map_err(|e| AgentError::Storage(e.to_string()))?;
 
     // 1. Run standard dream for all namespaces
     for ns in &namespaces {

@@ -238,6 +238,7 @@ impl AgentSupervisor {
         let namespace_id = self.namespace_id;
         let project_root = self.project_root.clone();
         let status = self.status.clone();
+        let embedder = self.query_embedder.clone();
         let base_interval_secs = config.consolidation_interval_mins * 60;
         let cancel = self.cancel_token.clone();
 
@@ -246,15 +247,15 @@ impl AgentSupervisor {
         let cognitive_system = full_config.cognitive_system.clone();
 
         let handle = tokio::spawn(async move {
-            let mut activity_monitor = ActivityMonitor::load();
-            // Apply configured cooldown (persisted state may have default)
-            activity_monitor.deep_dream_cooldown = chrono::Duration::hours(
-                cognitive_system.dream_triggers.deep_dream_cooldown_hours as i64,
-            );
             let soul_builder = SoulBuilder::new(llm.clone());
             let mut last_dream_count: usize = 0;
 
             loop {
+                // Reload activity monitor from disk each iteration
+                let mut activity_monitor = ActivityMonitor::load();
+                activity_monitor.deep_dream_cooldown = chrono::Duration::hours(
+                    cognitive_system.dream_triggers.deep_dream_cooldown_hours as i64,
+                );
                 if cognitive_system.enabled {
                     let memory_repo = MemoryRepository::new(pool.clone());
 
@@ -274,7 +275,7 @@ impl AgentSupervisor {
                                 cognition: cognition.clone(),
                                 agent: config.clone(),
                                 llm: llm.clone(),
-                                embeddings: None,
+                                embeddings: embedder.clone(),
                                 cognitive_system: cognitive_system.clone(),
                             };
                             if crate::dream_cycle::run_dream(&cwd, namespace_id, &services)
@@ -294,7 +295,7 @@ impl AgentSupervisor {
                             cognition: cognition.clone(),
                             agent: config.clone(),
                             llm: llm.clone(),
-                            embeddings: None,
+                            embeddings: embedder.clone(),
                             cognitive_system: cognitive_system.clone(),
                         };
                         if let Err(e) = crate::dream_cycle::run_deep_dream(
@@ -308,6 +309,9 @@ impl AgentSupervisor {
                         }
                     }
                 }
+
+                // Persist activity monitor state after potential deep dream
+                let _ = activity_monitor.save();
 
                 let sleep_duration = if cognition.adaptive_dream_enabled {
                     crate::dream_cycle::compute_adaptive_dream_interval(

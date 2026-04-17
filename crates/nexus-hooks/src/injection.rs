@@ -316,19 +316,18 @@ mod tests {
     #[tokio::test]
     async fn test_on_session_start_creates_structure() {
         let dir = tempdir().unwrap();
-        // Save and restore HOME to avoid polluting parallel tests
-        let original_home = std::env::var("HOME").ok();
-        let home = dir.path().join("home");
-        fs::create_dir(&home).unwrap();
-        std::env::set_var("HOME", &home);
+        // Use NEXUS_DATABASE_PATH to isolate DB instead of HOME manipulation
+        let db_path = dir.path().join("test.db");
+        let original_db = std::env::var("NEXUS_DATABASE_PATH").ok();
+        std::env::set_var("NEXUS_DATABASE_PATH", &db_path);
 
         let result = on_session_start(dir.path(), "claude-code", "test-session").await;
 
-        // Restore HOME before assertions
-        if let Some(orig) = original_home {
-            std::env::set_var("HOME", orig);
+        // Restore before assertions
+        if let Some(orig) = original_db {
+            std::env::set_var("NEXUS_DATABASE_PATH", orig);
         } else {
-            std::env::remove_var("HOME");
+            std::env::remove_var("NEXUS_DATABASE_PATH");
         }
 
         result.unwrap();
