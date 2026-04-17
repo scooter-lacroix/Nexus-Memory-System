@@ -526,7 +526,7 @@ pub async fn run_deep_dream(
 
     // 1. Run standard dream for all namespaces
     for ns in &namespaces {
-        let _ = drain_cognition_jobs(
+        if let Err(e) = drain_cognition_jobs(
             services.pool.clone(),
             ns.id,
             &services.cognition,
@@ -535,7 +535,10 @@ pub async fn run_deep_dream(
             services.embeddings.clone(),
             "deep-dream-cleanup",
         )
-        .await;
+        .await
+        {
+            tracing::warn!(namespace_id = ns.id, error = %e, "drain_cognition_jobs failed");
+        }
     }
 
     // 2. Cross-project pattern extraction
