@@ -5,7 +5,6 @@ use regex::Regex;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
 
 use crate::cognitive_cache::{ConfidenceTier, HotCache, HotCacheEntry};
 use crate::error::AgentError;
@@ -22,6 +21,23 @@ pub struct ScratchLearning {
 }
 
 impl SessionManager {
+    /// Reject session IDs that could escape the sessions directory.
+    fn validate_session_id(id: &str) -> io::Result<()> {
+        if id.is_empty() || id.len() > 128 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "session_id must be 1-128 chars",
+            ));
+        }
+        if id.contains('/') || id.contains('\\') || id.contains("..") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "session_id contains invalid characters",
+            ));
+        }
+        Ok(())
+    }
+
     /// Create a new session manager.
     pub fn new(project_root: &Path) -> Self {
         Self {
@@ -31,6 +47,8 @@ impl SessionManager {
 
     /// Start a new agent session and create a scratch file.
     pub fn start_session(&self, session_id: &str, agent_type: &str) -> io::Result<PathBuf> {
+        Self::validate_session_id(session_id)?;
+
         let sessions_dir = self.nexus_dir.join("sessions");
         fs::create_dir_all(&sessions_dir)?;
 
@@ -133,8 +151,10 @@ impl SessionManager {
 
 /// Parse learnings from scratch file content.
 pub fn parse_scratch_learnings(content: &str) -> Vec<ScratchLearning> {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re =
+        RE.get_or_init(|| Regex::new(r"- \[confidence: ([\d.]+)\] (.*)").expect("valid regex"));
     let mut learnings = Vec::new();
-    let re = Regex::new(r"- \[confidence: ([\d.]+)\] (.*)").expect("valid regex");
 
     for line in content.lines() {
         if let Some(caps) = re.captures(line) {
@@ -153,14 +173,11 @@ pub fn parse_scratch_learnings(content: &str) -> Vec<ScratchLearning> {
     learnings
 }
 
-/// Monotonically decreasing counter for scratch-promoted memory IDs.
-/// Negative values guarantee no collision with DB-assigned positive IDs.
-static SCRATCH_MEMORY_ID: AtomicI64 = AtomicI64::new(-1);
-
 /// Promote a single learning to the hot cache.
+/// Uses UUID-based negative IDs that survive process restarts without collision.
 pub fn promote_to_hot_cache(hot: &mut HotCache, learning: ScratchLearning, max_entries: usize) {
     let entry = HotCacheEntry {
-        memory_id: SCRATCH_MEMORY_ID.fetch_sub(1, Ordering::Relaxed),
+        memory_id: -(uuid::Uuid::new_v4().as_u128() as i64),
         content: learning.content,
         relevance_score: learning.confidence,
         tier: ConfidenceTier::from_score(learning.confidence),

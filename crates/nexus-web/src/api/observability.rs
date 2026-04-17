@@ -547,7 +547,7 @@ pub async fn dashboard(
         0.0
     };
 
-    let base_interval = cognition_config.adaptive_dream_min_interval_secs;
+    let base_interval = cognition_config.adaptive_dream_max_interval_secs;
     let factor = 1.0 - ((contradiction as f32 * 0.10).min(0.9));
     let adapted = (base_interval as f32 * factor) as u64;
     let current_interval_secs = adapted.clamp(

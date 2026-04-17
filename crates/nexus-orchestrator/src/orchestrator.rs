@@ -73,11 +73,11 @@ impl Orchestrator {
 
 impl Default for Orchestrator {
     fn default() -> Self {
+        let cfg = OrchestratorConfig::default();
+        let idle_timeout = cfg.session_idle_timeout_secs;
         Self {
-            config: OrchestratorConfig::default(),
-            session_manager: SessionManager::with_idle_timeout(
-                OrchestratorConfig::default().session_idle_timeout_secs,
-            ),
+            config: cfg,
+            session_manager: SessionManager::with_idle_timeout(idle_timeout),
             event_bus: EventBus::global().clone(),
             sync_coordinator: SyncCoordinator::new(),
             context_enhancer: ContextEnhancer::new(),

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
-use nexus_core::{EmbeddingService, ProjectIdentity};
+use nexus_core::{cosine_similarity, EmbeddingService, ProjectIdentity};
 use nexus_memory_agent::cognitive_cache::{CognitiveCache, ConfidenceTier};
 use nexus_memory_agent::context_builder::build_context_md;
 use nexus_memory_agent::token_budget::TokenBudget;
@@ -50,22 +50,27 @@ impl SessionRescorer {
 
         // 2. Drift-based trigger
         if let Some(service) = embedder {
+            // Compute embedding outside any lock
             if let Ok(turn_embedding) = service.embed(turn_content).await {
-                let mut topic_lock = self.current_topic_embedding.write().await;
-                if let Some(baseline) = topic_lock.as_ref() {
-                    let similarity = cosine_similarity(baseline, &turn_embedding);
-                    if similarity < self.drift_threshold {
-                        info!(
-                            "Topic drift detected (similarity: {:.2}). Triggering re-score.",
-                            similarity
-                        );
-                        *topic_lock = Some(turn_embedding);
-                        self.turns_since_rescore.store(0, Ordering::SeqCst);
-                        return true;
+                // Read lock to check baseline
+                let should_rescore = {
+                    let topic_lock = self.current_topic_embedding.read().await;
+                    match topic_lock.as_ref() {
+                        Some(baseline) => {
+                            let similarity = cosine_similarity(baseline, &turn_embedding);
+                            similarity < self.drift_threshold
+                        }
+                        None => true, // No baseline yet
                     }
-                } else {
-                    // Initialize baseline on first turn
+                }; // read lock dropped here
+
+                if should_rescore {
+                    // Write lock only for updating
+                    let mut topic_lock = self.current_topic_embedding.write().await;
+                    info!("Topic drift detected. Triggering re-score.");
                     *topic_lock = Some(turn_embedding);
+                    self.turns_since_rescore.store(0, Ordering::SeqCst);
+                    return true;
                 }
             }
         }
@@ -127,28 +132,11 @@ impl SessionRescorer {
         std::fs::rename(&tmp_path, &context_path)?;
 
         // 5. Save updated scores to cache
-        let _ = cache.save(&self.nexus_dir);
+        cache.save(&self.nexus_dir)?;
 
         debug!("Re-score completed in {:?}", _start.elapsed());
         Ok(())
     }
-}
-
-/// Standalone cosine similarity helper.
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-
-    (dot / (norm_a * norm_b)).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]

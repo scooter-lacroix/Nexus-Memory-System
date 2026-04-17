@@ -212,7 +212,13 @@ impl CognitiveCache {
 
                             let ids: Vec<i64> = filtered_results.iter().map(|r| r.id).collect();
 
-                            let memories = memory_repo.get_by_ids(&ids).await.unwrap_or_default();
+                            let memories = match memory_repo.get_by_ids(&ids).await {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    debug!("get_by_ids failed in morning_recall: {}", e);
+                                    Vec::new()
+                                }
+                            };
 
                             // Preserve ordering from search_results by mapping id→memory
                             let memory_by_id: HashMap<i64, Memory> =
@@ -307,16 +313,20 @@ impl CognitiveCache {
         }
     }
 
-    /// Save cognitive cache to disk.
+    /// Save cognitive cache to disk atomically.
     pub fn save(&self, nexus_dir: &Path) -> std::io::Result<()> {
         let cache_dir = nexus_dir.join("cache");
         std::fs::create_dir_all(&cache_dir)?;
 
         let hot_json = serde_json::to_string_pretty(&self.hot_cache)?;
-        std::fs::write(cache_dir.join("hot.json"), hot_json)?;
+        let hot_tmp = cache_dir.join("hot.json.tmp");
+        std::fs::write(&hot_tmp, &hot_json)?;
+        std::fs::rename(&hot_tmp, cache_dir.join("hot.json"))?;
 
         let cold_json = serde_json::to_string_pretty(&self.cold_index)?;
-        std::fs::write(cache_dir.join("cold_index.json"), cold_json)?;
+        let cold_tmp = cache_dir.join("cold_index.json.tmp");
+        std::fs::write(&cold_tmp, &cold_json)?;
+        std::fs::rename(&cold_tmp, cache_dir.join("cold_index.json"))?;
 
         Ok(())
     }

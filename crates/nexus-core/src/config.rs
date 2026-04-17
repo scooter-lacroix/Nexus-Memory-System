@@ -208,6 +208,8 @@ pub struct CognitiveSystemConfig {
     pub rescore_turn_interval: u32,
     /// Topic drift threshold for rescoring
     pub rescore_drift_threshold: f32,
+    /// Similarity threshold for pattern clustering in dream
+    pub similarity_threshold: f32,
 }
 
 impl Default for CognitiveSystemConfig {
@@ -221,6 +223,7 @@ impl Default for CognitiveSystemConfig {
             mid_session_rescore_enabled: true,
             rescore_turn_interval: 5,
             rescore_drift_threshold: 0.70,
+            similarity_threshold: 0.85,
         }
     }
 }
@@ -493,7 +496,9 @@ impl Config {
         }
         if let Ok(pct) = std::env::var("NEXUS_CONTEXT_ALLOCATION_PCT") {
             config.cognitive_system.context_allocation_pct = pct
-                .parse()
+                .parse::<f32>()
+                .ok()
+                .filter(|&v| (0.0..=1.0).contains(&v))
                 .unwrap_or(CognitiveSystemConfig::default().context_allocation_pct);
         }
         if let Ok(enabled) = std::env::var("NEXUS_RESCORE_ENABLED") {

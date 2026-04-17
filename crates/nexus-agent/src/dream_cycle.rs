@@ -8,7 +8,7 @@ use tracing::warn;
 
 use nexus_core::config::{AgentConfig, CognitionConfig, CognitiveSystemConfig};
 use nexus_core::traits::EmbeddingService;
-use nexus_core::{CognitiveLevel, Memory, PerspectiveKey};
+use nexus_core::{cosine_similarity, CognitiveLevel, Memory, PerspectiveKey};
 use nexus_llm::LlmClient;
 use nexus_storage::models::EnqueueJobParams;
 use nexus_storage::repository::MemoryRepository;
@@ -128,6 +128,9 @@ pub async fn run_nap(
         )?;
 
         // 3. Update context.md
+        // Dream cycles run autonomously and don't know the active agent type.
+        // Using namespace gives the conservative 128k default, which is appropriate
+        // for background consolidation that shouldn't consume the full context budget.
         let window_size = TokenBudget::estimate_window(&services.agent.namespace) as f32;
         let max_context_tokens =
             (window_size * services.cognitive_system.context_allocation_pct) as usize;
@@ -190,6 +193,7 @@ pub async fn run_dream(
     let cache = CognitiveCache::load_or_init(&nexus_dir);
 
     // 3. Update context.md
+    // Note: namespace used for window estimation — see run_nap for rationale.
     let window_size = TokenBudget::estimate_window(&services.agent.namespace) as f32;
     let max_context_tokens =
         (window_size * services.cognitive_system.context_allocation_pct) as usize;
@@ -511,16 +515,12 @@ pub struct DeepDreamResult {
 
 /// Run a comprehensive deep dream cycle across all namespaces.
 pub async fn run_deep_dream(
-    pool: sqlx::SqlitePool,
-    cognition: &CognitionConfig,
-    agent: &AgentConfig,
-    llm: Arc<dyn LlmClient>,
-    embeddings: Option<Arc<dyn EmbeddingService>>,
+    services: &DreamServices,
     soul_builder: &SoulBuilder,
     activity_monitor: &mut ActivityMonitor,
 ) -> Result<DeepDreamResult, AgentError> {
-    let repo = MemoryRepository::new(pool.clone());
-    let ns_repo = nexus_storage::repository::NamespaceRepository::new(pool.clone());
+    let repo = MemoryRepository::new(services.pool.clone());
+    let ns_repo = nexus_storage::repository::NamespaceRepository::new(services.pool.clone());
 
     // Fetch all namespaces once for reuse across all deep-dream stages
     let namespaces = ns_repo.list_all().await.unwrap_or_default();
@@ -528,12 +528,12 @@ pub async fn run_deep_dream(
     // 1. Run standard dream for all namespaces
     for ns in &namespaces {
         let _ = drain_cognition_jobs(
-            pool.clone(),
+            services.pool.clone(),
             ns.id,
-            cognition,
-            agent,
-            llm.clone(),
-            embeddings.clone(),
+            &services.cognition,
+            &services.agent,
+            services.llm.clone(),
+            services.embeddings.clone(),
             "deep-dream-cleanup",
         )
         .await;
@@ -568,8 +568,12 @@ pub async fn run_deep_dream(
         }
     }
 
-    let candidates =
-        extract_cross_project_patterns(memories_by_project, embeddings.as_deref()).await;
+    let candidates = extract_cross_project_patterns(
+        memories_by_project,
+        services.embeddings.as_deref(),
+        services.cognitive_system.similarity_threshold,
+    )
+    .await;
     let total_patterns = candidates.len();
 
     // 3. Rebuild Soul
@@ -699,6 +703,7 @@ pub async fn run_deep_dream(
 pub async fn extract_cross_project_patterns(
     memories_by_project: HashMap<String, Vec<Memory>>,
     embeddings: Option<&dyn EmbeddingService>,
+    similarity_threshold: f32,
 ) -> Vec<SoulCandidate> {
     // Flatten memories with their project attribution
     let mut flat_memories: Vec<(Memory, String)> = Vec::new();
@@ -791,7 +796,6 @@ pub async fn extract_cross_project_patterns(
     }
 
     // Compare each pair with available embeddings
-    let similarity_threshold = 0.85;
     let indices: Vec<usize> = (0..n)
         .filter(|i| emb_map.contains_key(&flat_memories[*i].0.id))
         .collect();
@@ -842,24 +846,9 @@ pub async fn extract_cross_project_patterns(
     candidates
 }
 
-/// Cosine similarity between two vectors.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    (dot / (norm_a * norm_b)).clamp(0.0, 1.0)
-}
-
 // ── Adaptive scheduling ───────────────────────────────────────────────
 
 pub(crate) fn choose_dream_schedule(
-    _cognition: &CognitionConfig,
     signals: &DreamSignals,
     reason: RuntimeShutdownReason,
 ) -> DreamSchedulePlan {

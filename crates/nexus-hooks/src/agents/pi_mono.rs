@@ -114,17 +114,6 @@ impl PiMonoHook {
                     tracing::warn!("Failed to install pi-mono extension: {}", e);
                 }
             }
-
-            // Trigger session start injection
-            let session_id = uuid::Uuid::new_v4().to_string();
-            if let Ok(cwd) = std::env::current_dir() {
-                if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    handle.spawn(async move {
-                        let _ =
-                            crate::injection::on_session_start(&cwd, "pi-mono", &session_id).await;
-                    });
-                }
-            }
         }
 
         hook

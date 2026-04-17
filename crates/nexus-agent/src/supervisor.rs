@@ -243,16 +243,24 @@ impl AgentSupervisor {
 
         let handle = tokio::spawn(async move {
             let mut activity_monitor = ActivityMonitor::load();
+            // Apply configured cooldown (persisted state may have default)
+            activity_monitor.deep_dream_cooldown = chrono::Duration::hours(
+                cognitive_system.dream_triggers.deep_dream_cooldown_hours as i64,
+            );
             let soul_builder = SoulBuilder::new(llm.clone());
+            let mut last_dream_count: usize = 0;
 
             loop {
                 if cognitive_system.enabled {
                     let memory_repo = MemoryRepository::new(pool.clone());
 
-                    // 1. Threshold dream
+                    // 1. Threshold dream (only trigger when count increases past threshold)
                     if let Ok(count) = memory_repo.count_by_namespace(namespace_id).await {
-                        if count as usize >= cognitive_system.dream_triggers.dream_memory_threshold
+                        let count_usize = count as usize;
+                        if count_usize >= cognitive_system.dream_triggers.dream_memory_threshold
+                            && count_usize != last_dream_count
                         {
+                            last_dream_count = count_usize;
                             info!(
                                 "Dream threshold reached ({} memories). Running dream cycle.",
                                 count
@@ -276,12 +284,16 @@ impl AgentSupervisor {
                     // 2. Deep dream
                     if activity_monitor.should_deep_dream() {
                         info!("Deep dream conditions met. Running global synthesis.");
+                        let services = crate::dream_cycle::DreamServices {
+                            pool: pool.clone(),
+                            cognition: cognition.clone(),
+                            agent: config.clone(),
+                            llm: llm.clone(),
+                            embeddings: None,
+                            cognitive_system: cognitive_system.clone(),
+                        };
                         let _ = crate::dream_cycle::run_deep_dream(
-                            pool.clone(),
-                            &cognition,
-                            &config,
-                            llm.clone(),
-                            None,
+                            &services,
                             &soul_builder,
                             &mut activity_monitor,
                         )

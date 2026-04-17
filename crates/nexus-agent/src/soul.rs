@@ -117,8 +117,9 @@ impl SoulBuilder {
             }
             Err(e) => {
                 warn!(
-                    "Failed to parse soul normalization response: {}. Raw: {}",
-                    e, clean_response
+                    "Soul normalization parse failed; response length: {} chars, error: {}",
+                    clean_response.len(),
+                    e
                 );
                 Ok(Vec::new())
             }

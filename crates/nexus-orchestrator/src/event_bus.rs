@@ -244,7 +244,7 @@ impl EventBus {
     /// All calls return the same `EventBus`, ensuring publishers and
     /// subscribers share the same broadcast channel.
     pub fn global() -> &'static Self {
-        GLOBAL_EVENT_BUS.get_or_init(|| EventBus::new(256))
+        GLOBAL_EVENT_BUS.get_or_init(|| EventBus::new(1024))
     }
     /// Create a new event bus with the specified capacity
     pub fn new(capacity: usize) -> Self {

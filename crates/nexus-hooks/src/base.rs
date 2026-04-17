@@ -149,8 +149,11 @@ impl BaseHook {
         let agent_type = agent_type.into();
         let rescorer = if let Ok(cwd) = std::env::current_dir() {
             let project = nexus_core::ProjectIdentity::resolve(&cwd);
+            let config = nexus_core::Config::from_env().unwrap_or_default();
             Some(Arc::new(crate::rescorer::SessionRescorer::new(
-                project, 5, 0.70,
+                project,
+                config.cognitive_system.rescore_turn_interval,
+                config.cognitive_system.rescore_drift_threshold,
             )))
         } else {
             None
@@ -204,8 +207,8 @@ impl BaseHook {
                     )
                     .with_source("base_hook");
 
-                    let orchestrator = nexus_orchestrator::Orchestrator::default();
-                    let _ = orchestrator.event_bus.publish(event);
+                    let event_bus = nexus_orchestrator::EventBus::global();
+                    let _ = event_bus.publish(event);
                 }
             });
         }
@@ -267,36 +270,43 @@ impl BaseHook {
                                     embeddings,
                                     cognitive_system: config.cognitive_system.clone(),
                                 };
-                                if let Ok(nap_result) =
-                                    run_nap(&session_id, &cwd, namespace.id, &services, timeout)
-                                        .await
+                                match run_nap(&session_id, &cwd, namespace.id, &services, timeout)
+                                    .await
                                 {
-                                    if nap_result.timed_out {
+                                    Ok(nap_result) => {
+                                        if nap_result.timed_out {
+                                            tracing::warn!(
+                                                session_id = %session_id,
+                                                "nap timed out; not publishing DreamCompleted"
+                                            );
+                                        } else {
+                                            // PHASE 11: Notify of dream completion
+                                            let mut data = std::collections::HashMap::new();
+                                            data.insert(
+                                                "namespace".to_string(),
+                                                serde_json::json!(config.agent.namespace),
+                                            );
+                                            data.insert(
+                                                "processed".to_string(),
+                                                serde_json::json!(nap_result.memories_processed),
+                                            );
+
+                                            let event = nexus_orchestrator::Event::with_data(
+                                                nexus_orchestrator::EventType::DreamCompleted,
+                                                data,
+                                            )
+                                            .with_source("agent_supervisor");
+
+                                            let event_bus = nexus_orchestrator::EventBus::global();
+                                            let _ = event_bus.publish(event);
+                                        }
+                                    }
+                                    Err(e) => {
                                         tracing::warn!(
                                             session_id = %session_id,
-                                            "nap timed out; not publishing DreamCompleted"
+                                            error = %e,
+                                            "Session-end nap failed"
                                         );
-                                    } else {
-                                        // PHASE 11: Notify of dream completion
-                                        let mut data = std::collections::HashMap::new();
-                                        data.insert(
-                                            "namespace".to_string(),
-                                            serde_json::json!(config.agent.namespace),
-                                        );
-                                        data.insert(
-                                            "processed".to_string(),
-                                            serde_json::json!(nap_result.memories_processed),
-                                        );
-
-                                        let event = nexus_orchestrator::Event::with_data(
-                                            nexus_orchestrator::EventType::DreamCompleted,
-                                            data,
-                                        )
-                                        .with_source("agent_supervisor");
-
-                                        let orchestrator =
-                                            nexus_orchestrator::Orchestrator::default();
-                                        let _ = orchestrator.event_bus.publish(event);
                                     }
                                 }
                             }

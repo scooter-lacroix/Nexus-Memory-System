@@ -560,7 +560,14 @@ impl RepresentationService {
         // Fall back to storage primitive when the representation yields nothing.
         // This covers cases where include_* flags are all false or perspective
         // queries return empty but data exists in the namespace.
-        if flat.is_empty() {
+        if flat.is_empty()
+            && !request.include_raw
+            && !request.include_digests
+            && !request.include_recent
+            && !request.include_semantic
+            && !request.include_derived
+            && !request.include_contradictions
+        {
             let limit = request.max_items.max(1) as i64;
             return repo
                 .list_filtered(

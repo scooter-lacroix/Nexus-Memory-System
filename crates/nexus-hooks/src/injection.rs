@@ -69,6 +69,7 @@ pub fn inject_reference(
     }
 
     let content = fs::read_to_string(config_file)?;
+    let original_content = content.clone();
 
     // Build the Nexus block
     let block = format!(
@@ -120,7 +121,7 @@ pub fn inject_reference(
         updated
     };
 
-    if new_content != fs::read_to_string(config_file)? {
+    if new_content != original_content {
         fs::write(config_file, new_content)?;
         debug!("Injected Nexus reference into {}", config_file.display());
     }
@@ -175,7 +176,8 @@ pub async fn on_session_start(
 
     // 2. Initialize Repositories (for Morning Recall)
     let config = nexus_core::Config::from_env().unwrap_or_default();
-    let storage = nexus_storage::StorageManager::from_url(&config.database_url()).await?;
+    let mut storage = nexus_storage::StorageManager::from_url(&config.database_url()).await?;
+    storage.initialize().await?;
     let memory_repo = nexus_storage::repository::MemoryRepository::new(storage.pool().clone());
     let ns_repo = nexus_storage::repository::NamespaceRepository::new(storage.pool().clone());
     let namespace = ns_repo
@@ -240,19 +242,7 @@ pub async fn on_session_start(
         nexus_memory_agent::session_manager::SessionManager::new(&project.root_dir);
     session_manager.start_session(session_id, agent_type)?;
 
-    // 8. Initialize Rescorer (if enabled)
-    if config.cognitive_system.mid_session_rescore_enabled {
-        let _rescorer = crate::rescorer::SessionRescorer::new(
-            project.clone(),
-            config.cognitive_system.rescore_turn_interval,
-            config.cognitive_system.rescore_drift_threshold,
-        );
-        // Note: The rescorer would normally be attached to the session context
-        // managed by the MultiLayerExtractor. For now we initialize it as a singleton
-        // or background task if needed.
-    }
-
-    // 9. Hardening: .gitignore — ensure .nexus/ is always ignored
+    // 8. Hardening: .gitignore — ensure .nexus/ is always ignored
     let gitignore = project.root_dir.join(".gitignore");
     let gitignore_content = fs::read_to_string(&gitignore).unwrap_or_default();
     let has_nexus_entry = gitignore_content.lines().any(|line| {

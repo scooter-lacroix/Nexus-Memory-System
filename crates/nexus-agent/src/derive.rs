@@ -386,20 +386,22 @@ async fn enqueue_follow_up_jobs(
         .map_err(|error| AgentError::Storage(error.to_string()))?;
     }
 
-    // Always attempt a session digest rollover after derivation
-    let payload = json!({
-        "session_key": perspective.session_key,
-        "reason": "post_derivation_rollover",
-    });
-    repo.enqueue_job(EnqueueJobParams {
-        namespace_id: source.namespace_id,
-        job_type: DIGEST_SESSION_JOB,
-        priority: 120,
-        perspective: perspective_json.as_ref(),
-        payload: &payload,
-    })
-    .await
-    .map_err(|error| AgentError::Storage(error.to_string()))?;
+    // Only enqueue session digest when session_key is present
+    if let Some(ref session_key) = perspective.session_key {
+        let payload = json!({
+            "session_key": session_key,
+            "reason": "post_derivation_rollover",
+        });
+        repo.enqueue_job(EnqueueJobParams {
+            namespace_id: source.namespace_id,
+            job_type: DIGEST_SESSION_JOB,
+            priority: 120,
+            perspective: perspective_json.as_ref(),
+            payload: &payload,
+        })
+        .await
+        .map_err(|error| AgentError::Storage(error.to_string()))?;
+    }
 
     Ok(())
 }

@@ -13,11 +13,13 @@
 ## File Structure
 
 ### Files to Create
+
 | Path | Purpose |
 |------|---------|
 | `crates/nexus-hooks/src/extension_ts/nexus_memory_pi.ts` | TypeScript extension source (embedded in Rust binary) |
 
 ### Files to Modify
+
 | Path | Purpose |
 |------|---------|
 | `crates/nexus-hooks/src/agents/pi_mono.rs` | Rewrite: extension-based, full lifecycle |
@@ -30,14 +32,14 @@
 
 ## Dependency Graph
 
-```
+```text
 Task 1 (injection.rs) ─────────────────────────────┐
 Task 2 (TypeScript extension) ─────────────────────┤
-                                                    ├─► Task 6 (tests)
+                                                     ├─► Task 6 (tests)
 Task 3 (PiMonoHook rewrite) ──depends on 1,2──────┤     │
 Task 4 (lifecycle capabilities) ──depends on 3─────┤     ├─► Task 8 (migration/cleanup)
 Task 5 (CLI pipeline) ─────────────────────────────┤     │
-                                                    └─► Task 7 (docs)
+                                                     └─► Task 7 (docs)
 ```
 
 ---

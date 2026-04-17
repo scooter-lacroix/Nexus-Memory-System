@@ -85,18 +85,6 @@ impl ClaudeCodeHook {
             if let Err(e) = hook.install_skill() {
                 tracing::warn!("Failed to install Claude Code skill: {}", e);
             }
-
-            // Trigger session start injection
-            let session_id = uuid::Uuid::new_v4().to_string();
-            if let Ok(cwd) = std::env::current_dir() {
-                if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    handle.spawn(async move {
-                        let _ =
-                            crate::injection::on_session_start(&cwd, "claude-code", &session_id)
-                                .await;
-                    });
-                }
-            }
         }
 
         hook
@@ -538,8 +526,6 @@ impl AgentHook for ClaudeCodeHook {
             }
         }
 
-        self.base.record_activity_with_content(&recent_content);
-
         // Refresh process monitor
         let mut monitor = self.process_monitor.clone();
         let processes = monitor.find_agent_processes(AgentType::ClaudeCode);
@@ -549,6 +535,7 @@ impl AgentHook for ClaudeCodeHook {
         if !processes.is_empty() {
             activity.is_active = true;
             activity.processes = processes;
+            self.base.record_activity_with_content(&recent_content);
         }
 
         // Also check for session file

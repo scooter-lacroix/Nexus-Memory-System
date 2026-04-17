@@ -149,7 +149,7 @@ impl ActivityMonitor {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let content = serde_json::to_string_pretty(self)?;
+        let content = serde_json::to_string(self)?;
         fs::write(path, content)?;
         Ok(())
     }

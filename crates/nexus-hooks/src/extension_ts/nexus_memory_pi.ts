@@ -258,7 +258,7 @@ export default function nexusMemory(pi: ExtensionAPI): void {
 
   function findNexusBinary(): string {
     const candidates = [
-      path.join(process.env.HOME || "~", ".local", "bin", "nexus"),
+      path.join(process.env.HOME || process.env.USERPROFILE || ".", ".local", "bin", "nexus"),
       "/usr/local/bin/nexus",
     ];
     for (const c of candidates) {

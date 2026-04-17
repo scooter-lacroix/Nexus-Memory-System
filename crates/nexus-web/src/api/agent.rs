@@ -188,10 +188,16 @@ pub async fn agent_boost(
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
         .ok_or_else(|| WebError::Config("No project root available".to_string()))?;
+    // Canonicalize to resolve symlinks and reject nonexistent paths
+    let cwd = cwd
+        .canonicalize()
+        .map_err(|e| WebError::Config(format!("Invalid root_dir: {}", e)))?;
     let project_identity = nexus_core::ProjectIdentity::resolve(&cwd);
     let nexus_dir = project_identity.root_dir.join(".nexus");
 
     let mut cache = nexus_agent::CognitiveCache::load_or_init(&nexus_dir);
+
+    let config = nexus_core::Config::from_env().unwrap_or_default();
 
     let relevance_score = request
         .boost_score
@@ -210,8 +216,8 @@ pub async fn agent_boost(
             pinned: request.pin,
             source_agent: Some("web-ui".to_string()),
         },
-        20,
-    ); // Default hot cache limit
+        config.cognitive_system.hot_cache_max_entries,
+    );
 
     cache
         .save(&nexus_dir)
