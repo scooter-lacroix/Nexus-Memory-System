@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::agents::{
-    CLIHook, ClaudeCodeHook, GeminiHook, OhMyPiHook, PiMonoHook, PiSkillsHook, QwenHook,
+    CLIHook, ClaudeCodeHook, DroidHook, GeminiHook, OhMyPiHook, PiMonoHook, PiSkillsHook, QwenHook,
 };
 use crate::base::AgentHook;
 use crate::error::{HookError, Result};
@@ -72,6 +72,8 @@ impl HookFactory {
         aliases.insert("pi".to_string(), "pi-mono".to_string());
         aliases.insert("omp".to_string(), "oh-my-pi".to_string());
         aliases.insert("ohmypi".to_string(), "oh-my-pi".to_string());
+        aliases.insert("factory".to_string(), "droid".to_string());
+        aliases.insert("factory-cli".to_string(), "droid".to_string());
 
         Self { supported, aliases }
     }
@@ -119,9 +121,13 @@ impl HookFactory {
             Some(AgentType::OpenCode)
             | Some(AgentType::Codex)
             | Some(AgentType::Amp)
-            | Some(AgentType::Droid)
             | Some(AgentType::Hermes)
             | Some(AgentType::Generic) => Ok(Box::new(CLIHook::new(normalized.clone()))),
+            Some(AgentType::Droid) => Ok(Box::new(if readonly {
+                DroidHook::new_readonly()
+            } else {
+                DroidHook::new()
+            })),
             None => Err(HookError::AgentNotFound(format!(
                 "Unknown agent type: {}",
                 agent_type
@@ -207,6 +213,8 @@ mod tests {
         assert!(factory.is_supported("pi"));
         assert!(factory.is_supported("omp"));
         assert!(factory.is_supported("ohmypi"));
+        assert!(factory.is_supported("factory"));
+        assert!(factory.is_supported("factory-cli"));
     }
 
     #[test]
