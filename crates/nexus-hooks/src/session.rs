@@ -118,11 +118,12 @@ impl SessionContext {
         // Trigger re-score if rescorer is present
         if let Some(rescorer) = self.rescorer.as_ref() {
             let rescorer = rescorer.clone();
+            let agent_type = self.agent_type.clone();
             tokio::spawn(async move {
                 // In a real session, we'd have access to an embedder.
                 // For now, we use a best-effort approach with the interval trigger.
                 if rescorer.on_turn(&content_str, None).await {
-                    let _ = rescorer.rescore(None).await;
+                    let _ = rescorer.rescore(None, &agent_type).await;
                 }
             });
         }

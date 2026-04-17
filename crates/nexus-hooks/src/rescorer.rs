@@ -8,6 +8,7 @@ use tracing::{debug, info};
 use nexus_core::{EmbeddingService, ProjectIdentity};
 use nexus_memory_agent::cognitive_cache::{CognitiveCache, ConfidenceTier};
 use nexus_memory_agent::context_builder::build_context_md;
+use nexus_memory_agent::token_budget::TokenBudget;
 
 /// Tracks session topic drift and triggers re-scoring of the hot cache.
 #[derive(Debug)]
@@ -73,7 +74,7 @@ impl SessionRescorer {
     }
 
     /// Execute the re-scoring pipeline.
-    pub async fn rescore(&self, embedder: Option<&dyn EmbeddingService>) -> anyhow::Result<()> {
+    pub async fn rescore(&self, embedder: Option<&dyn EmbeddingService>, agent_type: &str) -> anyhow::Result<()> {
         let _start = std::time::Instant::now();
 
         // 1. Load current cache
@@ -86,13 +87,22 @@ impl SessionRescorer {
         if let Some(service) = embedder {
             let topic_lock = self.current_topic_embedding.read().await;
             if let Some(topic) = topic_lock.as_ref() {
-                for entry in cache.hot_cache.entries.iter_mut() {
-                    // In a production environment, we'd store embeddings in the HotCacheEntry
-                    // or re-fetch from DB. For now, we use a best-effort approach.
-                    // If we can't get an embedding for the entry content, we leave the score.
-                    if let Ok(entry_emb) = service.embed(&entry.content).await {
-                        entry.relevance_score = cosine_similarity(topic, &entry_emb);
-                        entry.tier = ConfidenceTier::from_score(entry.relevance_score);
+                // Batch-embed all entries for efficiency
+                let contents: Vec<String> = cache
+                    .hot_cache
+                    .entries
+                    .iter()
+                    .map(|e| e.content.clone())
+                    .collect();
+                match service.embed_batch(&contents).await {
+                    Ok(embeddings) => {
+                        for (entry, emb) in cache.hot_cache.entries.iter_mut().zip(embeddings) {
+                            entry.relevance_score = cosine_similarity(topic, &emb);
+                            entry.tier = ConfidenceTier::from_score(entry.relevance_score);
+                        }
+                    }
+                    Err(_) => {
+                        // On batch failure, skip re-scoring; keep existing scores
                     }
                 }
             }
@@ -100,8 +110,8 @@ impl SessionRescorer {
 
         // 3. Rebuild context.md
         let config = nexus_core::Config::from_env().unwrap_or_default();
-        let max_context_tokens =
-            (200_000.0 * config.cognitive_system.context_allocation_pct) as usize;
+        let window_size = TokenBudget::estimate_window(agent_type) as f32;
+        let max_context_tokens = (window_size * config.cognitive_system.context_allocation_pct) as usize;
         let context_md = build_context_md(&cache.hot_cache, &[], max_context_tokens);
 
         // 4. Atomic write

@@ -191,7 +191,7 @@ impl BaseHook {
                     } else {
                         None
                     };
-                    let _ = rescorer.rescore(embeddings.as_deref()).await;
+                    let _ = rescorer.rescore(embeddings.as_deref(), &agent_type).await;
 
                     // PHASE 11: Notify orchestrator of drift
                     let mut data = std::collections::HashMap::new();

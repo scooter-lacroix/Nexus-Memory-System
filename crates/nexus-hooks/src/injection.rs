@@ -204,7 +204,9 @@ pub async fn on_session_start(
         .await;
 
     // 4. Build and Write context.md
-    let max_context_tokens = (200_000.0 * config.cognitive_system.context_allocation_pct) as usize;
+    let window_size = nexus_memory_agent::TokenBudget::estimate_window(agent_type) as f32;
+    let max_context_tokens =
+        (window_size * config.cognitive_system.context_allocation_pct) as usize;
     let context_md = nexus_memory_agent::context_builder::build_context_md(
         &cache.hot_cache,
         &recalls,

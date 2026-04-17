@@ -2,13 +2,14 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 use tracing::{debug, warn};
 
 use crate::context_builder::ColdRecall;
 use crate::error::AgentError;
-use nexus_core::{EmbeddingService, ProjectIdentity};
+use nexus_core::{EmbeddingService, Memory, ProjectIdentity};
 use nexus_storage::repository::MemoryRepository;
 use nexus_vectors::{SearchOptions, SemanticSearch, VectorEntry};
 
@@ -201,17 +202,27 @@ impl CognitiveCache {
                         if let Ok((search_results, _)) =
                             search.search(&embedding, &entries, &options)
                         {
-                            // Re-fetch content for matches (SearchResult doesn't hold content directly)
-                            let mut recalls = Vec::new();
-                            for r in search_results
+                            // Batch-fetch content for matches (SearchResult doesn't hold content directly)
+                            let filtered_results: Vec<_> = search_results
                                 .into_iter()
                                 .filter(|r| !hot_ids.contains(&r.id))
                                 .take(10)
-                            {
-                                if let Ok(Some(m)) = memory_repo.get_by_id(r.id).await {
+                                .collect();
+
+                            let ids: Vec<i64> = filtered_results.iter().map(|r| r.id).collect();
+
+                            let memories = memory_repo.get_by_ids(&ids).await.unwrap_or_default();
+
+                            // Preserve ordering from search_results by mapping id→memory
+                            let memory_by_id: HashMap<i64, Memory> =
+                                memories.into_iter().map(|m| (m.id, m)).collect();
+
+                            let mut recalls = Vec::new();
+                            for r in filtered_results {
+                                if let Some(m) = memory_by_id.get(&r.id) {
                                     recalls.push(ColdRecall {
                                         memory_id: r.id,
-                                        content: m.content,
+                                        content: m.content.clone(),
                                         relevance_score: r.score,
                                         tier: ConfidenceTier::from_score(r.score),
                                     });

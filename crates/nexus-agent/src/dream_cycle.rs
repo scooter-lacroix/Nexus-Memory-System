@@ -20,6 +20,7 @@ use crate::distill;
 use crate::error::AgentError;
 use crate::job_processor;
 use crate::session_manager::SessionManager;
+use crate::token_budget::TokenBudget;
 use crate::util::{flush_metric_samples, stage_metric_sample};
 use crate::RuntimeShutdownReason;
 use std::collections::{HashMap, HashSet};
@@ -127,8 +128,9 @@ pub async fn run_nap(
         )?;
 
         // 3. Update context.md
+        let window_size = TokenBudget::estimate_window(&services.agent.namespace) as f32;
         let max_context_tokens =
-            (200_000.0 * services.cognitive_system.context_allocation_pct) as usize;
+            (window_size * services.cognitive_system.context_allocation_pct) as usize;
         let context_md = build_context_md(&cache.hot_cache, &[], max_context_tokens);
         let context_path = nexus_dir.join("context.md");
         let _ = std::fs::write(context_path, context_md);
@@ -188,8 +190,9 @@ pub async fn run_dream(
     let cache = CognitiveCache::load_or_init(&nexus_dir);
 
     // 3. Update context.md
+        let window_size = TokenBudget::estimate_window(&services.agent.namespace) as f32;
     let max_context_tokens =
-        (200_000.0 * services.cognitive_system.context_allocation_pct) as usize;
+        (window_size * services.cognitive_system.context_allocation_pct) as usize;
     let context_md = build_context_md(&cache.hot_cache, &[], max_context_tokens);
     let context_path = nexus_dir.join("context.md");
     let _ = std::fs::write(context_path, context_md);
@@ -519,54 +522,53 @@ pub async fn run_deep_dream(
     let repo = MemoryRepository::new(pool.clone());
     let ns_repo = nexus_storage::repository::NamespaceRepository::new(pool.clone());
 
+    // Fetch all namespaces once for reuse across all deep-dream stages
+    let namespaces = ns_repo.list_all().await.unwrap_or_default();
+
     // 1. Run standard dream for all namespaces
-    if let Ok(namespaces) = ns_repo.list_all().await {
-        for ns in namespaces {
-            let _ = drain_cognition_jobs(
-                pool.clone(),
-                ns.id,
-                cognition,
-                agent,
-                llm.clone(),
-                embeddings.clone(),
-                "deep-dream-cleanup",
-            )
-            .await;
-        }
+    for ns in &namespaces {
+        let _ = drain_cognition_jobs(
+            pool.clone(),
+            ns.id,
+            cognition,
+            agent,
+            llm.clone(),
+            embeddings.clone(),
+            "deep-dream-cleanup",
+        )
+        .await;
     }
 
     // 2. Cross-project pattern extraction
     let mut memories_by_project: HashMap<String, Vec<Memory>> = HashMap::new();
-    if let Ok(namespaces) = ns_repo.list_all().await {
-        for ns in namespaces {
-            let filters = nexus_storage::repository::ListMemoryFilters {
-                category: None,
-                since: None,
-                until: None,
-                content_like: None,
-                include_raw: false,
-                limit: 1000,
-                offset: 0,
-            };
-            if let Ok(memories) = repo.list_filtered(ns.id, filters).await {
-                for m in memories {
-                    let level = m.level();
-                    if level == CognitiveLevel::Derived || level == CognitiveLevel::Explicit {
-                        let project_name = m
-                            .metadata
-                            .get("runtime")
-                            .and_then(|r| r.get("project_name"))
-                            .and_then(|p| p.as_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        memories_by_project.entry(project_name).or_default().push(m);
-                    }
+    for ns in &namespaces {
+        let filters = nexus_storage::repository::ListMemoryFilters {
+            category: None,
+            since: None,
+            until: None,
+            content_like: None,
+            include_raw: false,
+            limit: 1000,
+            offset: 0,
+        };
+        if let Ok(memories) = repo.list_filtered(ns.id, filters).await {
+            for m in memories {
+                let level = m.level();
+                if level == CognitiveLevel::Derived || level == CognitiveLevel::Explicit {
+                    let project_name = m
+                        .metadata
+                        .get("runtime")
+                        .and_then(|r| r.get("project_name"))
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    memories_by_project.entry(project_name).or_default().push(m);
                 }
             }
         }
     }
 
-    let candidates = extract_cross_project_patterns(memories_by_project);
+    let candidates = extract_cross_project_patterns(memories_by_project, embeddings.as_deref()).await;
     let total_patterns = candidates.len();
 
     // 3. Rebuild Soul
@@ -579,22 +581,20 @@ pub async fn run_deep_dream(
     // 4. Prune redundant archived raw-activity memories
     let mut memories_pruned = 0usize;
     let prune_cutoff = chrono::Utc::now() - chrono::Duration::days(30);
-    if let Ok(namespaces) = ns_repo.list_all().await {
-        for ns in &namespaces {
-            if let Ok(candidates) = repo
-                .list_archived_raw_cleanup_candidates(ns.id, prune_cutoff, 500)
-                .await
-            {
-                if !candidates.is_empty() {
-                    let ids: Vec<i64> = candidates.iter().map(|m| m.id).collect();
-                    match repo.delete_batch(&ids).await {
-                        Ok(deleted) => memories_pruned += deleted as usize,
-                        Err(e) => {
-                            warn!(
-                                error = %e, count = ids.len(),
-                                "Failed to delete archived raw memories; skipping"
-                            );
-                        }
+    for ns in &namespaces {
+        if let Ok(candidates) = repo
+            .list_archived_raw_cleanup_candidates(ns.id, prune_cutoff, 500)
+            .await
+        {
+            if !candidates.is_empty() {
+                let ids: Vec<i64> = candidates.iter().map(|m| m.id).collect();
+                match repo.delete_batch(&ids).await {
+                    Ok(deleted) => memories_pruned += deleted as usize,
+                    Err(e) => {
+                        warn!(
+                            error = %e, count = ids.len(),
+                            "Failed to delete archived raw memories; skipping"
+                        );
                     }
                 }
             }
@@ -603,91 +603,89 @@ pub async fn run_deep_dream(
 
     // 5. Cold-cache reindexing across discoverable project roots
     let mut cold_caches_reindexed = 0usize;
-    if let Ok(namespaces) = ns_repo.list_all().await {
-        // Discover project roots from memory metadata (cwd field)
-        let mut project_roots: HashSet<PathBuf> = HashSet::new();
+    // Discover project roots from memory metadata (cwd field)
+    let mut project_roots: HashSet<PathBuf> = HashSet::new();
+    for ns in &namespaces {
+        let filters = nexus_storage::repository::ListMemoryFilters {
+            category: None,
+            since: Some(chrono::Utc::now() - chrono::Duration::days(90)),
+            until: None,
+            content_like: None,
+            include_raw: true,
+            limit: 200,
+            offset: 0,
+        };
+        if let Ok(memories) = repo.list_filtered(ns.id, filters).await {
+            for m in &memories {
+                if let Some(cwd) = m
+                    .metadata
+                    .get("runtime")
+                    .and_then(|r| r.get("cwd"))
+                    .and_then(|v| v.as_str())
+                {
+                    let root = PathBuf::from(cwd);
+                    if root.join(".nexus").exists() {
+                        project_roots.insert(root);
+                    }
+                }
+            }
+        }
+    }
+
+    let reindex_cutoff = chrono::Utc::now() - chrono::Duration::days(7);
+    for root in &project_roots {
+        let nexus_dir = root.join(".nexus");
+        let mut cache = CognitiveCache::load_or_init(&nexus_dir);
+
+        // Collect recent memory IDs across all namespaces for this project
+        let mut fresh_entries: Vec<ColdIndexEntry> = Vec::new();
         for ns in &namespaces {
             let filters = nexus_storage::repository::ListMemoryFilters {
                 category: None,
-                since: Some(chrono::Utc::now() - chrono::Duration::days(90)),
+                since: Some(reindex_cutoff),
                 until: None,
                 content_like: None,
-                include_raw: true,
-                limit: 200,
+                include_raw: false,
+                limit: 50,
                 offset: 0,
             };
             if let Ok(memories) = repo.list_filtered(ns.id, filters).await {
-                for m in &memories {
-                    if let Some(cwd) = m
+                for m in memories {
+                    let cwd_match = m
                         .metadata
                         .get("runtime")
                         .and_then(|r| r.get("cwd"))
                         .and_then(|v| v.as_str())
-                    {
-                        let root = PathBuf::from(cwd);
-                        if root.join(".nexus").exists() {
-                            project_roots.insert(root);
-                        }
+                        .map(|c| Path::new(c) == root.as_path())
+                        .unwrap_or(false);
+                    if cwd_match {
+                        fresh_entries.push(ColdIndexEntry {
+                            memory_id: m.id,
+                            project_relevance: 0.7,
+                            last_surfaced: Some(m.created_at),
+                        });
                     }
                 }
             }
         }
 
-        let reindex_cutoff = chrono::Utc::now() - chrono::Duration::days(7);
-        for root in &project_roots {
-            let nexus_dir = root.join(".nexus");
-            let mut cache = CognitiveCache::load_or_init(&nexus_dir);
-
-            // Collect recent memory IDs across all namespaces for this project
-            let mut fresh_entries: Vec<ColdIndexEntry> = Vec::new();
-            for ns in &namespaces {
-                let filters = nexus_storage::repository::ListMemoryFilters {
-                    category: None,
-                    since: Some(reindex_cutoff),
-                    until: None,
-                    content_like: None,
-                    include_raw: false,
-                    limit: 50,
-                    offset: 0,
-                };
-                if let Ok(memories) = repo.list_filtered(ns.id, filters).await {
-                    for m in memories {
-                        let cwd_match = m
-                            .metadata
-                            .get("runtime")
-                            .and_then(|r| r.get("cwd"))
-                            .and_then(|v| v.as_str())
-                            .map(|c| Path::new(c) == root.as_path())
-                            .unwrap_or(false);
-                        if cwd_match {
-                            fresh_entries.push(ColdIndexEntry {
-                                memory_id: m.id,
-                                project_relevance: 0.7,
-                                last_surfaced: Some(m.created_at),
-                            });
-                        }
-                    }
-                }
+        // Merge: keep existing entries whose memories are still valid,
+        // add new entries, update timestamp
+        let existing_ids: HashSet<i64> = cache
+            .cold_index
+            .entries
+            .iter()
+            .map(|e| e.memory_id)
+            .collect();
+        for entry in fresh_entries {
+            if !existing_ids.contains(&entry.memory_id) {
+                cache.cold_index.entries.push(entry);
             }
+        }
+        cache.cold_index.last_reindexed = Some(chrono::Utc::now());
 
-            // Merge: keep existing entries whose memories are still valid,
-            // add new entries, update timestamp
-            let existing_ids: HashSet<i64> = cache
-                .cold_index
-                .entries
-                .iter()
-                .map(|e| e.memory_id)
-                .collect();
-            for entry in fresh_entries {
-                if !existing_ids.contains(&entry.memory_id) {
-                    cache.cold_index.entries.push(entry);
-                }
-            }
-            cache.cold_index.last_reindexed = Some(chrono::Utc::now());
-
-            if cache.save(&nexus_dir).is_ok() && !cache.cold_index.entries.is_empty() {
-                cold_caches_reindexed += 1;
-            }
+        if cache.save(&nexus_dir).is_ok() && !cache.cold_index.entries.is_empty() {
+            cold_caches_reindexed += 1;
         }
     }
 
@@ -704,35 +702,146 @@ pub async fn run_deep_dream(
 }
 
 /// Extract patterns that appear across multiple projects.
-pub fn extract_cross_project_patterns(
+///
+/// Uses semantic similarity (embeddings) to group conceptually similar memories
+/// rather than brittle exact string matching.
+pub async fn extract_cross_project_patterns(
     memories_by_project: HashMap<String, Vec<Memory>>,
+    embeddings: Option<&dyn EmbeddingService>,
 ) -> Vec<SoulCandidate> {
-    let mut candidates = Vec::new();
-    let projects: Vec<&String> = memories_by_project.keys().collect();
+    // Flatten memories with their project attribution
+    let mut flat_memories: Vec<(Memory, String)> = Vec::new();
+    for (project, memories) in memories_by_project {
+        for m in memories {
+            flat_memories.push((m, project.clone()));
+        }
+    }
 
-    if projects.len() < 2 {
+    if flat_memories.len() < 2 {
         return Vec::new();
     }
 
-    let mut pattern_map: HashMap<String, (u32, Vec<String>)> = HashMap::new();
+    // Collect embeddings (existing or computed)
+    let mut emb_map: HashMap<i64, Vec<f32>> = HashMap::new();
+    let mut to_compute: Vec<usize> = Vec::new();
 
-    for (project_name, memories) in &memories_by_project {
-        for m in memories {
-            let normalized = m.content.to_lowercase();
-            let entry = pattern_map.entry(normalized).or_insert((0, Vec::new()));
-            entry.0 += 1;
-            if !entry.1.contains(project_name) {
-                entry.1.push(project_name.clone());
+    for (idx, (m, _)) in flat_memories.iter().enumerate() {
+        if let Some(emb) = &m.content_embedding {
+            emb_map.insert(m.id, emb.clone());
+        } else {
+            to_compute.push(idx);
+        }
+    }
+
+    // Compute missing embeddings in batch if service available
+    if let Some(service) = embeddings {
+        let contents: Vec<String> = to_compute
+            .iter()
+            .map(|&idx| flat_memories[idx].0.content.clone())
+            .collect();
+        if !contents.is_empty() {
+            match service.embed_batch(&contents).await {
+                Ok(results) => {
+                    for (idx, emb) in to_compute.into_iter().zip(results) {
+                        let mem_id = flat_memories[idx].0.id;
+                        emb_map.insert(mem_id, emb);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("embed_batch failed in pattern extraction: {}", e);
+                }
             }
         }
     }
 
-    for (content, (count, projects)) in pattern_map {
-        if projects.len() >= 2 {
-            candidates.push(SoulCandidate {
+    // If we don't have embeddings for at least some memories, semantic grouping
+    // won't work well. Fall back to simple exact-match grouping on lowercased content.
+    if emb_map.len() < flat_memories.len() / 2 {
+        // Fallback: original algorithm (exact match after lowercase)
+        let mut pattern_map: HashMap<String, (u32, Vec<String>)> = HashMap::new();
+        for (m, project) in &flat_memories {
+            let normalized = m.content.to_lowercase();
+            let entry = pattern_map.entry(normalized).or_insert((0, Vec::new()));
+            entry.0 += 1;
+            if !entry.1.contains(project) {
+                entry.1.push(project.clone());
+            }
+        }
+        return pattern_map
+            .into_iter()
+            .filter(|(_, (_count, projects))| projects.len() >= 2)
+            .map(|(content, (count, projects))| SoulCandidate {
                 content,
                 source_project: projects.join(", "),
                 observation_count: count,
+                category: "TechnicalLearning".into(),
+                source_agent: "nexus-dream-engine".into(),
+            })
+            .collect();
+    }
+
+    // Union-find for clustering
+    let n = flat_memories.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+
+    fn find(x: usize, parent: &mut [usize]) -> usize {
+        if parent[x] != x {
+            parent[x] = find(parent[x], parent);
+        }
+        parent[x]
+    }
+
+    fn union(x: usize, y: usize, parent: &mut [usize]) {
+        let rx = find(x, parent);
+        let ry = find(y, parent);
+        if rx != ry {
+            parent[ry] = rx;
+        }
+    }
+
+    // Compare each pair with available embeddings
+    let similarity_threshold = 0.85;
+    let indices: Vec<usize> = (0..n)
+        .filter(|i| emb_map.contains_key(&flat_memories[*i].0.id))
+        .collect();
+    for &i in &indices {
+        let emb_i = emb_map.get(&flat_memories[i].0.id).unwrap();
+        for &j in indices.iter().filter(|&&j| j > i) {
+            let emb_j = emb_map.get(&flat_memories[j].0.id).unwrap();
+            if cosine_similarity(emb_i, emb_j) >= similarity_threshold {
+                union(i, j, &mut parent);
+            }
+        }
+    }
+
+    // Build clusters
+    let mut clusters: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        let root = find(i, &mut parent);
+        clusters.entry(root).or_default().push(i);
+    }
+
+    // Convert clusters to SoulCandidates
+    let mut candidates = Vec::new();
+    for indices in clusters.values() {
+        let mut projects_set: HashSet<String> = HashSet::new();
+        for &idx in indices {
+            projects_set.insert(flat_memories[idx].1.clone());
+        }
+        if projects_set.len() >= 2 {
+            // Choose representative: longest content (most descriptive)
+            let (rep_idx, _) = indices
+                .iter()
+                .map(|&idx| (idx, flat_memories[idx].0.content.len()))
+                .max_by_key(|(_, len)| *len)
+                .unwrap();
+            let content = flat_memories[rep_idx].0.content.clone();
+            let observation_count = indices.len() as u32;
+            let source_project = projects_set.into_iter().collect::<Vec<String>>().join(", ");
+            candidates.push(SoulCandidate {
+                content,
+                source_project,
+                observation_count,
                 category: "TechnicalLearning".into(),
                 source_agent: "nexus-dream-engine".into(),
             });
@@ -740,6 +849,20 @@ pub fn extract_cross_project_patterns(
     }
 
     candidates
+}
+
+/// Cosine similarity between two vectors.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    (dot / (norm_a * norm_b)).clamp(0.0, 1.0)
 }
 
 // ── Adaptive scheduling ───────────────────────────────────────────────

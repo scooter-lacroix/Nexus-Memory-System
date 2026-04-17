@@ -1275,6 +1275,38 @@ impl MemoryRepository {
         row.map(|r| self.row_to_memory(r)).transpose()
     }
 
+    /// Get multiple memories by their IDs (batch fetch).
+    ///
+    /// Returns only memories that exist; the result Vec length may be less than
+    /// the input slice length if some IDs are not found.
+    pub async fn get_by_ids(&self, ids: &[i64]) -> Result<Vec<Memory>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build parameter placeholders: (?, ?, ?, ...)
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+
+        let sql = format!("SELECT * FROM memories WHERE id IN ({placeholders})");
+
+        let mut query = sqlx::query_as::<_, MemoryRow>(&sql);
+        for id in ids {
+            query = query.bind(*id);
+        }
+
+        let rows = query.fetch_all(&self.pool).await.map_err(db_error)?;
+
+        let mut memories: Vec<Memory> = Vec::with_capacity(rows.len());
+        for row in rows {
+            match self.row_to_memory(row) {
+                Ok(m) => memories.push(m),
+                Err(e) => tracing::warn!("Failed to convert memory row: {}", e),
+            }
+        }
+
+        Ok(memories)
+    }
+
     /// Get a memory by namespace and content (fallback for id 0 edge case)
     pub async fn get_by_content(&self, namespace_id: i64, content: &str) -> Result<Memory> {
         let row: Option<MemoryRow> = sqlx::query_as(
