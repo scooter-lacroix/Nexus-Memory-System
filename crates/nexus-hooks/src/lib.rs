@@ -8,13 +8,13 @@
 //! 3. **Inactivity Detector** (90%): Configurable timeout detection
 //! 4. **Persistent Buffer** (99%): Crash recovery from buffer
 //!
-//! # Supported Agents
+//! ## Supported Agents
 //!
 //! ## Native Lifecycle (dedicated hook implementation + skill installation)
 //!
 //! - **Claude Code**: Skills-based (SKILL.md format) — session start, end, checkpoint, error, compact
 //! - **Droid (Factory CLI)**: settings-based (`~/.factory/settings.json`) — SessionStart, SessionEnd, PostToolUse, PreCompact, Stop
-//! - **pi-mono**: Skills-based (TypeScript/Bun) — session end, checkpoint, compact
+//! - **pi-mono**: Extension-based (TypeScript) — session start, end, checkpoint, error, compact
 //! - **oh-my-pi**: Skills-based (TypeScript/Bun + Rust N-API) — session end, checkpoint, error, compact
 //! - **pi-skills**: Cross-compatible skills — session end, checkpoint, compact
 //!

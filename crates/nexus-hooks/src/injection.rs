@@ -42,6 +42,11 @@ impl AgentInjectionTarget {
                 global_config: Some(home.join(".gemini").join("GEMINI.md")),
                 project_config_filename: "GEMINI.md".to_string(),
             },
+            Self {
+                agent_type: "pi-mono".to_string(),
+                global_config: Some(home.join(".pi").join("agent").join("AGENTS.md")),
+                project_config_filename: ".pi/AGENTS.md".to_string(),
+            },
         ]
     }
 
@@ -335,5 +340,22 @@ mod tests {
         assert!(dir.path().join(".nexus").exists());
         assert!(dir.path().join(".nexus/context.md").exists());
         assert!(dir.path().join(".nexus/sessions/test-session.md").exists());
+    }
+
+    #[test]
+    fn test_pi_mono_injection_target_exists() {
+        let target = AgentInjectionTarget::find("pi-mono");
+        assert!(target.is_some(), "pi-mono must be in known_agents()");
+
+        let target = target.unwrap();
+        assert_eq!(target.agent_type, "pi-mono");
+        assert!(target.global_config.is_some());
+        assert_eq!(target.project_config_filename, ".pi/AGENTS.md");
+
+        let global = target.global_config.unwrap();
+        assert!(
+            global.ends_with(".pi/agent/AGENTS.md")
+                || global.to_string_lossy().contains(".pi/agent/AGENTS.md")
+        );
     }
 }
