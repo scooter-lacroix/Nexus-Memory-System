@@ -70,7 +70,10 @@ impl SessionRescorer {
                 if should_rescore {
                     // Write lock only for updating
                     let mut topic_lock = self.current_topic_embedding.write().await;
-                    info!("Topic drift detected (similarity={:.3}). Triggering re-score.", similarity);
+                    info!(
+                        "Topic drift detected (similarity={:.3}). Triggering re-score.",
+                        similarity
+                    );
                     *topic_lock = Some(turn_embedding);
                     self.turns_since_rescore.store(0, Ordering::SeqCst);
                     return Some(similarity);

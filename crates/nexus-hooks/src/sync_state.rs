@@ -31,8 +31,8 @@ impl SyncState {
         let path = sync_state_path(project_root, session_id);
         if path.exists() {
             let data = fs::read_to_string(&path)?;
-            let state: SyncState =
-                serde_json::from_str(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let state: SyncState = serde_json::from_str(&data)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             Ok(state)
         } else {
             Ok(Self::new(session_id))
@@ -45,8 +45,7 @@ impl SyncState {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let data =
-            serde_json::to_string_pretty(self).map_err(io::Error::other)?;
+        let data = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
         fs::write(&path, data)
     }
 
@@ -63,8 +62,7 @@ impl SyncState {
 
     /// Whether there are updates since the last sync (soul changed or cache grew).
     pub fn has_updates(&self, current_soul_hash: &str, current_hot_count: usize) -> bool {
-        current_soul_hash != self.last_soul_hash
-            || current_hot_count != self.last_hot_cache_count
+        current_soul_hash != self.last_soul_hash || current_hot_count != self.last_hot_cache_count
     }
 
     /// Record a successful sync, advancing all watermarks.
@@ -78,6 +76,20 @@ impl SyncState {
 
 /// Compute the path to a session's sync state file.
 fn sync_state_path(project_root: &Path, session_id: &str) -> PathBuf {
+    // Validate session_id to prevent path traversal
+    if session_id.is_empty()
+        || session_id.len() > 128
+        || session_id.contains('/')
+        || session_id.contains('\\')
+        || session_id.contains("..")
+    {
+        // Redirect to dead path — same pattern as session_manager.rs
+        return project_root
+            .join(".nexus")
+            .join("sessions")
+            .join("_invalid_")
+            .join("sync_state.json");
+    }
     project_root
         .join(".nexus")
         .join("sessions")

@@ -129,7 +129,6 @@ pub fn inject_reference(
     Ok(())
 }
 
-
 /// Inject only the soul identity reference into a config file (no project context).
 /// Used for global config files that should not reference project-specific context.md.
 pub fn inject_soul_only(config_file: &Path, soul_path: &Path) -> io::Result<()> {
@@ -183,7 +182,10 @@ pub fn inject_soul_only(config_file: &Path, soul_path: &Path) -> io::Result<()> 
 
     if new_content != original_content {
         fs::write(config_file, new_content)?;
-        debug!("Injected soul-only Nexus reference into {}", config_file.display());
+        debug!(
+            "Injected soul-only Nexus reference into {}",
+            config_file.display()
+        );
     }
 
     Ok(())

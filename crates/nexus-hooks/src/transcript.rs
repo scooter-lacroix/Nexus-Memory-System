@@ -166,9 +166,13 @@ pub fn read_transcript_from(path: &Path, start_index: usize) -> io::Result<Vec<T
 
 /// Format transcript entries for Nexus ingest.
 /// Produces a single concatenated string suitable for `nexus ingest-hook-event`.
-pub fn format_for_ingest(entries: &[TranscriptEntry], max_chars_per_entry: usize) -> Vec<IngestEntry> {
+pub fn format_for_ingest(
+    entries: &[TranscriptEntry],
+    max_chars_per_entry: usize,
+) -> Vec<IngestEntry> {
     let mut formatted = Vec::new();
-    let mut tool_name_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut tool_name_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     for entry in entries {
         // Skip internal message types
@@ -180,7 +184,10 @@ pub fn format_for_ingest(entries: &[TranscriptEntry], max_chars_per_entry: usize
         if entry.message_type == "summary" && !entry.text.is_empty() {
             formatted.push(IngestEntry {
                 role: "system".to_string(),
-                content: format!("[Session Summary]: {}", truncate(&entry.text, max_chars_per_entry)),
+                content: format!(
+                    "[Session Summary]: {}",
+                    truncate(&entry.text, max_chars_per_entry)
+                ),
                 timestamp: entry.timestamp,
             });
             continue;
@@ -196,13 +203,24 @@ pub fn format_for_ingest(entries: &[TranscriptEntry], max_chars_per_entry: usize
         // Add tool calls
         for tc in &entry.tool_calls {
             tool_name_map.insert(tc.id.clone(), tc.name.clone());
-            parts.push(format!("[Tool: {}] {}", tc.name, truncate(&tc.input_summary, 150)));
+            parts.push(format!(
+                "[Tool: {}] {}",
+                tc.name,
+                truncate(&tc.input_summary, 150)
+            ));
         }
 
         // Add tool results
         for tr in &entry.tool_results {
-            let tool_name = tool_name_map.get(&tr.tool_use_id).cloned().unwrap_or_else(|| tr.tool_use_id.clone());
-            let prefix = if tr.is_error { "[Tool Error" } else { "[Tool Result" };
+            let tool_name = tool_name_map
+                .get(&tr.tool_use_id)
+                .cloned()
+                .unwrap_or_else(|| tr.tool_use_id.clone());
+            let prefix = if tr.is_error {
+                "[Tool Error"
+            } else {
+                "[Tool Result"
+            };
             let truncated = truncate(&tr.content, 1000);
             parts.push(format!("{prefix}: {tool_name}]\n{truncated}"));
         }
@@ -340,6 +358,15 @@ fn extract_content(msg: &serde_json::Value) -> (String, Vec<ToolResult>) {
                         }
                     }
                     "tool_result" => {
+                        let tool_use_id = block
+                            .get("tool_use_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let is_error = block
+                            .get("is_error")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
                         let content_str = block
                             .get("content")
                             .map(|c| {
@@ -350,9 +377,9 @@ fn extract_content(msg: &serde_json::Value) -> (String, Vec<ToolResult>) {
                             .unwrap_or_default();
                         let content_str = truncate_owned(content_str, MAX_TOOL_RESULT_CONTENT);
                         results.push(ToolResult {
-                            tool_use_id: String::new(),
+                            tool_use_id,
                             content: content_str,
-                            is_error: false,
+                            is_error,
                         });
                     }
                     _ => {}
@@ -367,9 +394,7 @@ fn extract_content(msg: &serde_json::Value) -> (String, Vec<ToolResult>) {
 
 /// Extract text, thinking, and tool calls from an assistant message.
 /// Tool results only appear in user messages.
-fn extract_assistant_content(
-    msg: &serde_json::Value,
-) -> (String, Option<String>, Vec<ToolCall>) {
+fn extract_assistant_content(msg: &serde_json::Value) -> (String, Option<String>, Vec<ToolCall>) {
     let content = msg
         .get("message")
         .and_then(|m| m.get("content"))
@@ -410,7 +435,11 @@ fn extract_assistant_content(
                             &name,
                             block.get("input").unwrap_or(&serde_json::Value::Null),
                         );
-                        tool_calls.push(ToolCall { id, name, input_summary });
+                        tool_calls.push(ToolCall {
+                            id,
+                            name,
+                            input_summary,
+                        });
                     }
                     _ => {}
                 }

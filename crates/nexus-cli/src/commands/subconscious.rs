@@ -11,7 +11,7 @@ use clap::Subcommand;
 use nexus_core::Config;
 use nexus_hooks::retrieval::{RetrievalEngine, SubconsciousMode};
 use nexus_hooks::sync_state::{soul_content_hash, SyncState};
-use nexus_hooks::transcript::{read_transcript_from, format_for_ingest, build_ingest_payload};
+use nexus_hooks::transcript::{build_ingest_payload, format_for_ingest, read_transcript_from};
 use tracing::debug;
 
 #[derive(Subcommand)]
@@ -76,18 +76,22 @@ pub enum SubconsciousCommands {
 pub async fn execute(command: SubconsciousCommands) -> Result<()> {
     match command {
         SubconsciousCommands::SessionStart { cwd } => execute_session_start(cwd).await,
-        SubconsciousCommands::Recall { cwd, session_id, agent: _ } => execute_recall(cwd, session_id).await,
-        SubconsciousCommands::SyncCheck { cwd, session_id, agent: _ } => {
-            execute_sync_check(cwd, session_id).await
-        }
+        SubconsciousCommands::Recall {
+            cwd,
+            session_id,
+            agent: _,
+        } => execute_recall(cwd, session_id).await,
+        SubconsciousCommands::SyncCheck {
+            cwd,
+            session_id,
+            agent: _,
+        } => execute_sync_check(cwd, session_id).await,
         SubconsciousCommands::IngestTranscript {
             transcript_path,
             agent,
             session_id,
             cwd,
-        } => {
-            execute_ingest_transcript(transcript_path, agent, session_id, cwd).await
-        }
+        } => execute_ingest_transcript(transcript_path, agent, session_id, cwd).await,
         SubconsciousCommands::Status { cwd } => execute_status(cwd).await,
     }
 }
@@ -116,15 +120,9 @@ async fn execute_session_start(cwd: Option<String>) -> Result<()> {
     // Access internal method via a public wrapper — format_session_start takes &CognitiveCache
     // We need access to the internal load_hot_cache. Since it's private, use the public interface.
     // For session start, we output the initial context via the engine's format_session_start.
-
-    // Read hot cache directly
-    let cache_path = project_root.join(".nexus").join("cognitive_cache.json");
-    let hot_cache = if cache_path.exists() {
-        let data = std::fs::read_to_string(&cache_path).unwrap_or_default();
-        serde_json::from_str(&data).unwrap_or_default()
-    } else {
-        nexus_agent::cognitive_cache::CognitiveCache::default()
-    };
+    // Read hot cache via canonical load path
+    let nexus_dir = project_root.join(".nexus");
+    let hot_cache = nexus_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
 
     let output = engine.format_session_start(&hot_cache, soul_content.as_deref());
     if !output.is_empty() {
@@ -154,14 +152,17 @@ async fn execute_recall(cwd: Option<String>, session_id: Option<String>) -> Resu
     };
 
     let sid = session_id.unwrap_or_else(|| "default".to_string());
-    let mut sync_state = SyncState::load(&project_root, &sid).unwrap_or_else(|_| SyncState::new(&sid));
+    let mut sync_state =
+        SyncState::load(&project_root, &sid).unwrap_or_else(|_| SyncState::new(&sid));
 
     // Step 1: Hot cache + soul retrieval (fast, no DB)
     let mut result = engine.retrieve_for_prompt(&prompt_text, &sync_state).await;
 
     // Step 2: Semantic embedding search (requires DB + embedder)
     if config.embedding.enabled {
-        if let Ok(mut storage) = nexus_storage::StorageManager::from_url(&config.database_url()).await {
+        if let Ok(mut storage) =
+            nexus_storage::StorageManager::from_url(&config.database_url()).await
+        {
             if storage.initialize().await.is_ok() {
                 let embedder = nexus_agent::create_embedding_service(&config).await;
                 if let Some(svc) = embedder {
@@ -171,11 +172,12 @@ async fn execute_recall(cwd: Option<String>, session_id: Option<String>) -> Resu
                     if let Ok(Ok(embedding)) = tokio::time::timeout(
                         std::time::Duration::from_millis(500),
                         svc.embed(&prompt_text),
-                    ).await
+                    )
+                    .await
                     {
-                        let semantic = semantic_search(
-                            &mem_repo, &ns_repo, &embedding, &result.recalled,
-                        ).await;
+                        let semantic =
+                            semantic_search(&mem_repo, &ns_repo, &embedding, &result.recalled)
+                                .await;
                         result.recalled = semantic;
                     }
                 }
@@ -251,8 +253,8 @@ async fn execute_ingest_transcript(
     let sync_state = SyncState::load(&project_root, &sid).unwrap_or_else(|_| SyncState::new(&sid));
     let start_index = sync_state.last_processed_index;
 
-    let entries = read_transcript_from(&transcript_path, start_index)
-        .context("Failed to read transcript")?;
+    let entries =
+        read_transcript_from(&transcript_path, start_index).context("Failed to read transcript")?;
 
     if entries.is_empty() {
         return Ok(());
@@ -272,14 +274,17 @@ async fn execute_ingest_transcript(
     // Spawn the nexus ingest-hook-event command as a background process
     let agent_clone = agent.clone();
     let event_name = "stop_transcript".to_string();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         use std::process::{Command, Stdio};
         let mut child = match Command::new("nexus")
             .args([
                 "ingest-hook-event",
-                "--agent", &agent_clone,
-                "--event", &event_name,
-                "--format", "auto",
+                "--agent",
+                &agent_clone,
+                "--event",
+                &event_name,
+                "--format",
+                "auto",
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -309,15 +314,10 @@ async fn execute_ingest_transcript(
                         std::fs::read_to_string(&soul_path).ok()
                     };
                     let soul_hash = soul_content_hash(soul_content.as_deref().unwrap_or(""));
-                    let cache_path = project_root_clone.join(".nexus").join("cognitive_cache.json");
-                    let hot_cache_count = if cache_path.exists() {
-                        let data = std::fs::read_to_string(&cache_path).unwrap_or_default();
-                        let cache: nexus_agent::cognitive_cache::CognitiveCache =
-                            serde_json::from_str(&data).unwrap_or_default();
-                        cache.hot_cache.entries.len()
-                    } else {
-                        0
-                    };
+                    let nexus_dir = project_root_clone.join(".nexus");
+                    let cache =
+                        nexus_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
+                    let hot_cache_count = cache.hot_cache.entries.len();
                     state.advance(soul_hash, hot_cache_count, new_index);
                     if let Err(e) = state.save(&project_root_clone) {
                         debug!("Failed to save sync state after ingest: {e}");
@@ -333,6 +333,11 @@ async fn execute_ingest_transcript(
         }
     });
 
+    // Wait for ingest to complete before exiting (prevents transcript drop)
+    if let Err(e) = handle.join() {
+        debug!("Ingest thread panicked: {e:?}");
+    }
+
     Ok(())
 }
 
@@ -343,24 +348,16 @@ async fn execute_status(cwd: Option<String>) -> Result<()> {
     println!("Subconscious Mode: {:?}", mode);
 
     // Show hot cache stats
-    let cache_path = project_root.join(".nexus").join("cognitive_cache.json");
-    if cache_path.exists() {
-        let data = std::fs::read_to_string(&cache_path)?;
-        let cache: nexus_agent::cognitive_cache::CognitiveCache =
-            serde_json::from_str(&data)?;
-        println!(
-            "Hot Cache: {} entries",
-            cache.hot_cache.entries.len()
-        );
-        println!(
-            "Cold Index: {} entries",
-            cache.cold_index.entries.len()
-        );
+    let nexus_dir = project_root.join(".nexus");
+    let cache = nexus_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
+    if cache.hot_cache.entries.is_empty() && cache.cold_index.entries.is_empty() {
+        println!("Hot Cache: not initialized");
+    } else {
+        println!("Hot Cache: {} entries", cache.hot_cache.entries.len());
+        println!("Cold Index: {} entries", cache.cold_index.entries.len());
         if let Some(updated) = cache.hot_cache.last_updated {
             println!("Last Updated: {updated}");
         }
-    } else {
-        println!("Hot Cache: not initialized");
     }
 
     // Show soul.md status
@@ -384,9 +381,7 @@ async fn execute_status(cwd: Option<String>) -> Result<()> {
                     if let Ok(state) = serde_json::from_str::<SyncState>(&data) {
                         println!(
                             "Session '{}': last sync {}, index {}",
-                            state.session_id,
-                            state.last_sync_timestamp,
-                            state.last_processed_index
+                            state.session_id, state.last_sync_timestamp, state.last_processed_index
                         );
                         count += 1;
                     }
@@ -439,7 +434,10 @@ async fn semantic_search(
 
     let mut results = hot_cache_entries.to_vec();
     // We don't have memory_id in RecalledMemory, so track by content hash instead
-    let hot_content: std::collections::HashSet<_> = hot_cache_entries.iter().map(|r| r.content.clone()).collect();
+    let hot_content: std::collections::HashSet<_> = hot_cache_entries
+        .iter()
+        .map(|r| r.content.clone())
+        .collect();
 
     // Search across all namespaces
     if let Ok(namespaces) = ns_repo.list_all().await {
@@ -498,7 +496,11 @@ async fn semantic_search(
     }
 
     // Sort by relevance and take top 5
-    results.sort_by(|a, b| b.relevance.partial_cmp(&a.relevance).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.relevance
+            .partial_cmp(&a.relevance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     results.truncate(5);
     results
 }

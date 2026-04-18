@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
+use nexus_core::Config;
 use nexus_memory_agent::cognitive_cache::{CognitiveCache, ConfidenceTier};
 use nexus_memory_agent::soul::soul_path;
-use nexus_core::Config;
 
 use crate::sync_state::{self, SyncState};
 
@@ -138,14 +138,23 @@ impl RetrievalEngine {
         if soul_hash != sync_state.last_soul_hash {
             if let Some(soul) = soul_content {
                 let truncated = truncate_to_chars(&soul, 300);
-                parts.push(format!("<soul_update>\n{}\n</soul_update>", escape_xml(&truncated)));
+                parts.push(format!(
+                    "<soul_update>\n{}\n</soul_update>",
+                    escape_xml(&truncated)
+                ));
             }
         }
 
         if hot_cache.hot_cache.entries.len() != sync_state.last_hot_cache_count {
-            let new_count = hot_cache.hot_cache.entries.len().saturating_sub(sync_state.last_hot_cache_count);
+            let new_count = hot_cache
+                .hot_cache
+                .entries
+                .len()
+                .saturating_sub(sync_state.last_hot_cache_count);
             if new_count > 0 {
-                let new_entries: Vec<_> = hot_cache.hot_cache.entries
+                let new_entries: Vec<_> = hot_cache
+                    .hot_cache
+                    .entries
                     .iter()
                     .rev()
                     .take(new_count)
@@ -224,10 +233,15 @@ impl RetrievalEngine {
                     ConfidenceTier::Clear => "CLEAR",
                     ConfidenceTier::Whisper => "WHISPER",
                 };
-                let truncated = truncate_to_chars(&mem.content, budgets.recall * 4 / result.recalled.len().max(1));
+                let truncated = truncate_to_chars(
+                    &mem.content,
+                    budgets.recall * 4 / result.recalled.len().max(1),
+                );
                 entries.push(format!(
                     "<memory relevance=\"{:.2}\" tier=\"{tier}\" source=\"{}\">\n{}\n</memory>",
-                    mem.relevance, escape_xml(&mem.source), escape_xml(&truncated)
+                    mem.relevance,
+                    escape_xml(&mem.source),
+                    escape_xml(&truncated)
                 ));
             }
             sections.push(format!(
@@ -241,7 +255,12 @@ impl RetrievalEngine {
             let truncated_guidance: Vec<_> = result
                 .active_guidance
                 .iter()
-                .map(|g| escape_xml(&truncate_to_chars(g, budgets.guidance * 4 / result.active_guidance.len().max(1))))
+                .map(|g| {
+                    escape_xml(&truncate_to_chars(
+                        g,
+                        budgets.guidance * 4 / result.active_guidance.len().max(1),
+                    ))
+                })
                 .collect();
             sections.push(format!(
                 "<nexus_guidance>\n{}\n</nexus_guidance>",
@@ -253,7 +272,11 @@ impl RetrievalEngine {
     }
 
     /// Format the initial session-start injection.
-    pub fn format_session_start(&self, hot_cache: &CognitiveCache, soul_content: Option<&str>) -> String {
+    pub fn format_session_start(
+        &self,
+        hot_cache: &CognitiveCache,
+        soul_content: Option<&str>,
+    ) -> String {
         if self.mode == SubconsciousMode::Off {
             return String::new();
         }
@@ -266,18 +289,27 @@ impl RetrievalEngine {
              Soul.md {}.\n\
              </nexus_context>",
             hot_cache.hot_cache.entries.len(),
-            if soul_content.is_some() { "loaded" } else { "not yet generated" }
+            if soul_content.is_some() {
+                "loaded"
+            } else {
+                "not yet generated"
+            }
         ));
 
         if self.mode == SubconsciousMode::Full {
             if let Some(soul) = soul_content {
                 let truncated = truncate_to_chars(soul, 400);
-                parts.push(format!("<nexus_soul>\n{}\n</nexus_soul>", escape_xml(&truncated)));
+                parts.push(format!(
+                    "<nexus_soul>\n{}\n</nexus_soul>",
+                    escape_xml(&truncated)
+                ));
             }
 
             // Show all hot cache entries in full mode
             if !hot_cache.hot_cache.entries.is_empty() {
-                let entries: Vec<_> = hot_cache.hot_cache.entries
+                let entries: Vec<_> = hot_cache
+                    .hot_cache
+                    .entries
                     .iter()
                     .map(|e| {
                         let tier = match e.tier {
@@ -285,7 +317,10 @@ impl RetrievalEngine {
                             ConfidenceTier::Clear => "CLEAR",
                             ConfidenceTier::Whisper => "WHISPER",
                         };
-                        format!("[{tier}] {}", escape_xml(&truncate_to_chars(&e.content, 120)))
+                        format!(
+                            "[{tier}] {}",
+                            escape_xml(&truncate_to_chars(&e.content, 120))
+                        )
                     })
                     .collect();
                 parts.push(format!(
@@ -296,7 +331,11 @@ impl RetrievalEngine {
         } else {
             // Whisper mode: show top 3 by relevance
             let mut sorted = hot_cache.hot_cache.entries.clone();
-            sorted.sort_by(|a, b| b.relevance_score.partial_cmp(&a.relevance_score).unwrap_or(std::cmp::Ordering::Equal));
+            sorted.sort_by(|a, b| {
+                b.relevance_score
+                    .partial_cmp(&a.relevance_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
             let top: Vec<_> = sorted
                 .iter()
                 .take(3)
@@ -306,7 +345,10 @@ impl RetrievalEngine {
                         ConfidenceTier::Clear => "CLEAR",
                         ConfidenceTier::Whisper => "WHISPER",
                     };
-                    format!("[{tier}] {}", escape_xml(&truncate_to_chars(&e.content, 80)))
+                    format!(
+                        "[{tier}] {}",
+                        escape_xml(&truncate_to_chars(&e.content, 80))
+                    )
                 })
                 .collect();
             if !top.is_empty() {
@@ -373,14 +415,8 @@ impl RetrievalEngine {
     }
 
     fn load_hot_cache(&self) -> CognitiveCache {
-        let cache_path = self.project_root.join(".nexus").join("cognitive_cache.json");
-        if !cache_path.exists() {
-            return CognitiveCache::default();
-        }
-        match std::fs::read_to_string(&cache_path) {
-            Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
-            Err(_) => CognitiveCache::default(),
-        }
+        let nexus_dir = self.project_root.join(".nexus");
+        CognitiveCache::load_or_init(&nexus_dir)
     }
 
     /// Hot-cache-only search. Prompt-based semantic retrieval is wired in the CLI
@@ -390,7 +426,9 @@ impl RetrievalEngine {
         _prompt: &str,
         hot_cache: &CognitiveCache,
     ) -> Vec<RecalledMemory> {
-        let mut entries: Vec<_> = hot_cache.hot_cache.entries
+        let mut entries: Vec<_> = hot_cache
+            .hot_cache
+            .entries
             .iter()
             .filter(|e| e.relevance_score >= 0.5)
             .map(|e| RecalledMemory {
@@ -401,16 +439,16 @@ impl RetrievalEngine {
             })
             .collect();
 
-        entries.sort_by(|a, b| b.relevance.partial_cmp(&a.relevance).unwrap_or(std::cmp::Ordering::Equal));
+        entries.sort_by(|a, b| {
+            b.relevance
+                .partial_cmp(&a.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         entries.truncate(5);
         entries
     }
 
-    fn compute_guidance(
-        &self,
-        hot_cache: &CognitiveCache,
-        sync_state: &SyncState,
-    ) -> Vec<String> {
+    fn compute_guidance(&self, hot_cache: &CognitiveCache, sync_state: &SyncState) -> Vec<String> {
         // Find entries surfaced since last sync
         let mut guidance = Vec::new();
         for entry in &hot_cache.hot_cache.entries {
@@ -527,7 +565,10 @@ mod tests {
 
     #[test]
     fn escape_xml_handles_special_chars() {
-        assert_eq!(escape_xml("a<b>c&d\"e'f"), "a&lt;b&gt;c&amp;d&quot;e&apos;f");
+        assert_eq!(
+            escape_xml("a<b>c&d\"e'f"),
+            "a&lt;b&gt;c&amp;d&quot;e&apos;f"
+        );
     }
 
     #[test]

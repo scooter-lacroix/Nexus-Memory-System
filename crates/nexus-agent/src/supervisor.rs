@@ -278,7 +278,8 @@ impl AgentSupervisor {
                                 embeddings: embedder.clone(),
                                 cognitive_system: cognitive_system.clone(),
                             };
-                            match crate::dream_cycle::run_dream(&cwd, namespace_id, &services).await {
+                            match crate::dream_cycle::run_dream(&cwd, namespace_id, &services).await
+                            {
                                 Ok(_) => {
                                     last_dream_count = count_usize;
                                 }

@@ -208,12 +208,9 @@ After storing, you'll see:
                 if cmd.is_empty() {
                     continue;
                 }
-                Self::upsert_hook_entry(
-                    &mut settings,
-                    event_type,
-                    &cmd,
-                    &|command: &str| Self::command_is_subconscious_hook(command, event_type),
-                )?;
+                Self::upsert_hook_entry(&mut settings, event_type, &cmd, &|command: &str| {
+                    Self::command_is_subconscious_hook(command, event_type)
+                })?;
             }
         }
         // Write back
@@ -290,14 +287,11 @@ After storing, you'll see:
         let nexus_bin = Self::find_nexus_binary();
         let escaped = nexus_bin.replace('\'', "'\\''");
         match event_type {
-            "UserPromptSubmit" => format!(
-                "'{}' subconscious recall --agent claude-code", escaped
-            ),
-            "PreToolUse" => format!(
-                "'{}' subconscious sync-check --agent claude-code", escaped
-            ),
+            "UserPromptSubmit" => format!("'{}' subconscious recall --agent claude-code", escaped),
+            "PreToolUse" => format!("'{}' subconscious sync-check --agent claude-code", escaped),
             "Stop" => format!(
-                "'{}' subconscious ingest-transcript --agent claude-code", escaped
+                "'{}' subconscious ingest-transcript --agent claude-code",
+                escaped
             ),
             _ => String::new(),
         }
@@ -339,10 +333,7 @@ After storing, you'll see:
             .entry(event_type)
             .or_insert_with(|| serde_json::json!([]));
         let entries = event_arr.as_array_mut().ok_or_else(|| {
-            HookError::InstallationFailed(format!(
-                "'hooks.{}' must be an array",
-                event_type
-            ))
+            HookError::InstallationFailed(format!("'hooks.{}' must be an array", event_type))
         })?;
 
         // Try to replace existing entry
@@ -1018,7 +1009,10 @@ mod tests {
         assert_eq!(entries.len(), 1);
         // Should have converged to nested shape
         assert!(entries[0].get("hooks").is_some(), "Should use nested shape");
-        assert_eq!(entries[0]["hooks"][0]["command"], "/new/nexus subconscious recall");
+        assert_eq!(
+            entries[0]["hooks"][0]["command"],
+            "/new/nexus subconscious recall"
+        );
     }
 
     #[test]

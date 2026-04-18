@@ -219,7 +219,10 @@ impl BaseHook {
                     data.insert("agent_type".to_string(), serde_json::json!(agent_type));
                     data.insert("drift_detected".to_string(), serde_json::json!(true));
                     data.insert("similarity".to_string(), serde_json::json!(similarity));
-                    data.insert("threshold".to_string(), serde_json::json!(rescorer.drift_threshold()));
+                    data.insert(
+                        "threshold".to_string(),
+                        serde_json::json!(rescorer.drift_threshold()),
+                    );
 
                     let event = nexus_orchestrator::Event::with_data(
                         nexus_orchestrator::EventType::CognitiveDrift,
