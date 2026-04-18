@@ -33,19 +33,22 @@ impl SessionRescorer {
         }
     }
 
-    /// Process a new turn. Returns true if a re-score was triggered.
+    /// Process a new turn. Returns Some(last_similarity) if re-score triggered, None otherwise.
+    ///
+    /// Note: on_turn uses single embed() for the current turn text (1 embedding).
+    /// The batch optimization is in rescore() which embeds all hot cache entries at once.
     pub async fn on_turn(
         &self,
         turn_content: &str,
         embedder: Option<&dyn EmbeddingService>,
-    ) -> bool {
+    ) -> Option<f32> {
         let turns = self.turns_since_rescore.fetch_add(1, Ordering::SeqCst) + 1;
 
         // 1. Interval-based trigger
         if turns >= self.rescore_interval {
             debug!("Triggering re-score due to interval ({} turns)", turns);
             self.turns_since_rescore.store(0, Ordering::SeqCst);
-            return true;
+            return Some(1.0); // Interval trigger, no specific similarity
         }
 
         // 2. Drift-based trigger
@@ -53,29 +56,29 @@ impl SessionRescorer {
             // Compute embedding outside any lock
             if let Ok(turn_embedding) = service.embed(turn_content).await {
                 // Read lock to check baseline
-                let should_rescore = {
+                let (should_rescore, similarity) = {
                     let topic_lock = self.current_topic_embedding.read().await;
                     match topic_lock.as_ref() {
                         Some(baseline) => {
                             let similarity = cosine_similarity(baseline, &turn_embedding);
-                            similarity < self.drift_threshold
+                            (similarity < self.drift_threshold, similarity)
                         }
-                        None => true, // No baseline yet
+                        None => (true, 0.0), // No baseline yet
                     }
                 }; // read lock dropped here
 
                 if should_rescore {
                     // Write lock only for updating
                     let mut topic_lock = self.current_topic_embedding.write().await;
-                    info!("Topic drift detected. Triggering re-score.");
+                    info!("Topic drift detected (similarity={:.3}). Triggering re-score.", similarity);
                     *topic_lock = Some(turn_embedding);
                     self.turns_since_rescore.store(0, Ordering::SeqCst);
-                    return true;
+                    return Some(similarity);
                 }
             }
         }
 
-        false
+        None
     }
 
     /// Execute the re-scoring pipeline.
@@ -137,6 +140,11 @@ impl SessionRescorer {
         debug!("Re-score completed in {:?}", _start.elapsed());
         Ok(())
     }
+
+    /// Returns the configured drift threshold.
+    pub fn drift_threshold(&self) -> f32 {
+        self.drift_threshold
+    }
 }
 
 #[cfg(test)]
@@ -166,9 +174,9 @@ mod tests {
         };
         let rescorer = SessionRescorer::new(project, 3, 0.7);
 
-        assert!(!rescorer.on_turn("t1", None).await);
-        assert!(!rescorer.on_turn("t2", None).await);
-        assert!(rescorer.on_turn("t3", None).await); // Hits interval
-        assert!(!rescorer.on_turn("t4", None).await); // Reset
+        assert!(rescorer.on_turn("t1", None).await.is_none());
+        assert!(rescorer.on_turn("t2", None).await.is_none());
+        assert!(rescorer.on_turn("t3", None).await.is_some()); // Hits interval
+        assert!(rescorer.on_turn("t4", None).await.is_none()); // Reset
     }
 }

@@ -280,8 +280,9 @@ impl CognitiveCache {
                     .cold_index
                     .entries
                     .iter()
+                    .filter(|e| !hot_ids.contains(&e.memory_id) && e.project_relevance >= 0.3)
+                    .take(10)
                     .map(|e| e.memory_id)
-                    .filter(|id| !hot_ids.contains(id))
                     .collect();
 
                 if !cold_ids.is_empty() {

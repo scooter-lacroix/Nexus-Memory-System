@@ -195,8 +195,8 @@ impl Default for DreamTriggerConfig {
 
 /// Autonomous cognitive system configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CognitiveSystemConfig {
-    /// Whether the cognitive system is enabled
     pub enabled: bool,
     /// System bootstrap mode: "silent" (default) or "chatty" (verbose)
     pub bootstrap_mode: String,
@@ -214,6 +214,8 @@ pub struct CognitiveSystemConfig {
     pub rescore_drift_threshold: f32,
     /// Similarity threshold for pattern clustering in dream
     pub similarity_threshold: f32,
+    /// Subconscious mode: "whisper" (default), "full", or "off"
+    pub subconscious_mode: String,
 }
 
 impl Default for CognitiveSystemConfig {
@@ -228,6 +230,7 @@ impl Default for CognitiveSystemConfig {
             rescore_turn_interval: 5,
             rescore_drift_threshold: 0.70,
             similarity_threshold: 0.85,
+            subconscious_mode: "whisper".to_string(),
         }
     }
 }

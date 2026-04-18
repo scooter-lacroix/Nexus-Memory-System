@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::error::Result;
 use crate::session::SessionContext;
@@ -140,31 +140,46 @@ pub struct BaseHook {
     pub agent_type: String,
     pub installed: bool,
     pub callbacks: Vec<SessionEndCallback>,
+    pub session_start_callbacks: Vec<SessionEndCallback>,
+    pub checkpoint_callbacks: Vec<SessionEndCallback>,
+    pub error_callbacks: Vec<SessionEndCallback>,
     pub activity_monitor: std::sync::Mutex<ActivityMonitor>,
-    pub rescorer: Option<Arc<crate::rescorer::SessionRescorer>>,
+    pub rescorer: RwLock<Option<Arc<crate::rescorer::SessionRescorer>>>,
 }
 
 impl BaseHook {
     pub fn new(agent_type: impl Into<String>) -> Self {
         let agent_type = agent_type.into();
-        let rescorer = if let Ok(cwd) = std::env::current_dir() {
-            let project = nexus_core::ProjectIdentity::resolve(&cwd);
-            let config = nexus_core::Config::from_env().unwrap_or_default();
-            Some(Arc::new(crate::rescorer::SessionRescorer::new(
-                project,
-                config.cognitive_system.rescore_turn_interval,
-                config.cognitive_system.rescore_drift_threshold,
-            )))
-        } else {
-            None
-        };
 
         Self {
             agent_type,
             installed: false,
             callbacks: Vec::new(),
+            session_start_callbacks: Vec::new(),
+            checkpoint_callbacks: Vec::new(),
+            error_callbacks: Vec::new(),
             activity_monitor: std::sync::Mutex::new(ActivityMonitor::load()),
-            rescorer,
+            rescorer: RwLock::new(None),
+        }
+    }
+
+    /// Lazily initialize the rescorer on first use
+    fn ensure_rescorer(&self) {
+        let read = self.rescorer.read().unwrap();
+        if read.is_none() {
+            drop(read);
+            let mut write = self.rescorer.write().unwrap();
+            if write.is_none() {
+                if let Ok(cwd) = std::env::current_dir() {
+                    let project = nexus_core::ProjectIdentity::resolve(&cwd);
+                    let config = nexus_core::Config::from_env().unwrap_or_default();
+                    *write = Some(Arc::new(crate::rescorer::SessionRescorer::new(
+                        project,
+                        config.cognitive_system.rescore_turn_interval,
+                        config.cognitive_system.rescore_drift_threshold,
+                    )));
+                }
+            }
         }
     }
 
@@ -173,6 +188,9 @@ impl BaseHook {
     }
 
     pub fn record_activity_with_content(&self, content: &str) {
+        // Ensure rescorer is initialized lazily
+        self.ensure_rescorer();
+
         if let Ok(mut monitor) = self.activity_monitor.lock() {
             monitor.record_activity();
             // Clone the monitor so we can save outside the lock
@@ -182,8 +200,8 @@ impl BaseHook {
         }
 
         // Trigger real-time re-scoring if drift detected
-        if let Some(rescorer) = &self.rescorer {
-            let rescorer = rescorer.clone();
+        let rescorer = self.rescorer.read().unwrap().clone();
+        if let Some(rescorer) = rescorer {
             let content = content.to_string();
             let agent_type = self.agent_type.clone();
             tokio::spawn(async move {
@@ -193,13 +211,15 @@ impl BaseHook {
                 } else {
                     None
                 };
-                if rescorer.on_turn(&content, embeddings.as_deref()).await {
+                if let Some(similarity) = rescorer.on_turn(&content, embeddings.as_deref()).await {
                     let _ = rescorer.rescore(embeddings.as_deref(), &agent_type).await;
 
                     // PHASE 11: Notify orchestrator of drift
                     let mut data = std::collections::HashMap::new();
                     data.insert("agent_type".to_string(), serde_json::json!(agent_type));
                     data.insert("drift_detected".to_string(), serde_json::json!(true));
+                    data.insert("similarity".to_string(), serde_json::json!(similarity));
+                    data.insert("threshold".to_string(), serde_json::json!(rescorer.drift_threshold()));
 
                     let event = nexus_orchestrator::Event::with_data(
                         nexus_orchestrator::EventType::CognitiveDrift,
@@ -216,6 +236,36 @@ impl BaseHook {
 
     pub fn add_callback(&mut self, callback: SessionEndCallback) {
         self.callbacks.push(callback);
+    }
+
+    pub fn add_session_start_callback(&mut self, callback: SessionEndCallback) {
+        self.session_start_callbacks.push(callback);
+    }
+
+    pub fn add_checkpoint_callback(&mut self, callback: SessionEndCallback) {
+        self.checkpoint_callbacks.push(callback);
+    }
+
+    pub fn add_error_callback(&mut self, callback: SessionEndCallback) {
+        self.error_callbacks.push(callback);
+    }
+
+    pub fn trigger_session_start_callbacks(&self, context: SessionContext) {
+        for callback in &self.session_start_callbacks {
+            callback(context.clone());
+        }
+    }
+
+    pub fn trigger_checkpoint_callbacks(&self, context: SessionContext) {
+        for callback in &self.checkpoint_callbacks {
+            callback(context.clone());
+        }
+    }
+
+    pub fn trigger_error_callbacks(&self, context: SessionContext) {
+        for callback in &self.error_callbacks {
+            callback(context.clone());
+        }
     }
 
     pub fn trigger_callbacks(&self, context: SessionContext) {

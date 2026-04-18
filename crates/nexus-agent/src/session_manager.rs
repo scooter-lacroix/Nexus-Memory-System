@@ -73,6 +73,13 @@ impl SessionManager {
         content: &str,
         confidence: f32,
     ) -> io::Result<()> {
+        let confidence = if confidence.is_finite() {
+            confidence.clamp(0.0, 1.0)
+        } else {
+            tracing::warn!("Non-finite confidence value in append_learning, defaulting to 0.5");
+            0.5
+        };
+
         Self::validate_session_id(session_id)?;
 
         let scratch_path = self

@@ -489,6 +489,11 @@ fn memory_matches_session_key(memory: &Memory, session_key: &str) -> bool {
     false
 }
 
+/// Determine if a memory represents raw activity.
+///
+/// Returns true if the memory has the "raw-activity" label OR its cognitive
+/// level is explicitly Raw. Memories with missing cognitive metadata default
+/// to Raw (intentional: unclassified activity is treated as raw until processed).
 fn is_raw_event(memory: &Memory) -> bool {
     // A raw event is any memory labeled raw-activity regardless of category,
     // or one whose cognitive level is explicitly Raw.
@@ -688,7 +693,9 @@ pub async fn run_deep_dream(
 
     // 6. Update monitor
     activity_monitor.last_deep_dream = Some(chrono::Utc::now());
-    let _ = activity_monitor.save();
+    if let Err(e) = activity_monitor.save() {
+        tracing::error!("Failed to save activity monitor after deep dream: {}", e);
+    }
 
     Ok(DeepDreamResult {
         soul_updated,
@@ -754,7 +761,7 @@ pub async fn extract_cross_project_patterns(
 
     // If we don't have embeddings for at least some memories, semantic grouping
     // won't work well. Fall back to simple exact-match grouping on lowercased content.
-    if emb_map.len() < flat_memories.len() / 2 {
+    if emb_map.len() * 2 < flat_memories.len() {
         // Fallback: original algorithm (exact match after lowercase)
         let mut pattern_map: HashMap<String, (u32, Vec<String>)> = HashMap::new();
         for (m, project) in &flat_memories {

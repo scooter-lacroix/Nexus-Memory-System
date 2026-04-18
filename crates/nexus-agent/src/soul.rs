@@ -196,7 +196,19 @@ impl SoulBuilder {
                 ..Default::default()
             };
             if let Ok(res) = self.llm.generate(params).await {
-                new_soul = res.content;
+                let compressed = res.content;
+                let has_header = compressed.contains("# Nexus Soul");
+                let within_budget = compressed.len() / 4 <= SOUL_MAX_TOKENS;
+                if has_header && within_budget {
+                    new_soul = compressed;
+                } else {
+                    debug!(
+                        has_header,
+                        within_budget,
+                        compressed_len = compressed.len(),
+                        "Soul compression output failed validation; keeping pre-compression version"
+                    );
+                }
             }
         }
 
@@ -214,7 +226,14 @@ impl SoulBuilder {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&path, &new_soul)?;
+        let tmp_path = path.with_extension("tmp");
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&tmp_path)?;
+            f.write_all(new_soul.as_bytes())?;
+            f.sync_all()?;
+        }
+        fs::rename(&tmp_path, &path)?;
 
         info!(
             "Soul rebuild complete. Wrote {} bytes to {}",

@@ -18,6 +18,10 @@ export default function nexusMemory(pi: ExtensionAPI): void {
   const AGENT_TYPE = "pi-mono";
   const NEXUS_BIN = process.env.NEXUS_HOOK_BINARY || findNexusBinary();
 
+  // Subconscious mode: skip all subconscious calls when 'off'
+  const SUBCONSCIOUS_MODE = (process.env.NEXUS_SUBCONSCIOUS_MODE || "whisper").toLowerCase();
+  const SUBCONSCIOUS_OFF = SUBCONSCIOUS_MODE === "off";
+
   // Session state (scoped to this extension instance)
   let sessionId: string | null = null;
   let sessionCwd: string | null = null;
@@ -44,6 +48,14 @@ export default function nexusMemory(pi: ExtensionAPI): void {
         "--cwd", ctx.cwd,
         "--mode", "session",
       ]);
+
+      // Subconscious: initialize memory retrieval for this session
+      if (!SUBCONSCIOUS_OFF) {
+        await spawnNexus([
+          "subconscious", "session-start",
+          "--cwd", ctx.cwd,
+        ]);
+      }
     } catch (err) {
       logError("session_start", err);
     }
@@ -221,17 +233,38 @@ export default function nexusMemory(pi: ExtensionAPI): void {
 
   pi.on("before_agent_start", async (event, ctx) => {
     try {
+      // Primary: live subconscious recall (queries cognitive cache + soul.md)
+      let subconsciousContext: string | null = null;
+      if (!SUBCONSCIOUS_OFF && sessionId) {
+        subconsciousContext = await spawnNexusCapture([
+          "subconscious", "recall",
+          "--session-id", sessionId,
+          "--cwd", sessionCwd || ctx.cwd,
+        ], event.userMessage || "");
+      }
+
+      // Fallback: static context.md (legacy)
+      let staticContext: string | null = null;
       const contextPath = path.join(ctx.cwd, ".nexus", "context.md");
       if (fs.existsSync(contextPath)) {
-        const context = fs.readFileSync(contextPath, "utf-8").trim();
-        if (context) {
-          return {
-            systemPrompt: event.systemPrompt + "\n\n## Nexus Memory Context\n\n" + context,
-          };
-        }
+        staticContext = fs.readFileSync(contextPath, "utf-8").trim() || null;
+      }
+
+      const parts: string[] = [];
+      if (subconsciousContext) {
+        parts.push("## Nexus Subconscious\n\n" + subconsciousContext);
+      }
+      if (staticContext) {
+        parts.push("## Nexus Memory Context\n\n" + staticContext);
+      }
+
+      if (parts.length > 0) {
+        return {
+          systemPrompt: event.systemPrompt + "\n\n" + parts.join("\n\n"),
+        };
       }
     } catch {
-      // Silently skip if context file is unreadable
+      // Silently skip if subconscious retrieval fails
     }
   });
 
@@ -325,7 +358,10 @@ export default function nexusMemory(pi: ExtensionAPI): void {
 
   async function ingestPayload(payload: NexusPayload): Promise<void> {
     const json = JSON.stringify(payload);
-    await spawnNexus(["ingest-hook-event"], json);
+    const args = ["ingest-hook-event"];
+    if (payload.agent) args.push("--agent", payload.agent);
+    if (payload.event_name) args.push("--event", payload.event_name);
+    await spawnNexus(args, json);
   }
 
   async function flushQueue(): Promise<void> {
@@ -361,6 +397,48 @@ export default function nexusMemory(pi: ExtensionAPI): void {
     });
   }
 
+  /**
+   * Run a nexus command and capture stdout. Used by subconscious recall
+   * to retrieve XML memory context for injection into the session.
+   */
+  async function spawnNexusCapture(args: string[], stdinData?: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      try {
+        const child = spawn(NEXUS_BIN, args, {
+          stdio: stdinData ? ["pipe", "pipe", "ignore"] : ["ignore", "pipe", "ignore"],
+          env: { ...process.env },
+        });
+
+        if (stdinData && child.stdin) {
+          child.stdin.write(stdinData);
+          child.stdin.end();
+        }
+
+        let output = "";
+        if (child.stdout) {
+          child.stdout.on("data", (data: Buffer) => {
+            output += data.toString();
+          });
+        }
+
+        const timeout = setTimeout(() => {
+          child.kill();
+          resolve(output.trim() || null);
+        }, 10000);
+
+        child.on("exit", () => {
+          clearTimeout(timeout);
+          resolve(output.trim() || null);
+        });
+        child.on("error", () => {
+          clearTimeout(timeout);
+          resolve(null);
+        });
+      } catch {
+        resolve(null); // Never throw
+      }
+    });
+  }
   function logError(event: string, err: unknown): void {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[nexus-memory] Error in ${event}: ${msg}`);

@@ -252,7 +252,7 @@ impl AgentHook for PiMonoHook {
     }
 
     async fn install_session_start_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
-        self.base.add_callback(callback);
+        self.base.add_session_start_callback(callback);
         Ok(())
     }
 
@@ -262,7 +262,7 @@ impl AgentHook for PiMonoHook {
     }
 
     async fn install_checkpoint_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
-        self.base.add_callback(callback);
+        self.base.add_checkpoint_callback(callback);
         Ok(())
     }
 
@@ -272,7 +272,7 @@ impl AgentHook for PiMonoHook {
     }
 
     async fn install_error_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
-        self.base.add_callback(callback);
+        self.base.add_error_callback(callback);
         Ok(())
     }
 

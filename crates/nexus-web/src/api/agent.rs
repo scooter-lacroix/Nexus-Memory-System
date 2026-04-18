@@ -181,17 +181,25 @@ pub async fn agent_boost(
         .map_err(|e| WebError::Storage(e.to_string()))?
         .ok_or_else(|| WebError::NotFound(format!("Memory {} not found", request.memory_id)))?;
 
-    // Resolve project root for cache path
+    // Resolve project root for cache path — explicit root_dir required for web API
     let cwd = request
         .root_dir
         .as_ref()
         .map(std::path::PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
-        .ok_or_else(|| WebError::Config("No project root available".to_string()))?;
+        .ok_or_else(|| WebError::InvalidRequest("root_dir is required".to_string()))?;
     // Canonicalize to resolve symlinks and reject nonexistent paths
     let cwd = cwd
         .canonicalize()
         .map_err(|e| WebError::Config(format!("Invalid root_dir: {}", e)))?;
+
+    // Reject paths outside the user's home directory
+    if let Some(home) = dirs::home_dir() {
+        if !cwd.starts_with(&home) {
+            return Err(WebError::InvalidRequest(
+                "root_dir must be within the user's home directory".to_string(),
+            ));
+        }
+    }
     let project_identity = nexus_core::ProjectIdentity::resolve(&cwd);
     let nexus_dir = project_identity.root_dir.join(".nexus");
 

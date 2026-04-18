@@ -126,7 +126,7 @@ impl SessionContext {
                 } else {
                     None
                 };
-                if rescorer.on_turn(&content_str, embeddings.as_deref()).await {
+                if rescorer.on_turn(&content_str, embeddings.as_deref()).await.is_some() {
                     let _ = rescorer.rescore(embeddings.as_deref(), &agent_type).await;
                 }
             });

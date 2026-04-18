@@ -197,6 +197,25 @@ After storing, you'll see:
 
         Self::upsert_session_start_hook(&mut settings, &command)?;
 
+        // Install subconscious retrieval hooks (UserPromptSubmit, PreToolUse, Stop)
+        // Respect NEXUS_SUBCONSCIOUS_MODE — skip when set to 'off'
+        let subconscious_mode = std::env::var("NEXUS_SUBCONSCIOUS_MODE")
+            .unwrap_or_default()
+            .to_lowercase();
+        if subconscious_mode != "off" {
+            for event_type in ["UserPromptSubmit", "PreToolUse", "Stop"] {
+                let cmd = Self::desired_subconscious_command(event_type);
+                if cmd.is_empty() {
+                    continue;
+                }
+                Self::upsert_hook_entry(
+                    &mut settings,
+                    event_type,
+                    &cmd,
+                    &|command: &str| Self::command_is_subconscious_hook(command, event_type),
+                )?;
+            }
+        }
         // Write back
         let serialized = serde_json::to_string_pretty(&settings).map_err(|e| {
             HookError::InstallationFailed(format!("Failed to serialize settings: {}", e))
@@ -265,6 +284,115 @@ After storing, you'll see:
             "'{}' session start --agent claude-code --mode session",
             nexus_bin.replace('\'', "'\\''")
         )
+    }
+
+    fn desired_subconscious_command(event_type: &str) -> String {
+        let nexus_bin = Self::find_nexus_binary();
+        let escaped = nexus_bin.replace('\'', "'\\''");
+        match event_type {
+            "UserPromptSubmit" => format!(
+                "'{}' subconscious recall --agent claude-code", escaped
+            ),
+            "PreToolUse" => format!(
+                "'{}' subconscious sync-check --agent claude-code", escaped
+            ),
+            "Stop" => format!(
+                "'{}' subconscious ingest-transcript --agent claude-code", escaped
+            ),
+            _ => String::new(),
+        }
+    }
+
+    /// Detect whether a command string is a nexus subconscious hook.
+    fn command_is_subconscious_hook(command: &str, event_type: &str) -> bool {
+        command.contains("nexus")
+            && command.contains("subconscious")
+            && match event_type {
+                "UserPromptSubmit" => command.contains("recall"),
+                "PreToolUse" => command.contains("sync-check"),
+                "Stop" => command.contains("ingest-transcript"),
+                _ => false,
+            }
+    }
+
+    /// Generic hook upsert for any event type (used for subconscious hooks).
+    fn upsert_hook_entry(
+        settings: &mut serde_json::Value,
+        event_type: &str,
+        desired_command: &str,
+        is_match: &dyn Fn(&str) -> bool,
+    ) -> Result<()> {
+        let settings_obj = settings.as_object_mut().ok_or_else(|| {
+            HookError::InstallationFailed(
+                "settings.json must contain a top-level JSON object".to_string(),
+            )
+        })?;
+
+        let hooks = settings_obj
+            .entry("hooks")
+            .or_insert_with(|| serde_json::json!({}));
+        let hooks_obj = hooks.as_object_mut().ok_or_else(|| {
+            HookError::InstallationFailed("'hooks' must be a JSON object".to_string())
+        })?;
+
+        let event_arr = hooks_obj
+            .entry(event_type)
+            .or_insert_with(|| serde_json::json!([]));
+        let entries = event_arr.as_array_mut().ok_or_else(|| {
+            HookError::InstallationFailed(format!(
+                "'hooks.{}' must be an array",
+                event_type
+            ))
+        })?;
+
+        // Try to replace existing entry
+        for entry in entries.iter_mut() {
+            // Check flat command
+            if entry
+                .get("command")
+                .and_then(|v| v.as_str())
+                .map(is_match)
+                .unwrap_or(false)
+            {
+                *entry = serde_json::json!({
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": desired_command,
+                    }]
+                });
+                return Ok(());
+            }
+
+            // Check nested hooks array
+            if let Some(hooks) = entry.get_mut("hooks").and_then(|v| v.as_array_mut()) {
+                for hook in hooks.iter_mut() {
+                    if hook
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .map(is_match)
+                        .unwrap_or(false)
+                    {
+                        *hook = serde_json::json!({
+                            "type": "command",
+                            "command": desired_command,
+                        });
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // No existing entry found — append new one
+        entries.push(serde_json::json!({
+            "matcher": "",
+            "hooks": [{
+                "type": "command",
+                "command": desired_command,
+            }]
+        }));
+
+        Ok(())
     }
 
     fn has_settings_hook() -> bool {
@@ -385,8 +513,11 @@ After storing, you'll see:
                 .is_some_and(Self::command_is_session_start_hook)
             {
                 *entry = serde_json::json!({
-                    "type": "command",
-                    "command": desired_command,
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": desired_command,
+                    }]
                 });
                 return true;
             }
@@ -488,7 +619,7 @@ impl AgentHook for ClaudeCodeHook {
     /// which fires when a new Claude Code session begins. This writes a
     /// hook entry that invokes `nexus session start --agent claude-code`.
     async fn install_session_start_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
-        self.base.add_callback(callback);
+        self.base.add_session_start_callback(callback);
 
         self.install_settings_hook()?;
 
@@ -497,7 +628,7 @@ impl AgentHook for ClaudeCodeHook {
 
     /// Checkpoint hooks are supported via the installed skill's on_checkpoint trigger.
     async fn install_checkpoint_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
-        self.base.add_callback(callback);
+        self.base.add_checkpoint_callback(callback);
         Ok(())
     }
 
@@ -509,7 +640,7 @@ impl AgentHook for ClaudeCodeHook {
 
     /// Error hooks are supported via the installed skill's on_error trigger.
     async fn install_error_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
-        self.base.add_callback(callback);
+        self.base.add_error_callback(callback);
         Ok(())
     }
 
@@ -785,5 +916,120 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("SessionStart"));
+    }
+
+    #[test]
+    fn test_desired_subconscious_command_returns_commands() {
+        let recall = ClaudeCodeHook::desired_subconscious_command("UserPromptSubmit");
+        assert!(recall.contains("subconscious recall"));
+        let sync = ClaudeCodeHook::desired_subconscious_command("PreToolUse");
+        assert!(sync.contains("subconscious sync-check"));
+        let stop = ClaudeCodeHook::desired_subconscious_command("Stop");
+        assert!(stop.contains("subconscious ingest-transcript"));
+    }
+
+    #[test]
+    fn test_desired_subconscious_command_unknown_returns_empty() {
+        let cmd = ClaudeCodeHook::desired_subconscious_command("Unknown");
+        assert!(cmd.is_empty());
+    }
+
+    #[test]
+    fn test_command_is_subconscious_hook_matches() {
+        assert!(ClaudeCodeHook::command_is_subconscious_hook(
+            "/nexus subconscious recall --agent claude-code",
+            "UserPromptSubmit"
+        ));
+        assert!(!ClaudeCodeHook::command_is_subconscious_hook(
+            "/nexus subconscious recall --agent claude-code",
+            "PreToolUse"
+        ));
+    }
+
+    #[test]
+    fn test_upsert_hook_entry_adds_new_event() {
+        let mut settings = serde_json::json!({"hooks": {}});
+        ClaudeCodeHook::upsert_hook_entry(
+            &mut settings,
+            "UserPromptSubmit",
+            "nexus subconscious recall",
+            &|cmd: &str| cmd.contains("subconscious recall"),
+        )
+        .unwrap();
+
+        let entries = settings["hooks"]["UserPromptSubmit"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0]["hooks"][0]["command"],
+            "nexus subconscious recall"
+        );
+    }
+
+    #[test]
+    fn test_upsert_hook_entry_replaces_existing() {
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/old/nexus subconscious sync-check"
+                    }]
+                }]
+            }
+        });
+
+        ClaudeCodeHook::upsert_hook_entry(
+            &mut settings,
+            "PreToolUse",
+            "/new/nexus subconscious sync-check",
+            &|cmd: &str| cmd.contains("subconscious sync-check"),
+        )
+        .unwrap();
+
+        let entries = settings["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0]["hooks"][0]["command"],
+            "/new/nexus subconscious sync-check"
+        );
+    }
+
+    #[test]
+    fn test_upsert_hook_entry_replaces_flat_command() {
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "type": "command",
+                    "command": "/old/nexus subconscious recall"
+                }]
+            }
+        });
+
+        ClaudeCodeHook::upsert_hook_entry(
+            &mut settings,
+            "UserPromptSubmit",
+            "/new/nexus subconscious recall",
+            &|cmd: &str| cmd.contains("subconscious recall"),
+        )
+        .unwrap();
+
+        let entries = settings["hooks"]["UserPromptSubmit"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        // Should have converged to nested shape
+        assert!(entries[0].get("hooks").is_some(), "Should use nested shape");
+        assert_eq!(entries[0]["hooks"][0]["command"], "/new/nexus subconscious recall");
+    }
+
+    #[test]
+    fn test_command_is_subconscious_hook_stop_event() {
+        assert!(ClaudeCodeHook::command_is_subconscious_hook(
+            "/nexus subconscious ingest-transcript --agent claude-code",
+            "Stop"
+        ));
+        assert!(!ClaudeCodeHook::command_is_subconscious_hook(
+            "/nexus subconscious recall",
+            "Stop"
+        ));
     }
 }

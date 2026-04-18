@@ -209,7 +209,7 @@ impl ProjectIdentity {
 
 #### 3.2.1 Soul Document Structure
 
-The soul.md is a markdown document with natural prose. It is NOT a structured config file. It reads like a personality profile that any agent can understand:
+The soul.md is a Markdown document with natural prose. It is NOT a structured config file. It reads like a personality profile that any agent can understand:
 
 ```markdown
 # Nexus Soul
@@ -1890,7 +1890,6 @@ cargo test --workspace
 
 ### Modified Files
 | File | Phase | Changes |
-
 |------|-------|---------|
 | `crates/nexus-core/src/config.rs` | 1 | Add `CognitiveSystemConfig`, `DreamTriggerConfig` |
 | `crates/nexus-core/src/lib.rs` | 1 | Add `pub mod project_identity` |

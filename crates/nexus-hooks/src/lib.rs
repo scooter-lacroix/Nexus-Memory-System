@@ -68,6 +68,9 @@ pub mod persistence;
 pub mod rescorer;
 pub mod retry_buffer;
 pub mod session;
+pub mod retrieval;
+pub mod sync_state;
+pub mod transcript;
 pub mod signal;
 pub mod types;
 
@@ -88,6 +91,9 @@ pub use monitor::{ProcessMonitor, SessionMonitor};
 pub use persistence::{persist_enriched_memories, PersistResult};
 pub use retry_buffer::{RetryArtifact, RetryBuffer};
 pub use session::SessionContext;
+pub use retrieval::{RetrievalEngine, RetrievalResult, SubconsciousMode};
+pub use sync_state::SyncState;
+pub use transcript::{read_transcript, read_transcript_from, TranscriptEntry};
 pub use types::{AgentType, DetectionLayer, ExtractionSource, SessionActivity, SupportTier};
 
 // Re-export agent hooks

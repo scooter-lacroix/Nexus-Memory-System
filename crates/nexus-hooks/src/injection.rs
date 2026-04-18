@@ -129,6 +129,65 @@ pub fn inject_reference(
     Ok(())
 }
 
+
+/// Inject only the soul identity reference into a config file (no project context).
+/// Used for global config files that should not reference project-specific context.md.
+pub fn inject_soul_only(config_file: &Path, soul_path: &Path) -> io::Result<()> {
+    if !config_file.exists() {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(config_file)?;
+    let original_content = content.clone();
+
+    let block = format!(
+        "{}\n\
+        ## Nexus Memory Substrate\n\
+        - Identity: [Soul]({soul_path_val})\n\
+        {}",
+        NEXUS_BLOCK_START,
+        NEXUS_BLOCK_END,
+        soul_path_val = soul_path.to_string_lossy(),
+    );
+    let new_content = if let (Some(start), Some(end)) = (
+        content.find(NEXUS_BLOCK_START),
+        content.find(NEXUS_BLOCK_END),
+    ) {
+        if start >= end {
+            let mut updated = content;
+            if !updated.is_empty() && !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str(&block);
+            if !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated
+        } else {
+            let mut updated = content[..start].to_string();
+            updated.push_str(&block);
+            updated.push_str(&content[end + NEXUS_BLOCK_END.len()..]);
+            updated
+        }
+    } else {
+        let mut updated = content;
+        if !updated.is_empty() && !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push_str(&block);
+        if !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated
+    };
+
+    if new_content != original_content {
+        fs::write(config_file, new_content)?;
+        debug!("Injected soul-only Nexus reference into {}", config_file.display());
+    }
+
+    Ok(())
+}
 /// Remove Nexus references from a config file.
 pub fn remove_reference(config_file: &Path) -> io::Result<()> {
     if !config_file.exists() {
@@ -237,7 +296,7 @@ pub async fn on_session_start(
 
         // Global config
         if let Some(global_config) = target.global_config {
-            inject_reference(&global_config, &soul_path, &context_path)?;
+            inject_soul_only(&global_config, &soul_path)?;
         }
     }
 

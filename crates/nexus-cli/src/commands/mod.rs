@@ -25,3 +25,5 @@ pub mod stats;
 pub mod store;
 pub mod tools;
 pub mod update;
+
+pub mod subconscious;

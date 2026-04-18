@@ -363,6 +363,12 @@ enum Commands {
         #[command(subcommand)]
         command: commands::cognitive::CognitiveCommands,
     },
+
+    /// Subconscious memory retrieval and injection (bidirectional hooks)
+    Subconscious {
+        #[command(subcommand)]
+        command: commands::subconscious::SubconsciousCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -651,6 +657,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Cognitive { command } => {
             commands::cognitive::execute(command).await?;
+        }
+        Commands::Subconscious { command } => {
+            commands::subconscious::execute(command).await?;
         }
     }
 
