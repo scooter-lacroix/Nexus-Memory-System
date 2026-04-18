@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod error;
+pub mod fsutil;
 pub mod math;
 pub mod project_identity;
 pub mod traits;

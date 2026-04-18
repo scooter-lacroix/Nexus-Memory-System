@@ -276,14 +276,19 @@ impl CognitiveCache {
 
             // Also include cold_index entries if no results from fallback
             if results.is_empty() {
-                let cold_ids: Vec<i64> = self
+                // Sort cold index by relevance descending before taking top entries
+                let mut sorted_cold: Vec<_> = self
                     .cold_index
                     .entries
                     .iter()
                     .filter(|e| !hot_ids.contains(&e.memory_id) && e.project_relevance >= 0.3)
-                    .take(10)
-                    .map(|e| e.memory_id)
                     .collect();
+                sorted_cold.sort_by(|a, b| {
+                    b.project_relevance
+                        .partial_cmp(&a.project_relevance)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let cold_ids: Vec<i64> = sorted_cold.iter().take(10).map(|e| e.memory_id).collect();
 
                 if !cold_ids.is_empty() {
                     match memory_repo.get_by_ids(&cold_ids).await {
@@ -291,13 +296,7 @@ impl CognitiveCache {
                             let cold_memory_by_id: HashMap<i64, Memory> =
                                 cold_memories.into_iter().map(|m| (m.id, m)).collect();
 
-                            for cold_entry in self
-                                .cold_index
-                                .entries
-                                .iter()
-                                .filter(|e| e.project_relevance >= 0.3)
-                                .take(10)
-                            {
+                            for cold_entry in sorted_cold.iter().take(10) {
                                 if let Some(m) = cold_memory_by_id.get(&cold_entry.memory_id) {
                                     results.push(ColdRecall {
                                         memory_id: m.id,

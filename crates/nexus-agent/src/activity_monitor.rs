@@ -1,6 +1,7 @@
 //! Activity monitoring and sleep detection for dream cycle calibration.
 
 use chrono::{DateTime, Duration, Timelike, Utc};
+use nexus_core::fsutil::atomic_write;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -155,7 +156,7 @@ impl ActivityMonitor {
             fs::create_dir_all(parent)?;
         }
         let content = serde_json::to_string(self)?;
-        fs::write(path, content)?;
+        atomic_write(&path, &content)?;
         Ok(())
     }
 }

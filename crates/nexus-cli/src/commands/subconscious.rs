@@ -168,6 +168,12 @@ async fn execute_recall(cwd: Option<String>, session_id: Option<String>) -> Resu
                 if let Some(svc) = embedder {
                     let ns_repo = nexus_storage::NamespaceRepository::new(storage.pool().clone());
                     let mem_repo = nexus_storage::MemoryRepository::new(storage.pool().clone());
+                    // Resolve current namespace to restrict semantic search
+                    let active_ns = ns_repo
+                        .get_by_name(&config.agent.namespace)
+                        .await
+                        .ok()
+                        .flatten();
 
                     if let Ok(Ok(embedding)) = tokio::time::timeout(
                         std::time::Duration::from_millis(500),
@@ -175,9 +181,14 @@ async fn execute_recall(cwd: Option<String>, session_id: Option<String>) -> Resu
                     )
                     .await
                     {
-                        let semantic =
-                            semantic_search(&mem_repo, &ns_repo, &embedding, &result.recalled)
-                                .await;
+                        let semantic = semantic_search(
+                            &mem_repo,
+                            &ns_repo,
+                            &embedding,
+                            &result.recalled,
+                            active_ns.as_ref(),
+                        )
+                        .await;
                         result.recalled = semantic;
                     }
                 }
@@ -426,6 +437,7 @@ async fn semantic_search(
     ns_repo: &nexus_storage::NamespaceRepository,
     embedding: &[f32],
     hot_cache_entries: &[nexus_hooks::retrieval::RecalledMemory],
+    active_ns: Option<&nexus_core::AgentNamespace>,
 ) -> Vec<nexus_hooks::retrieval::RecalledMemory> {
     use nexus_agent::cognitive_cache::ConfidenceTier;
     use nexus_hooks::retrieval::RecalledMemory;
@@ -433,61 +445,66 @@ async fn semantic_search(
     use nexus_vectors::{SearchOptions, SemanticSearch, VectorEntry};
 
     let mut results = hot_cache_entries.to_vec();
-    // We don't have memory_id in RecalledMemory, so track by content hash instead
     let hot_content: std::collections::HashSet<_> = hot_cache_entries
         .iter()
         .map(|r| r.content.clone())
         .collect();
 
-    // Search across all namespaces
-    if let Ok(namespaces) = ns_repo.list_all().await {
-        for ns in &namespaces {
-            let filters = ListMemoryFilters {
-                category: None,
-                since: None,
-                until: None,
-                content_like: None,
-                include_raw: false,
-                limit: 50,
-                offset: 0,
-            };
+    // Restrict search to active namespace only
+    let namespaces: Vec<nexus_core::AgentNamespace> = if let Some(ns) = active_ns {
+        vec![ns.clone()]
+    } else if let Ok(all) = ns_repo.list_all().await {
+        all
+    } else {
+        return results;
+    };
 
-            if let Ok(memories) = mem_repo.list_filtered(ns.id, filters).await {
-                let entries: Vec<VectorEntry> = memories
-                    .iter()
-                    .filter_map(|m| {
-                        m.content_embedding.as_ref().map(|emb| {
-                            VectorEntry::new(m.id, emb.clone(), m.category.to_string(), ns.id)
-                        })
+    for ns in &namespaces {
+        let filters = ListMemoryFilters {
+            category: None,
+            since: None,
+            until: None,
+            content_like: None,
+            include_raw: false,
+            limit: 50,
+            offset: 0,
+        };
+
+        if let Ok(memories) = mem_repo.list_filtered(ns.id, filters).await {
+            let entries: Vec<VectorEntry> = memories
+                .iter()
+                .filter_map(|m| {
+                    m.content_embedding.as_ref().map(|emb| {
+                        VectorEntry::new(m.id, emb.clone(), m.category.to_string(), ns.id)
                     })
-                    .collect();
+                })
+                .collect();
 
-                if entries.is_empty() {
-                    continue;
-                }
+            if entries.is_empty() {
+                continue;
+            }
 
-                let search = SemanticSearch::new();
-                let options = SearchOptions::with_limit(10).with_threshold(0.65);
+            let search = SemanticSearch::new();
+            let options = SearchOptions::with_limit(10).with_threshold(0.65);
 
-                if let Ok((search_results, _)) = search.search(embedding, &entries, &options) {
-                    let ids: Vec<i64> = search_results.iter().map(|r| r.id).collect();
-                    if let Ok(matched) = mem_repo.get_by_ids(&ids).await {
-                        let memory_by_id: std::collections::HashMap<i64, _> =
-                            matched.into_iter().map(|m| (m.id, m)).collect();
+            if let Ok((search_results, _)) = search.search(embedding, &entries, &options) {
+                let ids: Vec<i64> = search_results.iter().map(|r| r.id).collect();
+                if let Ok(matched) = mem_repo.get_by_ids(&ids).await {
+                    let memory_by_id: std::collections::HashMap<i64, _> =
+                        matched.into_iter().map(|m| (m.id, m)).collect();
 
-                        for sr in search_results {
-                            if let Some(m) = memory_by_id.get(&sr.id) {
-                                // Skip if content already in hot cache
-                                if hot_content.contains(&m.content) {
-                                    continue;
-                                }
-                                results.push(RecalledMemory {
-                                    content: m.content.clone(),
-                                    relevance: sr.score,
-                                    tier: ConfidenceTier::from_score(sr.score),
-                                    source: format!("semantic:{}", ns.name),
-                                });
+                    for sr in search_results {
+                        if let Some(m) = memory_by_id.get(&sr.id) {
+                            // Skip if content already in hot cache
+                            if hot_content.contains(&m.content) {
+                                continue;
                             }
+                            results.push(RecalledMemory {
+                                content: m.content.clone(),
+                                relevance: sr.score,
+                                tier: ConfidenceTier::from_score(sr.score),
+                                source: format!("semantic:{}", ns.name),
+                            });
                         }
                     }
                 }

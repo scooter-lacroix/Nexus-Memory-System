@@ -319,7 +319,9 @@ impl AgentSupervisor {
                 }
 
                 // Persist activity monitor state after potential deep dream
-                let _ = activity_monitor.save();
+                if let Err(e) = activity_monitor.save() {
+                    tracing::warn!(error = %e, "Failed to save activity monitor");
+                }
 
                 let sleep_duration = if cognition.adaptive_dream_enabled {
                     crate::dream_cycle::compute_adaptive_dream_interval(
@@ -393,7 +395,7 @@ impl AgentSupervisor {
         let cancel = self.cancel_token.clone();
 
         let handle = tokio::spawn(async move {
-            let mut ticker = interval(Duration::from_secs(30));
+            let mut ticker = interval(Duration::from_secs(agent.scan_interval_secs.max(1)));
 
             loop {
                 tokio::select! {

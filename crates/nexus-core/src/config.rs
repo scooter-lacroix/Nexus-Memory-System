@@ -523,6 +523,9 @@ impl Config {
                 .filter(|&v: &f32| (0.0..=1.0).contains(&v))
                 .unwrap_or(CognitiveSystemConfig::default().rescore_drift_threshold);
         }
+        if let Ok(mode) = std::env::var("NEXUS_SUBCONSCIOUS_MODE") {
+            config.cognitive_system.subconscious_mode = mode;
+        }
         if let Ok(threshold) = std::env::var("NEXUS_DREAM_THRESHOLD") {
             config
                 .cognitive_system

@@ -181,6 +181,13 @@ pub async fn agent_boost(
         .map_err(|e| WebError::Storage(e.to_string()))?
         .ok_or_else(|| WebError::NotFound(format!("Memory {} not found", request.memory_id)))?;
 
+    // Verify the memory belongs to the active namespace
+    if memory.namespace_id != _supervisor.namespace_id() {
+        return Err(WebError::InvalidRequest(
+            "Memory does not belong to the active namespace".to_string(),
+        ));
+    }
+
     // Resolve project root for cache path — explicit root_dir required for web API
     let cwd = request
         .root_dir

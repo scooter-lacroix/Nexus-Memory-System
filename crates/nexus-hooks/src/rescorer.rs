@@ -1,5 +1,6 @@
 //! Mid-session relevance re-scorer for active agent sessions.
 
+use nexus_core::fsutil::atomic_write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::RwLock;
@@ -132,10 +133,7 @@ impl SessionRescorer {
 
         // 4. Atomic write
         let context_path = self.nexus_dir.join("context.md");
-        let tmp_path = context_path.with_extension("tmp");
-
-        std::fs::write(&tmp_path, context_md)?;
-        std::fs::rename(&tmp_path, &context_path)?;
+        atomic_write(&context_path, &context_md)?;
 
         // 5. Save updated scores to cache
         cache.save(&self.nexus_dir)?;

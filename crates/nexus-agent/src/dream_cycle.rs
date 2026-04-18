@@ -7,6 +7,7 @@ use std::time::Instant;
 use tracing::warn;
 
 use nexus_core::config::{AgentConfig, CognitionConfig, CognitiveSystemConfig};
+use nexus_core::fsutil::atomic_write;
 use nexus_core::traits::EmbeddingService;
 use nexus_core::{cosine_similarity, CognitiveLevel, Memory, PerspectiveKey};
 use nexus_llm::LlmClient;
@@ -24,17 +25,6 @@ use crate::token_budget::TokenBudget;
 use crate::util::{flush_metric_samples, stage_metric_sample};
 use crate::RuntimeShutdownReason;
 
-/// Write a file atomically: write to temp file, sync, then rename.
-fn atomic_write(path: &std::path::Path, content: &str) -> std::io::Result<()> {
-    let tmp_path = path.with_extension("tmp");
-    {
-        use std::io::Write;
-        let mut f = std::fs::File::create(&tmp_path)?;
-        f.write_all(content.as_bytes())?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp_path, path)
-}
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -698,8 +688,14 @@ pub async fn run_deep_dream(
         cache.cold_index.entries = fresh_entries;
         cache.cold_index.last_reindexed = Some(chrono::Utc::now());
 
-        if cache.save(&nexus_dir).is_ok() && !cache.cold_index.entries.is_empty() {
-            cold_caches_reindexed += 1;
+        match cache.save(&nexus_dir) {
+            Ok(()) if !cache.cold_index.entries.is_empty() => {
+                cold_caches_reindexed += 1;
+            }
+            Ok(()) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to save cold cache after reindexing");
+            }
         }
     }
 

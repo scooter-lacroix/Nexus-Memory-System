@@ -1,5 +1,6 @@
 //! Reference injection system for agent configuration files.
 
+use nexus_core::fsutil::atomic_write;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -284,7 +285,7 @@ pub async fn on_session_start(
     );
 
     let context_path = nexus_dir.join("context.md");
-    fs::write(&context_path, context_md)?;
+    atomic_write(&context_path, &context_md)?;
 
     // 5. Compute soul path for injection reference
     // (soul.md is only created/modified during deep dream cycles, per spec)
