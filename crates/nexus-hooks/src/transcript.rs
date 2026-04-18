@@ -120,6 +120,8 @@ pub fn read_transcript_from(path: &Path, start_index: usize) -> io::Result<Vec<T
     if !path.exists() {
         return Ok(Vec::new());
     }
+
+    // Optimization: if never synced, read via fast path
     if start_index == 0 {
         return read_transcript(path);
     }

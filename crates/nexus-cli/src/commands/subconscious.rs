@@ -251,7 +251,7 @@ async fn execute_ingest_transcript(
     // Read sync state for incremental processing
     let project_root = resolve_project_root(Some(&cwd_str));
     let sync_state = SyncState::load(&project_root, &sid).unwrap_or_else(|_| SyncState::new(&sid));
-    let start_index = sync_state.last_processed_index;
+    let start_index = sync_state.last_processed_index.unwrap_or(0);
 
     let entries =
         read_transcript_from(&transcript_path, start_index).context("Failed to read transcript")?;
@@ -380,7 +380,7 @@ async fn execute_status(cwd: Option<String>) -> Result<()> {
                 if let Ok(data) = std::fs::read_to_string(&sync_path) {
                     if let Ok(state) = serde_json::from_str::<SyncState>(&data) {
                         println!(
-                            "Session '{}': last sync {}, index {}",
+                            "Session '{}': last sync {}, index {:?}",
                             state.session_id, state.last_sync_timestamp, state.last_processed_index
                         );
                         count += 1;

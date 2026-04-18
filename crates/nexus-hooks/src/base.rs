@@ -291,7 +291,9 @@ impl BaseHook {
                         if let Ok(mut storage) =
                             nexus_storage::StorageManager::from_url(&pool_url).await
                         {
-                            if storage.initialize().await.is_ok() {
+                            if let Err(e) = storage.initialize().await {
+                                tracing::debug!("Failed to initialize storage for nap: {e}");
+                            } else {
                                 let ns_repo = nexus_storage::repository::NamespaceRepository::new(
                                     storage.pool().clone(),
                                 );

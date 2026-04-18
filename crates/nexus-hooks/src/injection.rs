@@ -91,8 +91,9 @@ pub fn inject_reference(
         content.find(NEXUS_BLOCK_END),
     ) {
         if start >= end {
-            // Malformed markers (end before start) — treat as no existing block
-            let mut updated = content;
+            // Malformed markers (end before start) — remove them, then append fresh block
+            let mut updated = content[..start].to_string();
+            updated.push_str(&content[end + NEXUS_BLOCK_END.len()..]);
             if !updated.is_empty() && !updated.ends_with('\n') {
                 updated.push('\n');
             }
@@ -153,7 +154,9 @@ pub fn inject_soul_only(config_file: &Path, soul_path: &Path) -> io::Result<()> 
         content.find(NEXUS_BLOCK_END),
     ) {
         if start >= end {
-            let mut updated = content;
+            // Malformed markers — remove them, then append fresh block
+            let mut updated = content[..start].to_string();
+            updated.push_str(&content[end + NEXUS_BLOCK_END.len()..]);
             if !updated.is_empty() && !updated.ends_with('\n') {
                 updated.push('\n');
             }

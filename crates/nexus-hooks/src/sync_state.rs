@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 pub struct SyncState {
     /// Session identifier (matches `.nexus/sessions/{session_id}/`).
     pub session_id: String,
-    /// Index of the last-processed transcript entry (for Stop-hook streaming).
-    pub last_processed_index: usize,
+    /// Index of the last-processed transcript entry (None = never synced).
+    pub last_processed_index: Option<usize>,
     /// Hash of the last soul.md content seen (detects dream/soul updates).
     pub last_soul_hash: String,
     /// Timestamp of the last successful sync.
@@ -28,7 +28,7 @@ pub struct SyncState {
 impl SyncState {
     /// Load sync state for a session, creating a fresh one if none exists.
     pub fn load(project_root: &Path, session_id: &str) -> io::Result<Self> {
-        let path = sync_state_path(project_root, session_id);
+        let path = sync_state_path(project_root, session_id)?;
         if path.exists() {
             let data = fs::read_to_string(&path)?;
             let state: SyncState = serde_json::from_str(&data)
@@ -41,7 +41,7 @@ impl SyncState {
 
     /// Persist the current sync state to disk.
     pub fn save(&self, project_root: &Path) -> io::Result<()> {
-        let path = sync_state_path(project_root, &self.session_id);
+        let path = sync_state_path(project_root, &self.session_id)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -53,7 +53,7 @@ impl SyncState {
     pub fn new(session_id: &str) -> Self {
         Self {
             session_id: session_id.to_string(),
-            last_processed_index: 0,
+            last_processed_index: None,
             last_soul_hash: String::new(),
             last_sync_timestamp: Utc::now(),
             last_hot_cache_count: 0,
@@ -69,13 +69,13 @@ impl SyncState {
     pub fn advance(&mut self, soul_hash: String, hot_cache_count: usize, new_index: usize) {
         self.last_soul_hash = soul_hash;
         self.last_hot_cache_count = hot_cache_count;
-        self.last_processed_index = new_index;
+        self.last_processed_index = Some(new_index);
         self.last_sync_timestamp = Utc::now();
     }
 }
 
 /// Compute the path to a session's sync state file.
-fn sync_state_path(project_root: &Path, session_id: &str) -> PathBuf {
+fn sync_state_path(project_root: &Path, session_id: &str) -> io::Result<PathBuf> {
     // Validate session_id to prevent path traversal
     if session_id.is_empty()
         || session_id.len() > 128
@@ -83,18 +83,16 @@ fn sync_state_path(project_root: &Path, session_id: &str) -> PathBuf {
         || session_id.contains('\\')
         || session_id.contains("..")
     {
-        // Redirect to dead path — same pattern as session_manager.rs
-        return project_root
-            .join(".nexus")
-            .join("sessions")
-            .join("_invalid_")
-            .join("sync_state.json");
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "session_id contains invalid characters",
+        ));
     }
-    project_root
+    Ok(project_root
         .join(".nexus")
         .join("sessions")
         .join(session_id)
-        .join("sync_state.json")
+        .join("sync_state.json"))
 }
 
 /// Compute a quick hash of soul.md content for change detection.
@@ -121,7 +119,7 @@ mod tests {
     fn new_state_has_defaults() {
         let state = SyncState::new("test-session");
         assert_eq!(state.session_id, "test-session");
-        assert_eq!(state.last_processed_index, 0);
+        assert_eq!(state.last_processed_index, None);
         assert!(state.last_soul_hash.is_empty());
         assert_eq!(state.last_hot_cache_count, 0);
     }
@@ -134,14 +132,14 @@ mod tests {
         let mut state = SyncState::new("roundtrip-test");
         state.last_soul_hash = "abc123".to_string();
         state.last_hot_cache_count = 5;
-        state.last_processed_index = 42;
+        state.last_processed_index = Some(42);
         state.save(project_root).unwrap();
 
         let loaded = SyncState::load(project_root, "roundtrip-test").unwrap();
         assert_eq!(loaded.session_id, "roundtrip-test");
         assert_eq!(loaded.last_soul_hash, "abc123");
         assert_eq!(loaded.last_hot_cache_count, 5);
-        assert_eq!(loaded.last_processed_index, 42);
+        assert_eq!(loaded.last_processed_index, Some(42));
     }
 
     #[test]
@@ -149,7 +147,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let state = SyncState::load(dir.path(), "no-such-session").unwrap();
         assert_eq!(state.session_id, "no-such-session");
-        assert_eq!(state.last_processed_index, 0);
+        assert_eq!(state.last_processed_index, None);
     }
 
     #[test]
@@ -171,7 +169,7 @@ mod tests {
         state.advance("newhash".to_string(), 7, 15);
         assert_eq!(state.last_soul_hash, "newhash");
         assert_eq!(state.last_hot_cache_count, 7);
-        assert_eq!(state.last_processed_index, 15);
+        assert_eq!(state.last_processed_index, Some(15));
     }
 
     #[test]

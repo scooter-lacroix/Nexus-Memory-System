@@ -23,6 +23,18 @@ use crate::session_manager::SessionManager;
 use crate::token_budget::TokenBudget;
 use crate::util::{flush_metric_samples, stage_metric_sample};
 use crate::RuntimeShutdownReason;
+
+/// Write a file atomically: write to temp file, sync, then rename.
+fn atomic_write(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    let tmp_path = path.with_extension("tmp");
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp_path)?;
+        f.write_all(content.as_bytes())?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp_path, path)
+}
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -133,7 +145,7 @@ pub async fn run_nap(
             (window_size * services.cognitive_system.context_allocation_pct) as usize;
         let context_md = build_context_md(&cache.hot_cache, &[], max_context_tokens);
         let context_path = nexus_dir.join("context.md");
-        std::fs::write(context_path, context_md)?;
+        atomic_write(&context_path, &context_md)?;
 
         // 4. Save cache
         cache.save(&nexus_dir)?;
@@ -195,7 +207,7 @@ pub async fn run_dream(
         (window_size * services.cognitive_system.context_allocation_pct) as usize;
     let context_md = build_context_md(&cache.hot_cache, &[], max_context_tokens);
     let context_path = nexus_dir.join("context.md");
-    std::fs::write(context_path, context_md)?;
+    atomic_write(&context_path, &context_md)?;
 
     // 4. Save cache
     cache.save(&nexus_dir)?;
