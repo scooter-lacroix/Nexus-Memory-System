@@ -31,6 +31,9 @@ pub enum SubconsciousCommands {
         /// Session ID for sync tracking
         #[arg(long)]
         session_id: Option<String>,
+        /// Agent type (accepted but currently unused, for hook compatibility)
+        #[arg(long, default_value = "claude-code")]
+        agent: String,
     },
 
     /// Check for updates since last sync (PreToolUse hook)
@@ -41,6 +44,9 @@ pub enum SubconsciousCommands {
         /// Session ID for sync tracking
         #[arg(long)]
         session_id: Option<String>,
+        /// Agent type (accepted but currently unused, for hook compatibility)
+        #[arg(long, default_value = "claude-code")]
+        agent: String,
     },
 
     /// Stream session transcript to Nexus ingest (Stop hook)
@@ -70,8 +76,8 @@ pub enum SubconsciousCommands {
 pub async fn execute(command: SubconsciousCommands) -> Result<()> {
     match command {
         SubconsciousCommands::SessionStart { cwd } => execute_session_start(cwd).await,
-        SubconsciousCommands::Recall { cwd, session_id } => execute_recall(cwd, session_id).await,
-        SubconsciousCommands::SyncCheck { cwd, session_id } => {
+        SubconsciousCommands::Recall { cwd, session_id, agent: _ } => execute_recall(cwd, session_id).await,
+        SubconsciousCommands::SyncCheck { cwd, session_id, agent: _ } => {
             execute_sync_check(cwd, session_id).await
         }
         SubconsciousCommands::IngestTranscript {
