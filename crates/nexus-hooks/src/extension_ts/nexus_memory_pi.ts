@@ -12,6 +12,7 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { execSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 import * as crypto from "node:crypto";
 
 export default function nexusMemory(pi: ExtensionAPI): void {
@@ -292,7 +293,7 @@ export default function nexusMemory(pi: ExtensionAPI): void {
 
   function findNexusBinary(): string {
     const candidates = [
-      path.join(process.env.HOME || process.env.USERPROFILE || ".", ".local", "bin", "nexus"),
+      path.join(process.env.HOME || process.env.USERPROFILE || os.homedir() || ".", ".local", "bin", "nexus"),
       "/usr/local/bin/nexus",
     ];
     for (const c of candidates) {

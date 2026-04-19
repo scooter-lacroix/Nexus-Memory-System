@@ -99,6 +99,8 @@ impl SessionManager {
     }
 
     /// Merge learnings from a scratch file into the hot cache.
+    /// Does NOT rename the scratch file — caller must call mark_session_merged()
+    /// after persisting the cache to avoid data loss on save failure.
     pub fn merge_session(
         &self,
         session_id: &str,
@@ -123,11 +125,20 @@ impl SessionManager {
             promote_to_hot_cache(hot_cache, learning, max_entries);
         }
 
-        // Mark as merged
-        let merged_path = sessions_dir.join(format!("{}.merged.md", session_id));
-        fs::rename(&scratch_path, &merged_path).map_err(AgentError::Io)?;
-
         Ok(count)
+    }
+
+    /// Mark a session scratch file as merged (rename .md → .merged.md).
+    /// Call this AFTER cache persistence succeeds to avoid data loss.
+    pub fn mark_session_merged(&self, session_id: &str) -> Result<(), AgentError> {
+        Self::validate_session_id(session_id)?;
+        let sessions_dir = self.nexus_dir.join("sessions");
+        let scratch_path = sessions_dir.join(format!("{}.md", session_id));
+        if scratch_path.exists() {
+            let merged_path = sessions_dir.join(format!("{}.merged.md", session_id));
+            fs::rename(&scratch_path, &merged_path).map_err(AgentError::Io)?;
+        }
+        Ok(())
     }
 
     /// Clean up merged session files older than 7 days.
@@ -236,7 +247,10 @@ mod tests {
         assert_eq!(hot.entries.len(), 2);
         assert!(hot.entries.iter().any(|e| e.content == "Found a pattern"));
 
-        // 4. Verification
+        // 4. Mark merged (normally done after cache save)
+        manager.mark_session_merged(session_id).unwrap();
+
+        // 5. Verification
         assert!(!path.exists()); // Original scratch should be gone
         let merged_path = dir
             .path()
@@ -244,7 +258,6 @@ mod tests {
             .join(format!("{}.merged.md", session_id));
         assert!(merged_path.exists());
     }
-
     #[test]
     fn test_parse_scratch_learnings() {
         let content = r#"---

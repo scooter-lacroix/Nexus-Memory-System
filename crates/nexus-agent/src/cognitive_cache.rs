@@ -66,7 +66,7 @@ impl HotCacheEntry {
             .max(1) as f32;
 
         // Decay factor: items not surfaced for 24h lose significant score
-        let recency_penalty = (age_secs / 86400.0).exp();
+        let recency_penalty = (age_secs / 86400.0).exp().min(1e10);
 
         // Boost for repeated use (frequency)
         let frequency_boost = (self.hot_streak as f32).ln().max(1.0);

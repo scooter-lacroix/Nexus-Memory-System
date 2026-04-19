@@ -140,6 +140,11 @@ pub async fn run_nap(
         // 4. Save cache
         cache.save(&nexus_dir)?;
 
+        // 5. Mark session as merged only after cache is persisted
+        if merged > 0 {
+            let _ = session_manager.mark_session_merged(session_id);
+        }
+
         Ok::<NapResult, AgentError>(NapResult {
             memories_processed: processed,
             hot_cache_updated: merged > 0,
