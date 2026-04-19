@@ -14,6 +14,21 @@ use nexus_hooks::sync_state::{soul_content_hash, SyncState};
 use nexus_hooks::transcript::{build_ingest_payload, format_for_ingest, read_transcript_from};
 use tracing::debug;
 
+/// Derive a short, filesystem-safe session ID from a transcript path.
+/// This ensures each transcript file gets its own sync-state watermark,
+/// preventing cross-session data loss when multiple sessions share a project.
+fn derive_transcript_session_id(path: &std::path::Path) -> String {
+    let canonical = path.to_string_lossy();
+    let mut hash: u64 = 0;
+    for chunk in canonical.as_bytes().chunks(8) {
+        let mut buf = [0u8; 8];
+        buf[..chunk.len()].copy_from_slice(chunk);
+        let val = u64::from_le_bytes(buf);
+        hash = hash.wrapping_mul(0x517cc1b727220a95).wrapping_add(val);
+    }
+    format!("ts-{:016x}", hash)
+}
+
 #[derive(Subcommand)]
 pub enum SubconsciousCommands {
     /// Initialize subconscious for a new session (SessionStart hook)
@@ -79,13 +94,13 @@ pub async fn execute(command: SubconsciousCommands) -> Result<()> {
         SubconsciousCommands::Recall {
             cwd,
             session_id,
-            agent: _,
-        } => execute_recall(cwd, session_id).await,
+            agent,
+        } => execute_recall(cwd, session_id, &agent).await,
         SubconsciousCommands::SyncCheck {
             cwd,
             session_id,
-            agent: _,
-        } => execute_sync_check(cwd, session_id).await,
+            agent,
+        } => execute_sync_check(cwd, session_id, &agent).await,
         SubconsciousCommands::IngestTranscript {
             transcript_path,
             agent,
@@ -132,7 +147,11 @@ async fn execute_session_start(cwd: Option<String>) -> Result<()> {
     Ok(())
 }
 
-async fn execute_recall(cwd: Option<String>, session_id: Option<String>) -> Result<()> {
+async fn execute_recall(
+    cwd: Option<String>,
+    session_id: Option<String>,
+    agent: &str,
+) -> Result<()> {
     let mode = SubconsciousMode::from_env();
     if mode == SubconsciousMode::Off {
         return Ok(());
@@ -169,11 +188,8 @@ async fn execute_recall(cwd: Option<String>, session_id: Option<String>) -> Resu
                     let ns_repo = nexus_storage::NamespaceRepository::new(storage.pool().clone());
                     let mem_repo = nexus_storage::MemoryRepository::new(storage.pool().clone());
                     // Resolve current namespace to restrict semantic search
-                    let active_ns = ns_repo
-                        .get_by_name(&config.agent.namespace)
-                        .await
-                        .ok()
-                        .flatten();
+                    // Resolve namespace for the active agent (not config default)
+                    let active_ns = ns_repo.get_by_name(agent).await.ok().flatten();
 
                     if let Ok(Ok(embedding)) = tokio::time::timeout(
                         std::time::Duration::from_millis(500),
@@ -213,7 +229,11 @@ async fn execute_recall(cwd: Option<String>, session_id: Option<String>) -> Resu
     Ok(())
 }
 
-async fn execute_sync_check(cwd: Option<String>, session_id: Option<String>) -> Result<()> {
+async fn execute_sync_check(
+    cwd: Option<String>,
+    session_id: Option<String>,
+    _agent: &str,
+) -> Result<()> {
     let mode = SubconsciousMode::from_env();
     if mode == SubconsciousMode::Off {
         return Ok(());
@@ -256,7 +276,11 @@ async fn execute_ingest_transcript(
         return Ok(());
     }
 
-    let sid = session_id.unwrap_or_else(|| "default".to_string());
+    // Derive a stable session ID from the transcript path so that each
+    // conversation file gets its own sync-state watermark. Without this,
+    // all sessions sharing a project would collide on the "default" key
+    // and later sessions would skip entries already processed by earlier ones.
+    let sid = session_id.unwrap_or_else(|| derive_transcript_session_id(&transcript_path));
     let cwd_str = cwd.unwrap_or_else(|| ".".to_string());
 
     // Read sync state for incremental processing

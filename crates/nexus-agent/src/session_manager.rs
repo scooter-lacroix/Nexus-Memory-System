@@ -211,6 +211,9 @@ pub fn promote_to_hot_cache(
     max_entries: usize,
 ) -> bool {
     let entry = HotCacheEntry {
+        // Mask UUID to 63 bits to fit i64, clamp to >=1 to avoid producing 0
+        // (which would remain 0 after negation), then negate so all IDs are
+        // strictly negative (range [-i64::MAX, -1]).
         memory_id: {
             let raw = (uuid::Uuid::new_v4().as_u128() & (i64::MAX as u128)) as i64;
             -(raw.max(1))

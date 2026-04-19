@@ -362,14 +362,10 @@ impl CognitiveCache {
         std::fs::create_dir_all(&cache_dir)?;
 
         let hot_json = serde_json::to_string_pretty(&self.hot_cache)?;
-        let hot_tmp = cache_dir.join("hot.json.tmp");
-        std::fs::write(&hot_tmp, &hot_json)?;
-        std::fs::rename(&hot_tmp, cache_dir.join("hot.json"))?;
+        nexus_core::fsutil::atomic_write(&cache_dir.join("hot.json"), &hot_json)?;
 
         let cold_json = serde_json::to_string_pretty(&self.cold_index)?;
-        let cold_tmp = cache_dir.join("cold_index.json.tmp");
-        std::fs::write(&cold_tmp, &cold_json)?;
-        std::fs::rename(&cold_tmp, cache_dir.join("cold_index.json"))?;
+        nexus_core::fsutil::atomic_write(&cache_dir.join("cold_index.json"), &cold_json)?;
 
         Ok(())
     }
