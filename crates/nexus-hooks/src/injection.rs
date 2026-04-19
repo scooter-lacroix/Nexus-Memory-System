@@ -249,9 +249,7 @@ pub async fn on_session_start(
     storage.initialize().await?;
     let memory_repo = nexus_storage::repository::MemoryRepository::new(storage.pool().clone());
     let ns_repo = nexus_storage::repository::NamespaceRepository::new(storage.pool().clone());
-    let namespace = ns_repo
-        .get_or_create(&config.agent.namespace, agent_type)
-        .await?;
+    let namespace = ns_repo.get_or_create(agent_type, agent_type).await?;
 
     // 3. Load Cache and Perform Morning Recall
     let cache = nexus_memory_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
