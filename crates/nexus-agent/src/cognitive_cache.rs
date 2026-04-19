@@ -85,7 +85,7 @@ pub struct HotCache {
 
 impl HotCache {
     /// Promote a new entry to the hot cache.
-    pub fn promote(&mut self, entry: HotCacheEntry, max_entries: usize) {
+    pub fn promote(&mut self, entry: HotCacheEntry, max_entries: usize) -> bool {
         if let Some(existing) = self
             .entries
             .iter_mut()
@@ -97,7 +97,7 @@ impl HotCache {
             existing.hot_streak += 1;
             existing.last_surfaced = Utc::now();
             existing.pinned = existing.pinned || entry.pinned; // preserve existing pin
-            return;
+            return true;
         }
 
         if self.entries.len() >= max_entries {
@@ -117,12 +117,13 @@ impl HotCache {
                 self.entries.remove(candidates[0].0);
             } else {
                 // All existing entries are pinned; do not exceed capacity.
-                return;
+                return false;
             }
         }
 
         self.entries.push(entry);
         self.last_updated = Some(Utc::now());
+        true
     }
 }
 

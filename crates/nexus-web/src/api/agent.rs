@@ -219,7 +219,7 @@ pub async fn agent_boost(
         .unwrap_or(memory.relevance_score.unwrap_or(0.85));
     let tier = nexus_agent::ConfidenceTier::from_score(relevance_score);
 
-    cache.hot_cache.promote(
+    let inserted = cache.hot_cache.promote(
         nexus_agent::HotCacheEntry {
             memory_id: memory.id,
             content: memory.content,
@@ -233,6 +233,13 @@ pub async fn agent_boost(
         },
         config.cognitive_system.hot_cache_max_entries,
     );
+
+    if !inserted {
+        return Ok(Json(AgentBoostResponse {
+            success: false,
+            error: Some("Cache at capacity with all entries pinned".to_string()),
+        }));
+    }
 
     cache
         .save(&nexus_dir)

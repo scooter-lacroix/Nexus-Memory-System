@@ -3,6 +3,7 @@
 //! Tracks the last-processed position per session so retrieval hooks only
 //! surface new information.  Persisted as JSON in `.nexus/sessions/{id}/sync_state.json`.
 
+use nexus_core::fsutil::atomic_write;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -31,8 +32,16 @@ impl SyncState {
         let path = sync_state_path(project_root, session_id)?;
         if path.exists() {
             let data = fs::read_to_string(&path)?;
-            let state: SyncState = serde_json::from_str(&data)
+            let mut state: SyncState = serde_json::from_str(&data)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            if state.session_id != session_id {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "sync_state session_id does not match requested session",
+                ));
+            }
+            // Use canonical session_id from caller
+            state.session_id = session_id.to_string();
             Ok(state)
         } else {
             Ok(Self::new(session_id))
@@ -46,7 +55,7 @@ impl SyncState {
             fs::create_dir_all(parent)?;
         }
         let data = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
-        fs::write(&path, data)
+        atomic_write(&path, &data)
     }
 
     /// Create a fresh sync state for a new session.

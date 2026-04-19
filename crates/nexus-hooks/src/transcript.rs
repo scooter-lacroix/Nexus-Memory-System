@@ -39,15 +39,20 @@ pub struct TranscriptEntry {
 }
 
 /// Truncate an owned string to a maximum byte length, respecting UTF-8 boundaries.
+/// The returned string (including the ellipsis suffix) never exceeds `max_len` bytes.
 fn truncate_owned(s: String, max_len: usize) -> String {
     if s.len() <= max_len {
         return s;
     }
-    let mut end = max_len;
+    const ELLIPSIS: &str = "…";
+    if max_len <= ELLIPSIS.len() {
+        return String::new();
+    }
+    let mut end = max_len - ELLIPSIS.len();
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}…", &s[..end])
+    format!("{}{}", &s[..end], ELLIPSIS)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,7 +120,7 @@ pub fn read_transcript(path: &Path) -> io::Result<Vec<TranscriptEntry>> {
     Ok(entries)
 }
 
-/// Read only entries from `start_index` onward (for incremental sync).
+/// Read only entries strictly after `start_index` (exclusive) for incremental sync.
 pub fn read_transcript_from(path: &Path, start_index: usize) -> io::Result<Vec<TranscriptEntry>> {
     if !path.exists() {
         return Ok(Vec::new());
