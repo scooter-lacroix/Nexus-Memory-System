@@ -53,7 +53,10 @@ impl SessionManager {
         fs::create_dir_all(&sessions_dir)?;
 
         let scratch_path = sessions_dir.join(format!("{}.md", session_id));
-        let mut file = fs::File::create(&scratch_path)?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&scratch_path)?;
 
         let header = format!(
             "---\nid: {}\nagent: {}\nstarted: {}\nstatus: active\n---\n\n# Session Learnings\n\n",
@@ -119,13 +122,15 @@ impl SessionManager {
         let content = fs::read_to_string(&scratch_path).map_err(AgentError::Io)?;
 
         let learnings = parse_scratch_learnings(&content);
-        let count = learnings.len();
+        let mut inserted = 0;
 
         for learning in learnings {
-            promote_to_hot_cache(hot_cache, learning, max_entries);
+            if promote_to_hot_cache(hot_cache, learning, max_entries) {
+                inserted += 1;
+            }
         }
 
-        Ok(count)
+        Ok(inserted)
     }
 
     /// Mark a session scratch file as merged (rename .md → .merged.md).
@@ -155,8 +160,10 @@ impl SessionManager {
         for entry in fs::read_dir(sessions_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "md")
-                && path.to_string_lossy().contains(".merged.")
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".merged.md"))
             {
                 let metadata = entry.metadata()?;
                 let modified: chrono::DateTime<Utc> = metadata.modified()?.into();
@@ -197,7 +204,12 @@ pub fn parse_scratch_learnings(content: &str) -> Vec<ScratchLearning> {
 
 /// Promote a single learning to the hot cache.
 /// Uses UUID-based negative IDs that survive process restarts without collision.
-pub fn promote_to_hot_cache(hot: &mut HotCache, learning: ScratchLearning, max_entries: usize) {
+/// Returns true if the entry was inserted, false if the cache was full.
+pub fn promote_to_hot_cache(
+    hot: &mut HotCache,
+    learning: ScratchLearning,
+    max_entries: usize,
+) -> bool {
     let entry = HotCacheEntry {
         memory_id: {
             let raw = (uuid::Uuid::new_v4().as_u128() & (i64::MAX as u128)) as i64;
@@ -212,7 +224,7 @@ pub fn promote_to_hot_cache(hot: &mut HotCache, learning: ScratchLearning, max_e
         pinned: false,
         source_agent: None,
     };
-    hot.promote(entry, max_entries);
+    hot.promote(entry, max_entries)
 }
 
 #[cfg(test)]

@@ -69,7 +69,7 @@ impl SyncState {
         }
     }
 
-    /// Whether there are updates since the last sync (soul changed or cache grew).
+    /// Whether there are updates since the last sync (soul changed or cache count changed).
     pub fn has_updates(&self, current_soul_hash: &str, current_hot_count: usize) -> bool {
         current_soul_hash != self.last_soul_hash || current_hot_count != self.last_hot_cache_count
     }

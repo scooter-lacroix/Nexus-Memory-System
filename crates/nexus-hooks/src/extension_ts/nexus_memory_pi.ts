@@ -37,6 +37,16 @@ export default function nexusMemory(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (event, ctx) => {
     try {
+      // Flush any pending debounce state before resetting
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      if (ingestQueue.length > 0) {
+        await flushQueue();
+      }
+      lastIngestTime = 0;
+
       sessionId = deriveSessionId(ctx);
       sessionCwd = ctx.cwd;
       lastIngestedContent = null;
