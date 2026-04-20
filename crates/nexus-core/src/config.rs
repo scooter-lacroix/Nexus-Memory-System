@@ -543,6 +543,22 @@ impl Config {
                 .unwrap_or(DreamTriggerConfig::default().deep_dream_cooldown_hours);
         }
 
+        if let Ok(mins) = std::env::var("NEXUS_DEEP_DREAM_INACTIVITY_MINS") {
+            config
+                .cognitive_system
+                .dream_triggers
+                .deep_dream_inactivity_mins = mins
+                .parse()
+                .unwrap_or(DreamTriggerConfig::default().deep_dream_inactivity_mins);
+        }
+        if let Ok(threshold) = std::env::var("NEXUS_SIMILARITY_THRESHOLD") {
+            config.cognitive_system.similarity_threshold = threshold
+                .parse()
+                .ok()
+                .filter(|&v: &f32| (0.0..=1.0).contains(&v))
+                .unwrap_or(CognitiveSystemConfig::default().similarity_threshold);
+        }
+
         Ok(config)
     }
 

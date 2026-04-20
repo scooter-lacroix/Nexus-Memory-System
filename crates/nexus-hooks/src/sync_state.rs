@@ -75,10 +75,12 @@ impl SyncState {
     }
 
     /// Record a successful sync, advancing all watermarks.
-    pub fn advance(&mut self, soul_hash: String, hot_cache_count: usize, new_index: usize) {
+    pub fn advance(&mut self, soul_hash: String, hot_cache_count: usize, new_index: Option<usize>) {
         self.last_soul_hash = soul_hash;
         self.last_hot_cache_count = hot_cache_count;
-        self.last_processed_index = Some(new_index);
+        if let Some(idx) = new_index {
+            self.last_processed_index = Some(idx);
+        }
         self.last_sync_timestamp = Utc::now();
     }
 }
@@ -175,7 +177,7 @@ mod tests {
     #[test]
     fn advance_updates_watermarks() {
         let mut state = SyncState::new("test");
-        state.advance("newhash".to_string(), 7, 15);
+        state.advance("newhash".to_string(), 7, Some(15));
         assert_eq!(state.last_soul_hash, "newhash");
         assert_eq!(state.last_hot_cache_count, 7);
         assert_eq!(state.last_processed_index, Some(15));

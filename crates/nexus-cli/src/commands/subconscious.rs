@@ -221,7 +221,7 @@ async fn execute_recall(
     let soul_content = result.soul_content.as_deref().unwrap_or("");
     let soul_hash = soul_content_hash(soul_content);
     let hot_cache_count = result.stats.hot_cache_entries;
-    sync_state.advance(soul_hash, hot_cache_count, 0);
+    sync_state.advance(soul_hash, hot_cache_count, None);
     if let Err(e) = sync_state.save(&project_root) {
         debug!("Failed to save sync state: {e}");
     }
@@ -354,7 +354,7 @@ async fn execute_ingest_transcript(
                         let cache =
                             nexus_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
                         let hot_cache_count = cache.hot_cache.entries.len();
-                        state.advance(soul_hash, hot_cache_count, new_index);
+                        state.advance(soul_hash, hot_cache_count, Some(new_index));
                         if let Err(e) = state.save(&project_root_clone) {
                             debug!("Failed to save sync state after ingest: {e}");
                         }
@@ -466,7 +466,7 @@ fn extract_transcript_path(input: &str) -> Option<String> {
 /// Returns deduplicated entries ranked by relevance.
 async fn semantic_search(
     mem_repo: &nexus_storage::MemoryRepository,
-    ns_repo: &nexus_storage::NamespaceRepository,
+    _ns_repo: &nexus_storage::NamespaceRepository,
     embedding: &[f32],
     hot_cache_entries: &[nexus_hooks::retrieval::RecalledMemory],
     active_ns: Option<&nexus_core::AgentNamespace>,
@@ -485,9 +485,9 @@ async fn semantic_search(
     // Restrict search to active namespace only
     let namespaces: Vec<nexus_core::AgentNamespace> = if let Some(ns) = active_ns {
         vec![ns.clone()]
-    } else if let Ok(all) = ns_repo.list_all().await {
-        all
     } else {
+        // No active namespace resolved — skip semantic search to preserve isolation
+        debug!("No active namespace for semantic search, skipping");
         return results;
     };
 

@@ -19,6 +19,13 @@ pub struct ActivityMonitor {
     /// Minimum time between deep dreams
     #[serde(with = "serde_duration_secs")]
     pub deep_dream_cooldown: Duration,
+    /// Inactivity threshold (minutes) before deep dream can trigger
+    #[serde(default = "default_inactivity_mins")]
+    pub deep_dream_inactivity_mins: u64,
+}
+
+fn default_inactivity_mins() -> u64 {
+    30
 }
 
 impl Default for ActivityMonitor {
@@ -28,6 +35,7 @@ impl Default for ActivityMonitor {
             detected_sleep_hour: None,
             last_deep_dream: None,
             deep_dream_cooldown: Duration::hours(24),
+            deep_dream_inactivity_mins: 30,
         }
     }
 }
@@ -113,10 +121,11 @@ impl ActivityMonitor {
             diff <= 2 || diff >= 22
         });
 
+        let base_mins = self.deep_dream_inactivity_mins as i64;
         let inactivity_threshold = if in_sleep_window {
-            Duration::minutes(10)
+            Duration::minutes((base_mins / 3).max(10))
         } else {
-            Duration::minutes(30)
+            Duration::minutes(base_mins)
         };
 
         if let Some(last_active) = self.activity_log.last() {

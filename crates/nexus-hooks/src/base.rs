@@ -378,8 +378,12 @@ impl BaseHook {
                                             );
                                         }
                                     }
-                                } // namespace
+                                } else {
+                                    tracing::debug!("Failed to get/create namespace for nap");
+                                }
                             } // storage.initialize()
+                        } else {
+                            tracing::debug!("Failed to create storage for nap");
                         } // storage
                     }
                 }
