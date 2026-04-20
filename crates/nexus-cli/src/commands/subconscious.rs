@@ -343,19 +343,27 @@ async fn execute_ingest_transcript(
         match child.wait() {
             Ok(status) if status.success() => {
                 // Advance sync state only on successful ingest
-                if let Ok(mut state) = SyncState::load(&project_root_clone, &sid_clone) {
-                    let soul_content = {
-                        let soul_path = nexus_agent::soul::soul_path();
-                        std::fs::read_to_string(&soul_path).ok()
-                    };
-                    let soul_hash = soul_content_hash(soul_content.as_deref().unwrap_or(""));
-                    let nexus_dir = project_root_clone.join(".nexus");
-                    let cache =
-                        nexus_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
-                    let hot_cache_count = cache.hot_cache.entries.len();
-                    state.advance(soul_hash, hot_cache_count, new_index);
-                    if let Err(e) = state.save(&project_root_clone) {
-                        debug!("Failed to save sync state after ingest: {e}");
+                match SyncState::load(&project_root_clone, &sid_clone) {
+                    Ok(mut state) => {
+                        let soul_content = {
+                            let soul_path = nexus_agent::soul::soul_path();
+                            std::fs::read_to_string(&soul_path).ok()
+                        };
+                        let soul_hash = soul_content_hash(soul_content.as_deref().unwrap_or(""));
+                        let nexus_dir = project_root_clone.join(".nexus");
+                        let cache =
+                            nexus_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
+                        let hot_cache_count = cache.hot_cache.entries.len();
+                        state.advance(soul_hash, hot_cache_count, new_index);
+                        if let Err(e) = state.save(&project_root_clone) {
+                            debug!("Failed to save sync state after ingest: {e}");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to load sync state for session '{}' after ingest: {}. State will not be advanced.",
+                            sid_clone, e
+                        );
                     }
                 }
             }

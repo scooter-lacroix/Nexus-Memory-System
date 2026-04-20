@@ -65,9 +65,14 @@ impl SoulBuilder {
     }
 
     /// Read the current soul document.
-    pub fn read_current_soul(&self) -> String {
+    /// Returns Ok(String) on success, Ok(empty) if not found, Err for I/O errors.
+    pub fn read_current_soul(&self) -> anyhow::Result<String> {
         let path = soul_path();
-        fs::read_to_string(&path).unwrap_or_default()
+        match fs::read_to_string(&path) {
+            Ok(soul) => Ok(soul),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(e) => Err(e).with_context(|| format!("Failed to read {}", path.display())),
+        }
     }
 
     /// Step 3: Normalization Gate
@@ -129,7 +134,7 @@ impl SoulBuilder {
                     clean_response.len(),
                     e
                 );
-                Ok(Vec::new())
+                Err(e).context("Failed to parse soul normalization response")
             }
         }
     }
@@ -164,8 +169,15 @@ impl SoulBuilder {
         let response = self.llm.generate(params).await?;
         let new_soul = response.content;
 
-        if !new_soul.contains("# Nexus Soul") || new_soul.len() < 50 {
-            warn!("LLM returned invalid or empty soul document. Keeping existing.");
+        let required_headers = [
+            "# Nexus Soul",
+            "## Identity & Preferences",
+            "## Technical Learnings",
+            "## Working Patterns",
+            "## Agent Notes",
+        ];
+        if new_soul.len() < 50 || required_headers.iter().any(|h| !new_soul.contains(h)) {
+            warn!("LLM returned invalid or incomplete soul document. Keeping existing.");
             return Ok(current_soul.to_string());
         }
 
@@ -182,7 +194,7 @@ impl SoulBuilder {
         let normalized = self.normalize_candidates(candidates).await?;
         debug!("Normalized into {} general learnings", normalized.len());
 
-        let current = self.read_current_soul();
+        let current = self.read_current_soul()?;
         let mut new_soul = self.evaluate_and_merge(&current, &normalized).await?;
 
         if new_soul.len() / 4 > SOUL_MAX_TOKENS {
@@ -210,6 +222,15 @@ impl SoulBuilder {
                     );
                 }
             }
+        }
+
+        // Enforce token budget — refuse to write oversized soul even if compression failed
+        if new_soul.len() / 4 > SOUL_MAX_TOKENS {
+            anyhow::bail!(
+                "Refusing to write oversized soul: {} estimated tokens > {}",
+                new_soul.len() / 4,
+                SOUL_MAX_TOKENS
+            );
         }
 
         let path = soul_path();

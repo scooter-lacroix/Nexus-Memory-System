@@ -210,6 +210,10 @@ pub fn promote_to_hot_cache(
     learning: ScratchLearning,
     max_entries: usize,
 ) -> bool {
+    // Skip if content already in hot cache (idempotent retry safety)
+    if hot.entries.iter().any(|e| e.content == learning.content) {
+        return false;
+    }
     let entry = HotCacheEntry {
         // Mask UUID to 63 bits to fit i64, clamp to >=1 to avoid producing 0
         // (which would remain 0 after negation), then negate so all IDs are

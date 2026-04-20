@@ -415,7 +415,7 @@ pub struct AgentBoostRequest {
     #[serde(default)]
     pub pin: bool,
     pub boost_score: Option<f32>,
-    /// Optional project root path. Falls back to current_dir if omitted.
+    /// Project root path. Required for the web API — the handler does not fall back to cwd.
     #[serde(default)]
     pub root_dir: Option<String>,
 }

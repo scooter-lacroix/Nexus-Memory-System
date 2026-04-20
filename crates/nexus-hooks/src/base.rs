@@ -350,7 +350,7 @@ impl BaseHook {
                                                 let mut data = std::collections::HashMap::new();
                                                 data.insert(
                                                     "namespace".to_string(),
-                                                    serde_json::json!(config.agent.namespace),
+                                                    serde_json::json!(agent_type),
                                                 );
                                                 data.insert(
                                                     "processed".to_string(),
