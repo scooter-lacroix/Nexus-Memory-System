@@ -224,16 +224,9 @@ impl SoulBuilder {
         }
 
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            let _ = fs::create_dir_all(parent);
         }
-        let tmp_path = path.with_extension("tmp");
-        {
-            use std::io::Write;
-            let mut f = std::fs::File::create(&tmp_path)?;
-            f.write_all(new_soul.as_bytes())?;
-            f.sync_all()?;
-        }
-        fs::rename(&tmp_path, &path)?;
+        nexus_core::fsutil::atomic_write(&path, &new_soul)?;
 
         info!(
             "Soul rebuild complete. Wrote {} bytes to {}",
