@@ -297,9 +297,8 @@ impl BaseHook {
                                 let ns_repo = nexus_storage::repository::NamespaceRepository::new(
                                     storage.pool().clone(),
                                 );
-                                if let Ok(namespace) = ns_repo
-                                    .get_or_create(&config.agent.namespace, &agent_type)
-                                    .await
+                                if let Ok(namespace) =
+                                    ns_repo.get_or_create(&agent_type, &agent_type).await
                                 {
                                     let llm_result = nexus_llm::create_client_auto_with_fallback();
                                     let llm = match llm_result {
