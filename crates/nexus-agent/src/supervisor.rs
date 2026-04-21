@@ -318,7 +318,11 @@ impl AgentSupervisor {
                     }
                 }
 
-                // Persist activity monitor state after potential deep dream
+                // Persist activity monitor state after potential deep dream.
+                // Reload activity_log from disk first to merge any samples
+                // recorded by hooks during the deep-dream run.
+                let disk_monitor = ActivityMonitor::load();
+                activity_monitor.activity_log = disk_monitor.activity_log;
                 if let Err(e) = activity_monitor.save() {
                     tracing::warn!(error = %e, "Failed to save activity monitor");
                 }

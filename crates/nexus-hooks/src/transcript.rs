@@ -260,8 +260,21 @@ pub fn build_ingest_payload(
     for entry in entries {
         parts.push(format!("[{}]: {}", entry.role, entry.content));
     }
+    let joined = parts.join("\n\n");
 
     serde_json::json!({
+        // Scoreable fields — the normalizer maps these to derive_candidates inputs:
+        //   tool_name + tool_input → 0.3 signal
+        //   assistant_message_text → 0.2 signal (if len > 20)
+        //   Total: 0.5, above the 0.4 threshold
+        "tool_name": "transcript_ingest",
+        "tool_input": {
+            "entry_count": entries.len(),
+            "session_id": session_id,
+            "agent": agent,
+        },
+        "assistant_message_text": &joined,
+        // Structured transcript for downstream consumers
         "transcript": {
             "entries": entries.iter().map(|e| serde_json::json!({
                 "role": e.role,
@@ -272,7 +285,7 @@ pub fn build_ingest_payload(
             "agent": agent,
             "cwd": cwd,
         },
-        "content": parts.join("\n\n"),
+        "content": &joined,
         "session_id": session_id,
         "cwd": cwd,
     })

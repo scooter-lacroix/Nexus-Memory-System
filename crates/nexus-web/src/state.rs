@@ -145,9 +145,9 @@ impl AppState {
                 Some(WebSocketMessage::cognitive_drift(similarity, &agent_type))
             }
             EventType::DreamCompleted => {
-                let namespace = event.get::<String>("namespace").unwrap_or_default();
+                let agent_type = event.get::<String>("agent_type").unwrap_or_default();
                 let processed = event.get::<usize>("processed").unwrap_or(0);
-                Some(WebSocketMessage::dream_completed(&namespace, processed))
+                Some(WebSocketMessage::dream_completed(&agent_type, processed))
             }
             EventType::MorningRecall => {
                 let namespace = event.get::<String>("namespace").unwrap_or_default();

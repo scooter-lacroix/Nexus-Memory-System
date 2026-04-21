@@ -328,9 +328,9 @@ impl WebSocketMessage {
         Self::new(WebSocketMessageType::CognitiveDrift, data)
     }
 
-    pub fn dream_completed(namespace: &str, processed: usize) -> Self {
+    pub fn dream_completed(agent_type: &str, processed: usize) -> Self {
         let data = serde_json::json!({
-            "namespace": namespace,
+            "agent_type": agent_type,
             "processed": processed,
         });
         Self::new(WebSocketMessageType::DreamCompleted, data)

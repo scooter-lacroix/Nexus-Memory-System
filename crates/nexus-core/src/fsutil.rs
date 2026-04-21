@@ -7,7 +7,11 @@ use std::path::Path;
 /// Prevents partial writes on crash. Uses PID-scoped tmp to avoid
 /// collision when concurrent processes write the same target.
 pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
-    let tmp_path = path.with_extension(format!("tmp.{}", std::process::id()));
+    let tmp_path = path.with_extension(format!(
+        "tmp.{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
     {
         let mut f = std::fs::File::create(&tmp_path)?;
         f.write_all(content.as_bytes())?;

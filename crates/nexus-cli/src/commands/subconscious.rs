@@ -171,8 +171,13 @@ async fn execute_recall(
     };
 
     let sid = session_id.unwrap_or_else(|| "default".to_string());
-    let mut sync_state =
-        SyncState::load(&project_root, &sid).unwrap_or_else(|_| SyncState::new(&sid));
+    let mut sync_state = match SyncState::load(&project_root, &sid) {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::debug!("Failed to load sync state for '{}': {}. Using fresh state.", sid, e);
+            SyncState::new(&sid)
+        }
+    };
 
     // Step 1: Hot cache + soul retrieval (fast, no DB)
     let mut result = engine.retrieve_for_prompt(&prompt_text, &sync_state).await;
@@ -244,7 +249,13 @@ async fn execute_sync_check(
     let engine = RetrievalEngine::new(&project_root, config);
 
     let sid = session_id.unwrap_or_else(|| "default".to_string());
-    let sync_state = SyncState::load(&project_root, &sid).unwrap_or_else(|_| SyncState::new(&sid));
+    let sync_state = match SyncState::load(&project_root, &sid) {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::debug!("Failed to load sync state for '{}': {}. Using fresh state.", sid, e);
+            SyncState::new(&sid)
+        }
+    };
 
     if let Some(output) = engine.check_for_updates(&sync_state) {
         println!("{output}");

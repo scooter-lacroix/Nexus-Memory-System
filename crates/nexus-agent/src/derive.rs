@@ -338,6 +338,7 @@ fn looks_like_noise(text: &str) -> bool {
 fn is_derivable_source(memory: &Memory) -> bool {
     memory.category == MemoryCategory::Session
         && memory.labels.iter().any(|l| l == RAW_ACTIVITY_LABEL)
+        && memory.metadata.get("cognitive").is_some()
         && cognitive_level_from_metadata(&memory.metadata) == CognitiveLevel::Raw
 }
 

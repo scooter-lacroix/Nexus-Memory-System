@@ -352,7 +352,7 @@ impl BaseHook {
                                                 // PHASE 11: Notify of dream completion
                                                 let mut data = std::collections::HashMap::new();
                                                 data.insert(
-                                                    "namespace".to_string(),
+                                                    "agent_type".to_string(),
                                                     serde_json::json!(agent_type),
                                                 );
                                                 data.insert(
