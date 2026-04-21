@@ -95,9 +95,11 @@ impl ActivityMonitor {
     }
     /// Check if deep dream conditions are met.
     ///
+    /// Returns false if no activity samples exist (fresh install), if within
+    /// cooldown since the last deep dream, or if insufficient inactivity time.
     /// When `detected_sleep_hour` matches the current hour (±2h window),
-    /// the inactivity threshold is relaxed from 30 min to 10 min since
-    /// the user is likely away during their sleep window.
+    /// the inactivity threshold is relaxed to one-third of the configured value
+    /// (minimum 10 minutes) since the user is likely away during their sleep window.
     pub fn should_deep_dream(&self) -> bool {
         // No activity samples — cannot determine inactivity, don't trigger
         if self.activity_log.is_empty() {
@@ -215,6 +217,13 @@ mod tests {
         // Need an activity log entry to pass inactivity check
         monitor.activity_log.push(Utc::now() - Duration::hours(2));
         assert!(monitor.should_deep_dream());
+    }
+
+    #[test]
+    fn test_should_deep_dream_with_empty_log() {
+        let monitor = ActivityMonitor::default();
+        // Fresh install: no activity samples means deep dream should not trigger
+        assert!(!monitor.should_deep_dream());
     }
 
     #[test]

@@ -311,7 +311,9 @@ async fn execute_ingest_transcript(
     let event_name = "stop_transcript".to_string();
     let handle = std::thread::spawn(move || {
         use std::process::{Command, Stdio};
-        let mut child = match Command::new("nexus")
+        let nexus_bin =
+            std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("nexus"));
+        let mut child = match Command::new(&nexus_bin)
             .args([
                 "ingest-hook-event",
                 "--agent",

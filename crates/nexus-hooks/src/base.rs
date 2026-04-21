@@ -192,6 +192,9 @@ impl BaseHook {
         self.ensure_rescorer();
 
         if let Ok(mut monitor) = self.activity_monitor.lock() {
+            // Reload from disk and merge to avoid overwriting concurrent writes
+            let disk = ActivityMonitor::load();
+            monitor.activity_log = disk.activity_log.clone();
             monitor.record_activity();
             // Clone the monitor so we can save outside the lock
             let snapshot = monitor.clone();
