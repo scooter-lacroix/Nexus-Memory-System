@@ -199,13 +199,15 @@ pub async fn agent_boost(
         .canonicalize()
         .map_err(|e| WebError::Config(format!("Invalid root_dir: {}", e)))?;
 
-    // Reject paths outside the user's home directory
-    if let Some(home) = dirs::home_dir() {
-        if !cwd.starts_with(&home) {
-            return Err(WebError::InvalidRequest(
-                "root_dir must be within the user's home directory".to_string(),
-            ));
-        }
+    // Reject obviously unsafe paths (system pseudo-filesystems)
+    let path_str = cwd.to_string_lossy();
+    if path_str.starts_with("/proc/")
+        || path_str.starts_with("/sys/")
+        || path_str.starts_with("/dev/")
+    {
+        return Err(WebError::InvalidRequest(
+            "root_dir must not point to a system pseudo-filesystem".to_string(),
+        ));
     }
     let project_identity = nexus_core::ProjectIdentity::resolve(&cwd);
     let nexus_dir = project_identity.root_dir.join(".nexus");

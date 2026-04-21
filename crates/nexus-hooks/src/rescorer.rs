@@ -49,7 +49,15 @@ impl SessionRescorer {
         if turns >= self.rescore_interval {
             debug!("Triggering re-score due to interval ({} turns)", turns);
             self.turns_since_rescore.store(0, Ordering::SeqCst);
-            return Some(1.0); // Interval trigger, no specific similarity
+            // Update the topic baseline with the current turn so the
+            // subsequent rescore ranks against the latest context.
+            if let Some(service) = embedder {
+                if let Ok(turn_embedding) = service.embed(turn_content).await {
+                    let mut topic_lock = self.current_topic_embedding.write().await;
+                    *topic_lock = Some(turn_embedding);
+                }
+            }
+            return Some(1.0); // Interval trigger
         }
 
         // 2. Drift-based trigger

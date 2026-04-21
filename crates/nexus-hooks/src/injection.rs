@@ -157,12 +157,14 @@ pub fn inject_soul_only(config_file: &Path, soul_path: &Path) -> io::Result<()> 
         content.find(NEXUS_BLOCK_END),
     ) {
         if start >= end {
-            // Malformed markers — remove them, then append fresh block
-            let mut updated = content[..start].to_string();
-            updated.push_str(&content[end + NEXUS_BLOCK_END.len()..]);
-            if !updated.is_empty() && !updated.ends_with('\n') {
-                updated.push('\n');
-            }
+            // Malformed markers (end before start) — strip both markers from
+            // content, then append a fresh block. Simple replace avoids the
+            // slicing bugs that kept stale markers around.
+            let stripped = content
+                .replace(NEXUS_BLOCK_START, "")
+                .replace(NEXUS_BLOCK_END, "");
+            let mut updated = stripped.trim_end().to_string();
+            updated.push('\n');
             updated.push_str(&block);
             if !updated.ends_with('\n') {
                 updated.push('\n');
