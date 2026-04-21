@@ -199,7 +199,9 @@ impl BaseHook {
             // Clone the monitor so we can save outside the lock
             let snapshot = monitor.clone();
             drop(monitor);
-            let _ = snapshot.save();
+            if let Err(e) = snapshot.save() {
+                tracing::debug!("Failed to save activity monitor: {e}");
+            }
         }
 
         // Trigger real-time re-scoring if drift detected

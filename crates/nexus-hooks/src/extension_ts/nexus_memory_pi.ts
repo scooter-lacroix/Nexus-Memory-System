@@ -249,6 +249,7 @@ export default function nexusMemory(pi: ExtensionAPI): void {
       if (!SUBCONSCIOUS_OFF && sessionId) {
         subconsciousContext = await spawnNexusCapture([
           "subconscious", "recall",
+          "--agent", "pi-mono",
           "--session-id", sessionId,
           "--cwd", sessionCwd || ctx.cwd,
         ], event.userMessage || "");

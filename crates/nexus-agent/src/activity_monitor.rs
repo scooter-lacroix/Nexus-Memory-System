@@ -151,9 +151,23 @@ impl ActivityMonitor {
     pub fn load() -> Self {
         let path = Self::persistence_path();
         if path.exists() {
-            if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(monitor) = serde_json::from_str(&content) {
-                    return monitor;
+            match fs::read_to_string(&path) {
+                Ok(content) => match serde_json::from_str(&content) {
+                    Ok(monitor) => return monitor,
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "Failed to parse activity monitor; using defaults"
+                        );
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "Failed to read activity monitor; using defaults"
+                    );
                 }
             }
         }

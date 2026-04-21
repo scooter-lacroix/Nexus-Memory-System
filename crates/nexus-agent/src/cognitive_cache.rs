@@ -333,19 +333,53 @@ impl CognitiveCache {
         let cold_path = cache_dir.join("cold_index.json");
 
         let hot_cache = if hot_path.exists() {
-            std::fs::read_to_string(&hot_path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default()
+            match std::fs::read_to_string(&hot_path) {
+                Ok(s) => match serde_json::from_str(&s) {
+                    Ok(cache) => cache,
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %hot_path.display(),
+                            error = %e,
+                            "Failed to parse hot cache; using defaults"
+                        );
+                        HotCache::default()
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        path = %hot_path.display(),
+                        error = %e,
+                        "Failed to read hot cache; using defaults"
+                    );
+                    HotCache::default()
+                }
+            }
         } else {
             HotCache::default()
         };
 
         let cold_index = if cold_path.exists() {
-            std::fs::read_to_string(&cold_path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default()
+            match std::fs::read_to_string(&cold_path) {
+                Ok(s) => match serde_json::from_str(&s) {
+                    Ok(idx) => idx,
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %cold_path.display(),
+                            error = %e,
+                            "Failed to parse cold index; using defaults"
+                        );
+                        ColdCacheIndex::default()
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        path = %cold_path.display(),
+                        error = %e,
+                        "Failed to read cold index; using defaults"
+                    );
+                    ColdCacheIndex::default()
+                }
+            }
         } else {
             ColdCacheIndex::default()
         };
