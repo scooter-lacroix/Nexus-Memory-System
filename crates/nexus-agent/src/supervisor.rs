@@ -293,6 +293,12 @@ impl AgentSupervisor {
                                 }
                             }
                         }
+                    } else if let Err(e) = memory_repo.count_by_namespace(namespace_id).await {
+                        tracing::warn!(
+                            error = %e,
+                            namespace_id,
+                            "Failed to query memory count for threshold dream"
+                        );
                     }
 
                     // 2. Deep dream

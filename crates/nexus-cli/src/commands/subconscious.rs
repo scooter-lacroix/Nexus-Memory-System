@@ -174,7 +174,11 @@ async fn execute_recall(
     let mut sync_state = match SyncState::load(&project_root, &sid) {
         Ok(state) => state,
         Err(e) => {
-            tracing::debug!("Failed to load sync state for '{}': {}. Using fresh state.", sid, e);
+            tracing::debug!(
+                "Failed to load sync state for '{}': {}. Using fresh state.",
+                sid,
+                e
+            );
             SyncState::new(&sid)
         }
     };
@@ -252,7 +256,11 @@ async fn execute_sync_check(
     let sync_state = match SyncState::load(&project_root, &sid) {
         Ok(state) => state,
         Err(e) => {
-            tracing::debug!("Failed to load sync state for '{}': {}. Using fresh state.", sid, e);
+            tracing::debug!(
+                "Failed to load sync state for '{}': {}. Using fresh state.",
+                sid,
+                e
+            );
             SyncState::new(&sid)
         }
     };

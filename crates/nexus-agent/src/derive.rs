@@ -369,12 +369,14 @@ async fn enqueue_follow_up_jobs(
 ) -> Result<(), AgentError> {
     let perspective_json = serde_json::to_value(perspective).ok();
 
-    // Enqueue reflect jobs for new derived IDs
-    for &id in derived_ids {
+    // Enqueue one reflect job per perspective (not per derived ID).
+    // reflect_perspective_cycle processes all candidates in the perspective group,
+    // so duplicate jobs are redundant work.
+    if !derived_ids.is_empty() {
         let payload = json!({
-            "memory_id": id,
+            "derived_count": derived_ids.len(),
             "source": "derive_follow_up",
-            "reason": "new_explicit_observation",
+            "reason": "new_explicit_observations",
         });
         repo.enqueue_job(EnqueueJobParams {
             namespace_id: source.namespace_id,
