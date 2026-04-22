@@ -308,7 +308,7 @@ async fn execute_ingest_transcript(
     // Read sync state for incremental processing
     let project_root = resolve_project_root(Some(&cwd_str));
     let sync_state = SyncState::load(&project_root, &sid).unwrap_or_else(|_| SyncState::new(&sid));
-    let start_index = sync_state.last_processed_index.unwrap_or(0);
+    let start_index = sync_state.last_processed_index;
 
     let entries =
         read_transcript_from(&transcript_path, start_index).context("Failed to read transcript")?;
@@ -322,7 +322,7 @@ async fn execute_ingest_transcript(
 
     // Write the payload to a temp file and invoke ingest-hook-event via CLI
     let payload_json = serde_json::to_string(&payload)?;
-    let new_index = entries.last().map(|e| e.index).unwrap_or(start_index);
+    let new_index = entries.last().map(|e| e.index).or(start_index).unwrap_or(0);
 
     // Clone required values for the closure
     let project_root_clone = project_root.clone();

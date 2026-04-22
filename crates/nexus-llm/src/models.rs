@@ -19,7 +19,7 @@ struct OpenAiModel {
 /// List available model IDs from the configured provider.
 ///
 /// Validates the API key and base URL by making a live request.
-/// Merges API results with supplemental known models for the provider.
+/// Queries the provider's /models endpoint for available model IDs.
 /// Returns model IDs sorted alphabetically.
 pub async fn list_models(config: &LlmConfig) -> Result<Vec<String>> {
     let provider = Provider::parse(&config.provider)
@@ -31,7 +31,15 @@ pub async fn list_models(config: &LlmConfig) -> Result<Vec<String>> {
     let base_url = config
         .base_url
         .as_deref()
+        .filter(|u| !u.is_empty())
         .unwrap_or(provider.default_base_url());
+
+    if provider.requires_base_url() && base_url.is_empty() {
+        return Err(LlmError::UnsupportedProvider(format!(
+            "{} requires a base_url — set NEXUS_LLM_BASE_URL or pass it in config",
+            provider.display_label()
+        )));
+    }
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(config.timeout_secs.min(15)))

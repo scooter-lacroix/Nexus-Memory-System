@@ -14,7 +14,9 @@ pub enum Provider {
     Minimax,
     Mistral,
     Nvidia,
+    #[serde(rename = "openai_compatible")]
     OpenAiCompatible,
+    #[serde(rename = "anthropic_compatible")]
     AnthropicCompatible,
 }
 

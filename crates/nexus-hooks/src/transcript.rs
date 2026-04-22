@@ -121,15 +121,20 @@ pub fn read_transcript(path: &Path) -> io::Result<Vec<TranscriptEntry>> {
 }
 
 /// Read only entries strictly after `start_index` (exclusive) for incremental sync.
-pub fn read_transcript_from(path: &Path, start_index: usize) -> io::Result<Vec<TranscriptEntry>> {
+/// Pass `None` to read all entries (never synced).
+pub fn read_transcript_from(
+    path: &Path,
+    start_index: Option<usize>,
+) -> io::Result<Vec<TranscriptEntry>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
 
     // Optimization: if never synced, read via fast path
-    if start_index == 0 {
-        return read_transcript(path);
-    }
+    let start_index = match start_index {
+        Some(idx) => idx,
+        None => return read_transcript(path),
+    };
 
     let file = File::open(path)?;
     let reader = BufReader::new(file);
@@ -639,7 +644,7 @@ mod tests {
             .unwrap();
         }
 
-        let entries = read_transcript_from(&path, 2).unwrap();
+        let entries = read_transcript_from(&path, Some(2)).unwrap();
         assert_eq!(entries.len(), 2); // indices 3, 4 (filter > 2)
         assert!(entries[0].index > 2);
     }

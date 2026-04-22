@@ -256,6 +256,8 @@ impl AgentSupervisor {
                 activity_monitor.deep_dream_cooldown = chrono::Duration::hours(
                     cognitive_system.dream_triggers.deep_dream_cooldown_hours as i64,
                 );
+                activity_monitor.deep_dream_inactivity_mins =
+                    cognitive_system.dream_triggers.deep_dream_inactivity_mins;
                 if cognitive_system.enabled {
                     let memory_repo = MemoryRepository::new(pool.clone());
 

@@ -306,8 +306,10 @@ pub fn infer_perspective(
     };
     PerspectiveKey {
         observer,
-        subject: subject_hint.unwrap_or_else(|| default_subject.to_string()),
-        session_key,
+        subject: subject_hint
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| default_subject.to_string()),
+        session_key: session_key.filter(|s| !s.trim().is_empty()),
     }
 }
 
