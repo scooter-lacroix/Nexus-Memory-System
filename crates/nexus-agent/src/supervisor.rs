@@ -261,12 +261,13 @@ impl AgentSupervisor {
                 if cognitive_system.enabled {
                     let memory_repo = MemoryRepository::new(pool.clone());
 
-                    // 1. Threshold dream (only trigger when count increases past threshold)
+                    // 1. Threshold dream (trigger when enough new memories accumulate
+                    //    since the last dream, not on every single increment)
                     if let Ok(count) = memory_repo.count_by_namespace(namespace_id).await {
                         let count_usize = count as usize;
-                        if count_usize >= cognitive_system.dream_triggers.dream_memory_threshold
-                            && count_usize != last_dream_count
-                        {
+                        let threshold = cognitive_system.dream_triggers.dream_memory_threshold;
+                        let new_since_last = count_usize.saturating_sub(last_dream_count);
+                        if count_usize >= threshold && new_since_last >= threshold {
                             info!(
                                 "Dream threshold reached ({} memories). Running dream cycle.",
                                 count

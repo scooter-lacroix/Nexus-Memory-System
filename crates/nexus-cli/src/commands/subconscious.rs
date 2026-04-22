@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
+use nexus_agent::derive_session_key;
 use nexus_core::Config;
 use nexus_hooks::retrieval::{RetrievalEngine, SubconsciousMode};
 use nexus_hooks::sync_state::{soul_content_hash, SyncState};
@@ -173,7 +174,11 @@ async fn execute_recall(
         extract_prompt_from_stdin(&prompt)
     };
 
-    let sid = session_id.unwrap_or_else(|| "default".to_string());
+    let sid = session_id.unwrap_or_else(|| {
+        // Derive a stable per-agent-per-project key so multiple sessions
+        // in the same project get isolated sync watermarks.
+        derive_session_key(agent, None, cwd.as_deref())
+    });
     let mut sync_state = match SyncState::load(&project_root, &sid) {
         Ok(state) => state,
         Err(e) => {
@@ -244,7 +249,7 @@ async fn execute_recall(
 async fn execute_sync_check(
     cwd: Option<String>,
     session_id: Option<String>,
-    _agent: &str,
+    agent: &str,
 ) -> Result<()> {
     let mode = SubconsciousMode::from_env();
     if mode == SubconsciousMode::Off {
@@ -255,7 +260,7 @@ async fn execute_sync_check(
     let config = load_config();
     let engine = RetrievalEngine::new(&project_root, config);
 
-    let sid = session_id.unwrap_or_else(|| "default".to_string());
+    let sid = session_id.unwrap_or_else(|| derive_session_key(agent, None, cwd.as_deref()));
     let mut sync_state = match SyncState::load(&project_root, &sid) {
         Ok(state) => state,
         Err(e) => {
