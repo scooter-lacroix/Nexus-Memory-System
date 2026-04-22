@@ -123,7 +123,7 @@ impl RetrievalEngine {
     }
 
     /// Lightweight check for updates since last sync (PreToolUse hook).
-    pub fn check_for_updates(&self, sync_state: &SyncState) -> Option<String> {
+    pub fn check_for_updates(&self, sync_state: &mut SyncState) -> Option<String> {
         let soul_content = self.load_soul_content();
         let soul_hash = sync_state::soul_content_hash(soul_content.as_deref().unwrap_or(""));
         let hot_cache = self.load_hot_cache();
@@ -181,6 +181,9 @@ impl RetrievalEngine {
         if parts.is_empty() {
             return None;
         }
+
+        // Advance the sync state watermark to prevent re-emission
+        sync_state.advance(soul_hash, hot_cache.hot_cache.entries.len(), None);
 
         Some(format!(
             "<nexus_delta>\n{}\n</nexus_delta>",
@@ -646,7 +649,7 @@ mod tests {
         let soul_content = engine.load_soul_content();
         state.last_soul_hash = sync_state::soul_content_hash(soul_content.as_deref().unwrap_or(""));
         state.last_hot_cache_count = engine.load_hot_cache().hot_cache.entries.len();
-        assert!(engine.check_for_updates(&state).is_none());
+        assert!(engine.check_for_updates(&mut state).is_none());
     }
 
     #[test]

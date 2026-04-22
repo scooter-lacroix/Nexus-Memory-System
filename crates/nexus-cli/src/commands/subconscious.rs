@@ -256,7 +256,7 @@ async fn execute_sync_check(
     let engine = RetrievalEngine::new(&project_root, config);
 
     let sid = session_id.unwrap_or_else(|| "default".to_string());
-    let sync_state = match SyncState::load(&project_root, &sid) {
+    let mut sync_state = match SyncState::load(&project_root, &sid) {
         Ok(state) => state,
         Err(e) => {
             tracing::debug!(
@@ -268,8 +268,13 @@ async fn execute_sync_check(
         }
     };
 
-    if let Some(output) = engine.check_for_updates(&sync_state) {
+    if let Some(output) = engine.check_for_updates(&mut sync_state) {
         println!("{output}");
+
+        // sync_state was advanced by check_for_updates; persist the new watermark.
+        if let Err(e) = sync_state.save(&project_root) {
+            tracing::debug!("Failed to save sync state after sync-check: {e}");
+        }
     }
 
     Ok(())
