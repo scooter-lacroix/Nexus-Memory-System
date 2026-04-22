@@ -883,7 +883,12 @@ pub(crate) fn choose_dream_schedule(
     reason: RuntimeShutdownReason,
 ) -> DreamSchedulePlan {
     // No signals at all -> skip
-    if signals.total_non_raw_count == 0 && signals.raw_event_count == 0 {
+    if signals.total_non_raw_count == 0
+        && signals.raw_event_count == 0
+        && signals.explicit_count == 0
+        && signals.derived_count == 0
+        && signals.contradiction_count == 0
+    {
         return DreamSchedulePlan {
             action: DreamScheduleAction::Skip,
             reason: "no signals",
