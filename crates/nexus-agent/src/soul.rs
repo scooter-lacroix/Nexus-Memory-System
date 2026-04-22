@@ -245,7 +245,9 @@ impl SoulBuilder {
         }
 
         if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
+            fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create soul directory at {}", parent.display())
+            })?;
         }
         nexus_core::fsutil::atomic_write(&path, &new_soul)?;
 

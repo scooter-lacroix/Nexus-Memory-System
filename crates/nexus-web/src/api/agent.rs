@@ -201,10 +201,10 @@ pub async fn agent_boost(
 
     // Reject obviously unsafe paths (system pseudo-filesystems)
     let path_str = cwd.to_string_lossy();
-    if path_str.starts_with("/proc/")
-        || path_str.starts_with("/sys/")
-        || path_str.starts_with("/dev/")
-    {
+    let is_pseudo_fs = ["/proc", "/sys", "/dev"]
+        .iter()
+        .any(|prefix| path_str == *prefix || path_str.starts_with(&format!("{}/", prefix)));
+    if is_pseudo_fs {
         return Err(WebError::InvalidRequest(
             "root_dir must not point to a system pseudo-filesystem".to_string(),
         ));

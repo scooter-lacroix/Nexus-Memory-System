@@ -27,7 +27,7 @@ impl SessionRescorer {
         let nexus_dir = project.root_dir.join(".nexus");
         Self {
             turns_since_rescore: AtomicU32::new(0),
-            rescore_interval,
+            rescore_interval: rescore_interval.max(1),
             current_topic_embedding: RwLock::new(None),
             drift_threshold,
             nexus_dir,
@@ -107,10 +107,12 @@ impl SessionRescorer {
             return Ok(());
         }
 
-        // 2. Re-score entries against current topic
         if let Some(service) = embedder {
-            let topic_lock = self.current_topic_embedding.read().await;
-            if let Some(topic) = topic_lock.as_ref() {
+            let topic = {
+                let topic_lock = self.current_topic_embedding.read().await;
+                topic_lock.clone()
+            };
+            if let Some(topic) = topic {
                 // Batch-embed all entries for efficiency
                 let contents: Vec<String> = cache
                     .hot_cache
@@ -119,14 +121,21 @@ impl SessionRescorer {
                     .map(|e| e.content.clone())
                     .collect();
                 match service.embed_batch(&contents).await {
-                    Ok(embeddings) => {
+                    Ok(embeddings) if embeddings.len() == cache.hot_cache.entries.len() => {
                         for (entry, emb) in cache.hot_cache.entries.iter_mut().zip(embeddings) {
-                            entry.relevance_score = cosine_similarity(topic, &emb);
+                            entry.relevance_score = cosine_similarity(&topic, &emb);
                             entry.tier = ConfidenceTier::from_score(entry.relevance_score);
                         }
                     }
-                    Err(_) => {
-                        // On batch failure, skip re-scoring; keep existing scores
+                    Ok(embeddings) => {
+                        debug!(
+                            "embed_batch cardinality mismatch: got {}, expected {}",
+                            embeddings.len(),
+                            cache.hot_cache.entries.len()
+                        );
+                    }
+                    Err(e) => {
+                        debug!("embed_batch failed during rescore: {e}");
                     }
                 }
             }

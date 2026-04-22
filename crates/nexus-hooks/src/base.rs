@@ -192,53 +192,59 @@ impl BaseHook {
         self.ensure_rescorer();
 
         if let Ok(mut monitor) = self.activity_monitor.lock() {
-            // Reload from disk and merge to avoid overwriting concurrent writes
-            let disk = ActivityMonitor::load();
-            monitor.activity_log = disk.activity_log.clone();
-            monitor.record_activity();
-            // Clone the monitor so we can save outside the lock
-            let snapshot = monitor.clone();
+            // Reload full monitor from disk to avoid overwriting concurrent writes
+            // to fields like last_deep_dream, deep_dream_cooldown, etc.
+            let mut disk = ActivityMonitor::load();
+            disk.record_activity();
+            *monitor = disk.clone();
             drop(monitor);
-            if let Err(e) = snapshot.save() {
+            if let Err(e) = disk.save() {
                 tracing::debug!("Failed to save activity monitor: {e}");
             }
         }
-
         // Trigger real-time re-scoring if drift detected
         let rescorer = self.rescorer.read().unwrap().clone();
         if let Some(rescorer) = rescorer {
             let content = content.to_string();
             let agent_type = self.agent_type.clone();
-            tokio::spawn(async move {
-                let config = nexus_core::Config::from_env().unwrap_or_default();
-                let embeddings = if config.embedding.enabled {
-                    nexus_memory_agent::runtime::create_embedding_service(&config).await
-                } else {
-                    None
-                };
-                if let Some(similarity) = rescorer.on_turn(&content, embeddings.as_deref()).await {
-                    let _ = rescorer.rescore(embeddings.as_deref(), &agent_type).await;
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let config = nexus_core::Config::from_env().unwrap_or_default();
+                    let embeddings = if config.embedding.enabled {
+                        nexus_memory_agent::runtime::create_embedding_service(&config).await
+                    } else {
+                        None
+                    };
+                    if let Some(similarity) =
+                        rescorer.on_turn(&content, embeddings.as_deref()).await
+                    {
+                        let _ = rescorer.rescore(embeddings.as_deref(), &agent_type).await;
 
-                    // PHASE 11: Notify orchestrator of drift
-                    let mut data = std::collections::HashMap::new();
-                    data.insert("agent_type".to_string(), serde_json::json!(agent_type));
-                    data.insert("drift_detected".to_string(), serde_json::json!(true));
-                    data.insert("similarity".to_string(), serde_json::json!(similarity));
-                    data.insert(
-                        "threshold".to_string(),
-                        serde_json::json!(rescorer.drift_threshold()),
-                    );
+                        // PHASE 11: Notify orchestrator of drift
+                        // Only publish drift event for actual topic drift, not interval triggers
+                        // (interval triggers return similarity = 1.0)
+                        if similarity < rescorer.drift_threshold() {
+                            let mut data = std::collections::HashMap::new();
+                            data.insert("agent_type".to_string(), serde_json::json!(agent_type));
+                            data.insert("drift_detected".to_string(), serde_json::json!(true));
+                            data.insert("similarity".to_string(), serde_json::json!(similarity));
+                            data.insert(
+                                "threshold".to_string(),
+                                serde_json::json!(rescorer.drift_threshold()),
+                            );
 
-                    let event = nexus_orchestrator::Event::with_data(
-                        nexus_orchestrator::EventType::CognitiveDrift,
-                        data,
-                    )
-                    .with_source("base_hook");
+                            let event = nexus_orchestrator::Event::with_data(
+                                nexus_orchestrator::EventType::CognitiveDrift,
+                                data,
+                            )
+                            .with_source("base_hook");
 
-                    let event_bus = nexus_orchestrator::EventBus::global();
-                    let _ = event_bus.publish(event);
-                }
-            });
+                            let event_bus = nexus_orchestrator::EventBus::global();
+                            let _ = event_bus.publish(event);
+                        }
+                    }
+                });
+            }
         }
     }
 
@@ -285,20 +291,18 @@ impl BaseHook {
             let session_id = session_id.clone();
             let agent_type = context.agent_type.clone();
 
-            tokio::spawn(async move {
-                let config = nexus_core::Config::from_env().unwrap_or_default();
-                if config.cognitive_system.dream_triggers.nap_on_session_end {
-                    if let Ok(cwd) = std::env::current_dir() {
-                        let pool_url = config.database_url();
-                        if let Some(parent) = config.database.path.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                        if let Ok(mut storage) =
-                            nexus_storage::StorageManager::from_url(&pool_url).await
-                        {
-                            if let Err(e) = storage.initialize().await {
-                                tracing::debug!("Failed to initialize storage for nap: {e}");
-                            } else {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let config = nexus_core::Config::from_env().unwrap_or_default();
+                    if config.cognitive_system.dream_triggers.nap_on_session_end {
+                        if let Ok(cwd) = std::env::current_dir() {
+                            let pool_url = config.database_url();
+                            if let Some(parent) = config.database.path.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            if let Ok(storage) =
+                                nexus_storage::StorageManager::from_url(&pool_url).await
+                            {
                                 let ns_repo = nexus_storage::repository::NamespaceRepository::new(
                                     storage.pool().clone(),
                                 );
@@ -310,9 +314,9 @@ impl BaseHook {
                                         Ok(client) => client,
                                         Err(e) => {
                                             tracing::warn!(
-                                            "Failed to create LLM client for session-end nap: {}",
-                                            e
-                                        );
+                                                "Failed to create LLM client for session-end nap: {}",
+                                                e
+                                            );
                                             return;
                                         }
                                     };
@@ -386,13 +390,13 @@ impl BaseHook {
                                 } else {
                                     tracing::debug!("Failed to get/create namespace for nap");
                                 }
-                            } // storage.initialize()
-                        } else {
-                            tracing::debug!("Failed to create storage for nap");
-                        } // storage
+                            } else {
+                                tracing::debug!("Failed to create storage for nap");
+                            }
+                        }
                     }
-                }
-            });
+                });
+            }
         }
     }
 }

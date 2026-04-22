@@ -370,7 +370,13 @@ impl CognitiveMetadata {
     pub fn from_metadata(metadata: &serde_json::Value) -> Option<Self> {
         metadata
             .get("cognitive")
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .and_then(|value| match serde_json::from_value(value.clone()) {
+                Ok(meta) => Some(meta),
+                Err(e) => {
+                    tracing::debug!("Failed to deserialize cognitive metadata: {e}");
+                    None
+                }
+            })
     }
 
     /// Merge this cognitive metadata into a generic metadata JSON.

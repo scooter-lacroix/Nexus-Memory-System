@@ -216,7 +216,7 @@ impl CognitiveCache {
                             let memories = match memory_repo.get_by_ids(&ids).await {
                                 Ok(m) => m,
                                 Err(e) => {
-                                    debug!("get_by_ids failed in morning_recall: {}", e);
+                                    tracing::warn!("get_by_ids failed in morning_recall: {}", e);
                                     Vec::new()
                                 }
                             };

@@ -804,11 +804,17 @@ pub async fn extract_cross_project_patterns(
     let n = flat_memories.len();
     let mut parent: Vec<usize> = (0..n).collect();
 
-    fn find(x: usize, parent: &mut [usize]) -> usize {
-        if parent[x] != x {
-            parent[x] = find(parent[x], parent);
+    fn find(mut x: usize, parent: &mut [usize]) -> usize {
+        let mut root = x;
+        while parent[root] != root {
+            root = parent[root];
         }
-        parent[x]
+        while parent[x] != root {
+            let next = parent[x];
+            parent[x] = root;
+            x = next;
+        }
+        root
     }
 
     fn union(x: usize, y: usize, parent: &mut [usize]) {
