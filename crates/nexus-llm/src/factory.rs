@@ -21,7 +21,15 @@ pub fn create_client(config: &LlmConfig) -> Result<Arc<dyn LlmClient>> {
     let base_url = config
         .base_url
         .clone()
+        .filter(|u| !u.is_empty())
         .unwrap_or_else(|| provider.default_base_url().to_string());
+
+    if provider.requires_base_url() && base_url.is_empty() {
+        return Err(LlmError::UnsupportedProvider(format!(
+            "{} requires a base_url — set NEXUS_LLM_BASE_URL or pass it in config",
+            provider.display_label()
+        )));
+    }
 
     let client: Arc<dyn LlmClient> = if provider.is_anthropic_protocol() {
         Arc::new(AnthropicCompatibleClient::new(
