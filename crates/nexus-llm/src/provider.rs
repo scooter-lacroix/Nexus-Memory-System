@@ -148,49 +148,6 @@ impl Provider {
             .find(|p| p.to_string() == lower || p.display_label().to_lowercase().contains(&lower))
             .copied()
     }
-
-    /// Supplemental model IDs known to exist for this provider but not always
-    /// returned by the standard `/models` listing endpoint.
-    pub fn supplemental_models(&self) -> &'static [&'static str] {
-        match self {
-            Provider::Zai => &[
-                "glm-4.7-flash",
-                "glm-4-flash",
-                "glm-4-flash-250414",
-                "glm-4-plus",
-                "glm-4-long",
-                "glm-4-air",
-                "glm-4-airx",
-                "glm-4v",
-                "glm-4v-plus",
-                "glm-z1-air",
-                "glm-z1-airx",
-                "glm-z1-flash",
-                "cogview-4",
-            ],
-            Provider::Gemini => &[
-                "gemini-2.0-flash",
-                "gemini-2.5-pro-preview-05-06",
-                "gemini-2.5-flash-preview-05-20",
-            ],
-            Provider::OpenAi => &[
-                "o3-mini",
-                "o4-mini",
-                "gpt-4.1",
-                "gpt-4.1-mini",
-                "gpt-4.1-nano",
-            ],
-            Provider::Nvidia => &[
-                "nvidia/llama-3.1-nemotron-70b-instruct",
-                "nvidia/llama-3.3-nemotron-super-49b-v1",
-                "nvidia/deepseek-ai/deepseek-r1",
-                "nvidia/meta/llama-3.1-405b-instruct",
-                "nvidia/qwen/qwen3-235b-a22b",
-                "nvidia/mistralai/mixtral-8x22b-instruct-v0.1",
-            ],
-            _ => &[],
-        }
-    }
 }
 
 impl std::fmt::Display for Provider {

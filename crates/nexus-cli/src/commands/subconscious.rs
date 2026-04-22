@@ -18,7 +18,10 @@ use tracing::debug;
 /// This ensures each transcript file gets its own sync-state watermark,
 /// preventing cross-session data loss when multiple sessions share a project.
 fn derive_transcript_session_id(path: &std::path::Path) -> String {
-    let canonical = path.to_string_lossy();
+    // Canonicalize to resolve symlinks and normalize relative paths,
+    // ensuring the same transcript always produces the same sync-state ID.
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let canonical = resolved.to_string_lossy();
     let mut hash: u64 = 0;
     for chunk in canonical.as_bytes().chunks(8) {
         let mut buf = [0u8; 8];

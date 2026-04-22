@@ -43,13 +43,6 @@ pub async fn list_models(config: &LlmConfig) -> Result<Vec<String>> {
         list_openai_models(&client, base_url, &api_key).await?
     };
 
-    // Merge supplemental models not always returned by the API
-    for model in provider.supplemental_models() {
-        if !ids.iter().any(|id| id == model) {
-            ids.push(model.to_string());
-        }
-    }
-
     ids.sort();
     Ok(ids)
 }
