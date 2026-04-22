@@ -46,6 +46,9 @@ impl SessionManager {
     }
 
     /// Start a new agent session and create a scratch file.
+    ///
+    /// If a scratch file already exists for this session (e.g. from a previous
+    /// session start in the same project), it is overwritten to reflect the new session.
     pub fn start_session(&self, session_id: &str, agent_type: &str) -> io::Result<PathBuf> {
         Self::validate_session_id(session_id)?;
 
@@ -55,7 +58,8 @@ impl SessionManager {
         let scratch_path = sessions_dir.join(format!("{}.md", session_id));
         let mut file = fs::OpenOptions::new()
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(true)
             .open(&scratch_path)?;
 
         let header = format!(

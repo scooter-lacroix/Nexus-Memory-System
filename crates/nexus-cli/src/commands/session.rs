@@ -47,11 +47,7 @@ pub async fn execute_start(
         None => std::env::current_dir()?,
     };
     let injection_session_id = session_key.clone().unwrap_or_else(|| {
-        // Use a unique ID per start to avoid create_new collision on repeated
-        // sessions in the same project (the deterministic derive_session_key
-        // would reuse the same ID, breaking the scratch file pipeline).
-        let base = derive_session_key(&agent, None, Some(cwd_path.to_str().unwrap_or(".")));
-        format!("{}-{}", base, Utc::now().timestamp_millis())
+        derive_session_key(&agent, None, Some(cwd_path.to_str().unwrap_or(".")))
     });
     if let Err(e) = injection::on_session_start(&cwd_path, &agent, &injection_session_id).await {
         tracing::warn!("Injection pipeline error (non-fatal): {}", e);
