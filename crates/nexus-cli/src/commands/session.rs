@@ -57,7 +57,7 @@ pub async fn execute_start(
         &config,
         &agent,
         session_key.as_deref(),
-        cwd.as_deref(),
+        Some(cwd_path.to_str().unwrap_or(".")),
         "session_start",
         &detail,
         raw_payload.as_ref(),

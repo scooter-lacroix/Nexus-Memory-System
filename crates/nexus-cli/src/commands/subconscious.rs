@@ -11,7 +11,7 @@ use clap::Subcommand;
 use nexus_agent::derive_session_key;
 use nexus_core::Config;
 use nexus_hooks::retrieval::{RetrievalEngine, SubconsciousMode};
-use nexus_hooks::sync_state::{soul_content_hash, SyncState};
+use nexus_hooks::sync_state::{hot_cache_hash, soul_content_hash, SyncState};
 use nexus_hooks::transcript::{build_ingest_payload, format_for_ingest, read_transcript_from};
 use tracing::debug;
 
@@ -238,7 +238,17 @@ async fn execute_recall(
     let soul_content = result.soul_content.as_deref().unwrap_or("");
     let soul_hash = soul_content_hash(soul_content);
     let hot_cache_count = result.stats.hot_cache_entries;
-    sync_state.advance(soul_hash, hot_cache_count, None);
+    // Compute hot cache hash from current on-disk state for change detection
+    let nexus_dir = project_root.join(".nexus");
+    let disk_cache = nexus_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
+    let hot_cache_ids: Vec<String> = disk_cache
+        .hot_cache
+        .entries
+        .iter()
+        .map(|e| e.memory_id.to_string())
+        .collect();
+    let hot_cache_hash = hot_cache_hash(&hot_cache_ids);
+    sync_state.advance(soul_hash, hot_cache_count, hot_cache_hash, None);
     if let Err(e) = sync_state.save(&project_root) {
         debug!("Failed to save sync state: {e}");
     }
@@ -388,7 +398,19 @@ async fn execute_ingest_transcript(
                         let cache =
                             nexus_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
                         let hot_cache_count = cache.hot_cache.entries.len();
-                        state.advance(soul_hash, hot_cache_count, Some(new_index));
+                        let hot_cache_ids: Vec<String> = cache
+                            .hot_cache
+                            .entries
+                            .iter()
+                            .map(|e| e.memory_id.to_string())
+                            .collect();
+                        let hot_cache_hash_val = hot_cache_hash(&hot_cache_ids);
+                        state.advance(
+                            soul_hash,
+                            hot_cache_count,
+                            hot_cache_hash_val,
+                            Some(new_index),
+                        );
                         if let Err(e) = state.save(&project_root_clone) {
                             debug!("Failed to save sync state after ingest: {e}");
                         }

@@ -31,6 +31,13 @@ pub fn create_client(config: &LlmConfig) -> Result<Arc<dyn LlmClient>> {
         )));
     }
 
+    if provider.requires_model() && config.model.trim().is_empty() {
+        return Err(LlmError::Configuration(format!(
+            "{} requires a model — set NEXUS_LLM_MODEL or pass it in config",
+            provider.display_label()
+        )));
+    }
+
     let client: Arc<dyn LlmClient> = if provider.is_anthropic_protocol() {
         Arc::new(AnthropicCompatibleClient::new(
             provider,

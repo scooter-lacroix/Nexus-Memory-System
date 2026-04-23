@@ -118,11 +118,32 @@ pub fn derive_session_key(
         .filter(|value| !value.trim().is_empty())
         .map(nexus_core::normalize_project_path)
         .unwrap_or_else(|| "unknown-cwd".to_string());
-    format!(
+
+    let derived_key = format!(
         "derived-{}-{}",
         sanitize_component(&canonical_agent),
         sanitize_component(&fallback_scope)
-    )
+    );
+
+    if derived_key.len() <= 128 {
+        derived_key
+    } else {
+        // FxHash-style inline hash for the path component (same pattern as soul_content_hash)
+        let sanitized_path = sanitize_component(&fallback_scope);
+        let mut hash: u64 = 0;
+        for chunk in sanitized_path.as_bytes().chunks(8) {
+            let mut buf = [0u8; 8];
+            buf[..chunk.len()].copy_from_slice(chunk);
+            hash = hash
+                .wrapping_mul(0x517cc1b727220a95)
+                .wrapping_add(u64::from_le_bytes(buf));
+        }
+        format!(
+            "derived-{}-{:016x}",
+            sanitize_component(&canonical_agent),
+            hash
+        )
+    }
 }
 
 pub(crate) fn sanitize_component(value: &str) -> String {

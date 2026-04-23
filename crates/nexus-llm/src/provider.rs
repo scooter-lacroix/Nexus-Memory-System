@@ -125,6 +125,14 @@ impl Provider {
         )
     }
 
+    /// Whether the model must be provided by the user (no sensible default).
+    pub fn requires_model(&self) -> bool {
+        matches!(
+            self,
+            Provider::OpenAiCompatible | Provider::AnthropicCompatible
+        )
+    }
+
     /// Human-readable label for interactive prompts.
     pub fn display_label(&self) -> &'static str {
         match self {

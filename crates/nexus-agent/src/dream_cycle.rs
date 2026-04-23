@@ -690,8 +690,10 @@ pub async fn run_deep_dream(
 
         // Reindex: cold cache is now exactly the fresh set.
         // This replaces the old merge strategy that accumulated stale entries.
-        cache.cold_index.entries = fresh_entries;
-        cache.cold_index.last_reindexed = Some(chrono::Utc::now());
+        if !fresh_entries.is_empty() {
+            cache.cold_index.entries = fresh_entries;
+            cache.cold_index.last_reindexed = Some(chrono::Utc::now());
+        }
 
         match cache.save(&nexus_dir) {
             Ok(()) if !cache.cold_index.entries.is_empty() => {
@@ -759,11 +761,18 @@ pub async fn extract_cross_project_patterns(
             .collect();
         if !contents.is_empty() {
             match service.embed_batch(&contents).await {
-                Ok(results) => {
+                Ok(results) if results.len() == contents.len() => {
                     for (idx, emb) in to_compute.into_iter().zip(results) {
                         let mem_id = flat_memories[idx].0.id;
                         emb_map.insert(mem_id, emb);
                     }
+                }
+                Ok(results) => {
+                    tracing::warn!(
+                        "embed_batch returned {} results for {} inputs in pattern extraction",
+                        results.len(),
+                        contents.len()
+                    );
                 }
                 Err(e) => {
                     tracing::warn!("embed_batch failed in pattern extraction: {}", e);

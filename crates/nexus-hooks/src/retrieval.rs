@@ -127,8 +127,19 @@ impl RetrievalEngine {
         let soul_content = self.load_soul_content();
         let soul_hash = sync_state::soul_content_hash(soul_content.as_deref().unwrap_or(""));
         let hot_cache = self.load_hot_cache();
+        let hot_cache_ids: Vec<String> = hot_cache
+            .hot_cache
+            .entries
+            .iter()
+            .map(|e| e.memory_id.to_string())
+            .collect();
+        let hot_cache_hash = sync_state::hot_cache_hash(&hot_cache_ids);
 
-        if !sync_state.has_updates(&soul_hash, hot_cache.hot_cache.entries.len()) {
+        if !sync_state.has_updates(
+            &soul_hash,
+            hot_cache.hot_cache.entries.len(),
+            &hot_cache_hash,
+        ) {
             return None;
         }
 
@@ -183,7 +194,12 @@ impl RetrievalEngine {
         }
 
         // Advance the sync state watermark to prevent re-emission
-        sync_state.advance(soul_hash, hot_cache.hot_cache.entries.len(), None);
+        sync_state.advance(
+            soul_hash,
+            hot_cache.hot_cache.entries.len(),
+            hot_cache_hash,
+            None,
+        );
 
         Some(format!(
             "<nexus_delta>\n{}\n</nexus_delta>",

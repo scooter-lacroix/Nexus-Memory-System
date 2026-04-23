@@ -24,6 +24,8 @@ pub struct SyncState {
     pub last_sync_timestamp: DateTime<Utc>,
     /// Number of hot-cache entries at last sync (detects cache promotions).
     pub last_hot_cache_count: usize,
+    /// Hash of the hot cache entries at last sync (detects cache content changes).
+    pub last_hot_cache_hash: String,
 }
 
 impl SyncState {
@@ -66,18 +68,33 @@ impl SyncState {
             last_soul_hash: String::new(),
             last_sync_timestamp: Utc::now(),
             last_hot_cache_count: 0,
+            last_hot_cache_hash: String::new(),
         }
     }
 
-    /// Whether there are updates since the last sync (soul changed or cache grew).
-    pub fn has_updates(&self, current_soul_hash: &str, current_hot_count: usize) -> bool {
-        current_soul_hash != self.last_soul_hash || current_hot_count > self.last_hot_cache_count
+    /// Whether there are updates since the last sync (soul changed or cache changed).
+    pub fn has_updates(
+        &self,
+        current_soul_hash: &str,
+        current_hot_count: usize,
+        current_hot_hash: &str,
+    ) -> bool {
+        current_soul_hash != self.last_soul_hash
+            || current_hot_count > self.last_hot_cache_count
+            || current_hot_hash != self.last_hot_cache_hash
     }
 
     /// Record a successful sync, advancing all watermarks.
-    pub fn advance(&mut self, soul_hash: String, hot_cache_count: usize, new_index: Option<usize>) {
+    pub fn advance(
+        &mut self,
+        soul_hash: String,
+        hot_cache_count: usize,
+        hot_cache_hash: String,
+        new_index: Option<usize>,
+    ) {
         self.last_soul_hash = soul_hash;
         self.last_hot_cache_count = hot_cache_count;
+        self.last_hot_cache_hash = hot_cache_hash;
         if let Some(idx) = new_index {
             self.last_processed_index = Some(idx);
         }
@@ -117,6 +134,22 @@ pub fn soul_content_hash(content: &str) -> String {
         buf[..chunk.len()].copy_from_slice(chunk);
         let val = u64::from_le_bytes(buf);
         hash = hash.wrapping_mul(0x517cc1b727220a95).wrapping_add(val);
+    }
+    format!("{:016x}", hash)
+}
+
+/// Compute a quick hash of hot cache entry IDs for change detection.
+/// Uses an FxHash-style approach similar to soul_content_hash.
+pub fn hot_cache_hash(entry_ids: &[String]) -> String {
+    let mut hash: u64 = 0;
+    for id in entry_ids {
+        let id_bytes = id.as_bytes();
+        for chunk in id_bytes.chunks(8) {
+            let mut buf = [0u8; 8];
+            buf[..chunk.len()].copy_from_slice(chunk);
+            let val = u64::from_le_bytes(buf);
+            hash = hash.wrapping_mul(0x517cc1b727220a95).wrapping_add(val);
+        }
     }
     format!("{:016x}", hash)
 }
@@ -164,20 +197,20 @@ mod tests {
     #[test]
     fn has_updates_detects_soul_change() {
         let state = SyncState::new("test");
-        assert!(state.has_updates("different", 0));
-        assert!(!state.has_updates("", 0));
+        assert!(state.has_updates("different", 0, ""));
+        assert!(!state.has_updates("", 0, ""));
     }
 
     #[test]
     fn has_updates_detects_cache_growth() {
         let state = SyncState::new("test");
-        assert!(state.has_updates("", 3));
+        assert!(state.has_updates("", 3, ""));
     }
 
     #[test]
     fn advance_updates_watermarks() {
         let mut state = SyncState::new("test");
-        state.advance("newhash".to_string(), 7, Some(15));
+        state.advance("newhash".to_string(), 7, String::new(), Some(15));
         assert_eq!(state.last_soul_hash, "newhash");
         assert_eq!(state.last_hot_cache_count, 7);
         assert_eq!(state.last_processed_index, Some(15));
