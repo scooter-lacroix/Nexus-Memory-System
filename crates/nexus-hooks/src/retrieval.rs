@@ -499,7 +499,7 @@ impl RetrievalEngine {
         // Find entries surfaced since last sync
         let mut guidance = Vec::new();
         for entry in &hot_cache.hot_cache.entries {
-            if entry.promoted_at > sync_state.last_sync_timestamp {
+            if entry.last_surfaced > sync_state.last_sync_timestamp {
                 let tier = match entry.tier {
                     ConfidenceTier::Loud => "LOUD",
                     ConfidenceTier::Clear => "CLEAR",

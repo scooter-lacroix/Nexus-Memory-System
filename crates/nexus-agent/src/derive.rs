@@ -126,10 +126,17 @@ impl DeriveService {
 
         if let Some(service) = self.embeddings.as_deref() {
             match service.embed_batch(&contents).await {
-                Ok(vecs) => {
-                    for (i, vec) in vecs.into_iter().enumerate() {
+                Ok(results) if results.len() == contents.len() => {
+                    for (i, vec) in results.into_iter().enumerate() {
                         embeddings_map.insert(i, (vec, service.model_name().to_string()));
                     }
+                }
+                Ok(results) => {
+                    warn!(
+                        "embed_batch returned {} results for {} inputs in derive pipeline",
+                        results.len(),
+                        contents.len()
+                    );
                 }
                 Err(error) => {
                     warn!(%error, "Batch embedding failed, falling back to individual or no embeddings");

@@ -142,8 +142,10 @@ pub fn soul_content_hash(content: &str) -> String {
 /// Compute a quick hash of hot cache entry IDs for change detection.
 /// Uses an FxHash-style approach similar to soul_content_hash.
 pub fn hot_cache_hash(entry_ids: &[String]) -> String {
+    let mut sorted = entry_ids.to_vec();
+    sorted.sort();
     let mut hash: u64 = 0;
-    for id in entry_ids {
+    for id in &sorted {
         let id_bytes = id.as_bytes();
         for chunk in id_bytes.chunks(8) {
             let mut buf = [0u8; 8];

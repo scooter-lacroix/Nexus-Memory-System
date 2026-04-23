@@ -690,10 +690,8 @@ pub async fn run_deep_dream(
 
         // Reindex: cold cache is now exactly the fresh set.
         // This replaces the old merge strategy that accumulated stale entries.
-        if !fresh_entries.is_empty() {
-            cache.cold_index.entries = fresh_entries;
-            cache.cold_index.last_reindexed = Some(chrono::Utc::now());
-        }
+        cache.cold_index.entries = fresh_entries;
+        cache.cold_index.last_reindexed = Some(chrono::Utc::now());
 
         match cache.save(&nexus_dir) {
             Ok(()) if !cache.cold_index.entries.is_empty() => {
@@ -1019,7 +1017,10 @@ pub(crate) async fn compute_adaptive_dream_interval(
 
     if let Ok(recent_memories) = repo.list_filtered(namespace_id, filters).await {
         if recent_memories.is_empty() {
-            return Duration::from_secs(base_interval_secs);
+            return Duration::from_secs(base_interval_secs.clamp(
+                cognition.adaptive_dream_min_interval_secs,
+                cognition.adaptive_dream_max_interval_secs,
+            ));
         }
 
         let contradiction_count = recent_memories
@@ -1060,5 +1061,8 @@ pub(crate) async fn compute_adaptive_dream_interval(
         return Duration::from_secs(interval);
     }
 
-    Duration::from_secs(base_interval_secs)
+    Duration::from_secs(base_interval_secs.clamp(
+        cognition.adaptive_dream_min_interval_secs,
+        cognition.adaptive_dream_max_interval_secs,
+    ))
 }

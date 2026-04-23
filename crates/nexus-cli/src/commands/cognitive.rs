@@ -212,7 +212,8 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     if normalized.chars().count() <= max_len {
         normalized
     } else {
-        let truncated: String = normalized.chars().take(max_len).collect();
+        let take = max_len.saturating_sub(3).max(1);
+        let truncated: String = normalized.chars().take(take).collect();
         format!("{}...", truncated)
     }
 }

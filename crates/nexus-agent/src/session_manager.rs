@@ -56,19 +56,26 @@ impl SessionManager {
         fs::create_dir_all(&sessions_dir)?;
 
         let scratch_path = sessions_dir.join(format!("{}.md", session_id));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&scratch_path)?;
-
         let header = format!(
             "---\nid: {}\nagent: {}\nstarted: {}\nstatus: active\n---\n\n# Session Learnings\n\n",
             session_id,
             agent_type,
             Utc::now().to_rfc3339()
         );
-        file.write_all(header.as_bytes())?;
+
+        if scratch_path.exists() {
+            // Append separator rather than truncating existing learnings
+            let mut file = fs::OpenOptions::new().append(true).open(&scratch_path)?;
+            writeln!(file)?;
+            write!(file, "{}", &header)?;
+        } else {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&scratch_path)?;
+            file.write_all(header.as_bytes())?;
+        }
 
         Ok(scratch_path)
     }

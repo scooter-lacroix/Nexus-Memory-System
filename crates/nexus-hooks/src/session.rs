@@ -119,21 +119,23 @@ impl SessionContext {
         if let Some(rescorer) = self.rescorer.as_ref() {
             let rescorer = rescorer.clone();
             let agent_type = self.agent_type.clone();
-            tokio::spawn(async move {
-                let config = nexus_core::Config::from_env().unwrap_or_default();
-                let embeddings = if config.embedding.enabled {
-                    nexus_memory_agent::runtime::create_embedding_service(&config).await
-                } else {
-                    None
-                };
-                if rescorer
-                    .on_turn(&content_str, embeddings.as_deref())
-                    .await
-                    .is_some()
-                {
-                    let _ = rescorer.rescore(embeddings.as_deref(), &agent_type).await;
-                }
-            });
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let config = nexus_core::Config::from_env().unwrap_or_default();
+                    let embeddings = if config.embedding.enabled {
+                        nexus_memory_agent::runtime::create_embedding_service(&config).await
+                    } else {
+                        None
+                    };
+                    if rescorer
+                        .on_turn(&content_str, embeddings.as_deref())
+                        .await
+                        .is_some()
+                    {
+                        let _ = rescorer.rescore(embeddings.as_deref(), &agent_type).await;
+                    }
+                });
+            }
         }
     }
 

@@ -126,7 +126,7 @@ pub fn inject_reference(
     };
 
     if new_content != original_content {
-        fs::write(config_file, new_content)?;
+        atomic_write(config_file, &new_content)?;
         debug!("Injected Nexus reference into {}", config_file.display());
     }
 
@@ -189,7 +189,7 @@ pub fn inject_soul_only(config_file: &Path, soul_path: &Path) -> io::Result<()> 
     };
 
     if new_content != original_content {
-        fs::write(config_file, new_content)?;
+        atomic_write(config_file, &new_content)?;
         debug!(
             "Injected soul-only Nexus reference into {}",
             config_file.display()
@@ -218,7 +218,7 @@ pub fn remove_reference(config_file: &Path) -> io::Result<()> {
             updated.pop();
         }
 
-        fs::write(config_file, updated)?;
+        atomic_write(config_file, &updated)?;
     }
 
     Ok(())
