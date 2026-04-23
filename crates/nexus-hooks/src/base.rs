@@ -206,6 +206,11 @@ impl BaseHook {
                 tracing::debug!("Failed to save activity monitor: {e}");
             }
         }
+
+        // Skip drift/rescore for activity-only sampling (placeholder content)
+        if content == "activity recorded" {
+            return;
+        }
         // Trigger real-time re-scoring if drift detected
         let rescorer = self.rescorer.read().unwrap().clone();
         if let Some(rescorer) = rescorer {

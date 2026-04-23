@@ -106,6 +106,7 @@ impl SyncState {
 fn sync_state_path(project_root: &Path, session_id: &str) -> io::Result<PathBuf> {
     // Validate session_id to prevent path traversal
     if session_id.is_empty()
+        || session_id == "."
         || session_id.len() > 128
         || session_id.contains('/')
         || session_id.contains('\\')

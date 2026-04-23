@@ -153,6 +153,8 @@ impl RetrievalEngine {
                     "<soul_update>\n{}\n</soul_update>",
                     escape_xml(&truncated)
                 ));
+            } else {
+                parts.push("<soul_update deleted=\"true\" />".to_string());
             }
         }
 
@@ -505,7 +507,7 @@ impl RetrievalEngine {
                 };
                 guidance.push(format!(
                     "[{tier}] {}",
-                    escape_xml(&truncate_to_chars(&entry.content, 120))
+                    truncate_to_chars(&entry.content, 120)
                 ));
             }
         }
@@ -541,8 +543,13 @@ fn truncate_to_chars(text: &str, max_chars: usize) -> String {
         return text.to_string();
     }
 
-    // Find a char boundary at or before max_chars
-    let mut end = max_chars;
+    const ELLIPSIS: &str = "…";
+    if max_chars <= ELLIPSIS.len() {
+        return String::new();
+    }
+
+    // Find a char boundary at or before max_chars - ellipsis length
+    let mut end = max_chars - ELLIPSIS.len();
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }

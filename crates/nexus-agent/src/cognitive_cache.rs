@@ -170,7 +170,7 @@ impl CognitiveCache {
         let mut results = Vec::new();
 
         if let Some(service) = embedding_service {
-            match tokio::time::timeout(Duration::from_millis(500), async {
+            match tokio::time::timeout(Duration::from_millis(2000), async {
                 if let Ok(embedding) = service.embed(&query_string).await {
                     // Fetch recent memories for candidate matching
                     let filters = nexus_storage::repository::ListMemoryFilters {

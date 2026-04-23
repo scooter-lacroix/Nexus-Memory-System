@@ -128,21 +128,29 @@ pub fn derive_session_key(
     if derived_key.len() <= 128 {
         derived_key
     } else {
-        // FxHash-style inline hash for the path component (same pattern as soul_content_hash)
-        let sanitized_path = sanitize_component(&fallback_scope);
-        let mut hash: u64 = 0;
-        for chunk in sanitized_path.as_bytes().chunks(8) {
-            let mut buf = [0u8; 8];
-            buf[..chunk.len()].copy_from_slice(chunk);
-            hash = hash
-                .wrapping_mul(0x517cc1b727220a95)
-                .wrapping_add(u64::from_le_bytes(buf));
+        // FxHash-style inline hash (same pattern as soul_content_hash)
+        let inline_hash = |input: &str| -> u64 {
+            let mut h: u64 = 0;
+            for chunk in input.as_bytes().chunks(8) {
+                let mut buf = [0u8; 8];
+                buf[..chunk.len()].copy_from_slice(chunk);
+                h = h
+                    .wrapping_mul(0x517cc1b727220a95)
+                    .wrapping_add(u64::from_le_bytes(buf));
+            }
+            h
+        };
+
+        let path_hash = inline_hash(&sanitize_component(&fallback_scope));
+        let agent = sanitize_component(&canonical_agent);
+        // "derived-" (8) + agent + "-" (1) + hex (16) = 25 + agent.len()
+        if 25 + agent.len() <= 128 {
+            format!("derived-{}-{:016x}", agent, path_hash)
+        } else {
+            // Agent component too long — hash it too
+            let agent_hash = inline_hash(&agent);
+            format!("derived-{:016x}-{:016x}", agent_hash, path_hash)
         }
-        format!(
-            "derived-{}-{:016x}",
-            sanitize_component(&canonical_agent),
-            hash
-        )
     }
 }
 
