@@ -5,6 +5,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use crate::error::Result;
@@ -145,11 +146,14 @@ pub struct BaseHook {
     pub error_callbacks: Vec<SessionEndCallback>,
     pub activity_monitor: std::sync::Mutex<ActivityMonitor>,
     pub rescorer: RwLock<Option<Arc<crate::rescorer::SessionRescorer>>>,
+    /// Project root resolved at construction time, used for nap/dream cycles.
+    project_root: PathBuf,
 }
 
 impl BaseHook {
     pub fn new(agent_type: impl Into<String>) -> Self {
         let agent_type = agent_type.into();
+        let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         Self {
             agent_type,
@@ -160,9 +164,9 @@ impl BaseHook {
             error_callbacks: Vec::new(),
             activity_monitor: std::sync::Mutex::new(ActivityMonitor::load()),
             rescorer: RwLock::new(None),
+            project_root,
         }
     }
-
     /// Lazily initialize the rescorer on first use
     fn ensure_rescorer(&self) {
         let read = self.rescorer.read().unwrap();
@@ -290,109 +294,102 @@ impl BaseHook {
         if let Some(session_id) = context.session_id.as_ref() {
             let session_id = session_id.clone();
             let agent_type = context.agent_type.clone();
+            let project_root = self.project_root.clone();
 
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 handle.spawn(async move {
                     let config = nexus_core::Config::from_env().unwrap_or_default();
                     if config.cognitive_system.dream_triggers.nap_on_session_end {
-                        if let Ok(cwd) = std::env::current_dir() {
-                            let pool_url = config.database_url();
-                            if let Some(parent) = config.database.path.parent() {
-                                let _ = std::fs::create_dir_all(parent);
+                        let cwd = project_root;
+                        let pool_url = config.database_url();
+                        if let Some(parent) = config.database.path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        if let Ok(mut storage) =
+                            nexus_storage::StorageManager::from_url(&pool_url).await
+                        {
+                            if let Err(e) = storage.initialize().await {
+                                tracing::warn!("Failed to initialize storage for nap: {e}");
+                                return;
                             }
-                            if let Ok(storage) =
-                                nexus_storage::StorageManager::from_url(&pool_url).await
+                            let ns_repo = nexus_storage::repository::NamespaceRepository::new(
+                                storage.pool().clone(),
+                            );
+                            if let Ok(namespace) =
+                                ns_repo.get_or_create(&agent_type, &agent_type).await
                             {
-                                let ns_repo = nexus_storage::repository::NamespaceRepository::new(
-                                    storage.pool().clone(),
-                                );
-                                if let Ok(namespace) =
-                                    ns_repo.get_or_create(&agent_type, &agent_type).await
-                                {
-                                    let llm_result = nexus_llm::create_client_auto_with_fallback();
-                                    let llm = match llm_result {
-                                        Ok(client) => client,
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "Failed to create LLM client for session-end nap: {}",
-                                                e
-                                            );
-                                            return;
-                                        }
-                                    };
-                                    let embeddings = if config.embedding.enabled {
-                                        nexus_memory_agent::runtime::create_embedding_service(
-                                            &config,
-                                        )
+                                let llm_result = nexus_llm::create_client_auto_with_fallback();
+                                let llm = match llm_result {
+                                    Ok(client) => client,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Failed to create LLM client for session-end nap: {}",
+                                            e
+                                        );
+                                        return;
+                                    }
+                                };
+                                let embeddings = if config.embedding.enabled {
+                                    nexus_memory_agent::runtime::create_embedding_service(&config)
                                         .await
-                                    } else {
-                                        None
-                                    };
-                                    let timeout = std::time::Duration::from_secs(
-                                        config.cognition.session_end_dream_timeout_secs,
-                                    );
-                                    let services = nexus_memory_agent::dream_cycle::DreamServices {
-                                        pool: storage.pool().clone(),
-                                        cognition: config.cognition.clone(),
-                                        agent: config.agent.clone(),
-                                        llm,
-                                        embeddings,
-                                        cognitive_system: config.cognitive_system.clone(),
-                                    };
-                                    match run_nap(
-                                        &session_id,
-                                        &cwd,
-                                        namespace.id,
-                                        &services,
-                                        timeout,
-                                    )
+                                } else {
+                                    None
+                                };
+                                let timeout = std::time::Duration::from_secs(
+                                    config.cognition.session_end_dream_timeout_secs,
+                                );
+                                let services = nexus_memory_agent::dream_cycle::DreamServices {
+                                    pool: storage.pool().clone(),
+                                    cognition: config.cognition.clone(),
+                                    agent: config.agent.clone(),
+                                    llm,
+                                    embeddings,
+                                    cognitive_system: config.cognitive_system.clone(),
+                                };
+                                match run_nap(&session_id, &cwd, namespace.id, &services, timeout)
                                     .await
-                                    {
-                                        Ok(nap_result) => {
-                                            if nap_result.timed_out {
-                                                tracing::warn!(
-                                                    session_id = %session_id,
-                                                    "nap timed out; not publishing DreamCompleted"
-                                                );
-                                            } else {
-                                                // PHASE 11: Notify of dream completion
-                                                let mut data = std::collections::HashMap::new();
-                                                data.insert(
-                                                    "agent_type".to_string(),
-                                                    serde_json::json!(agent_type),
-                                                );
-                                                data.insert(
-                                                    "processed".to_string(),
-                                                    serde_json::json!(
-                                                        nap_result.memories_processed
-                                                    ),
-                                                );
-
-                                                let event = nexus_orchestrator::Event::with_data(
-                                                    nexus_orchestrator::EventType::DreamCompleted,
-                                                    data,
-                                                )
-                                                .with_source("agent_supervisor");
-
-                                                let event_bus =
-                                                    nexus_orchestrator::EventBus::global();
-                                                let _ = event_bus.publish(event);
-                                            }
-                                        }
-                                        Err(e) => {
+                                {
+                                    Ok(nap_result) => {
+                                        if nap_result.timed_out {
                                             tracing::warn!(
                                                 session_id = %session_id,
-                                                error = %e,
-                                                "Session-end nap failed"
+                                                "nap timed out; not publishing DreamCompleted"
                                             );
+                                        } else {
+                                            // PHASE 11: Notify of dream completion
+                                            let mut data = std::collections::HashMap::new();
+                                            data.insert(
+                                                "agent_type".to_string(),
+                                                serde_json::json!(agent_type),
+                                            );
+                                            data.insert(
+                                                "processed".to_string(),
+                                                serde_json::json!(nap_result.memories_processed),
+                                            );
+
+                                            let event = nexus_orchestrator::Event::with_data(
+                                                nexus_orchestrator::EventType::DreamCompleted,
+                                                data,
+                                            )
+                                            .with_source("agent_supervisor");
+
+                                            let event_bus = nexus_orchestrator::EventBus::global();
+                                            let _ = event_bus.publish(event);
                                         }
                                     }
-                                } else {
-                                    tracing::debug!("Failed to get/create namespace for nap");
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            session_id = %session_id,
+                                            error = %e,
+                                            "Session-end nap failed"
+                                        );
+                                    }
                                 }
                             } else {
-                                tracing::debug!("Failed to create storage for nap");
+                                tracing::debug!("Failed to get/create namespace for nap");
                             }
+                        } else {
+                            tracing::debug!("Failed to create storage for nap");
                         }
                     }
                 });

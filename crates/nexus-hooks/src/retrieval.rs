@@ -156,40 +156,39 @@ impl RetrievalEngine {
             }
         }
 
-        if hot_cache.hot_cache.entries.len() != sync_state.last_hot_cache_count {
+        if hot_cache.hot_cache.entries.len() > sync_state.last_hot_cache_count {
+            // Cache grew: list the newly promoted entries
             let new_count = hot_cache
                 .hot_cache
                 .entries
                 .len()
                 .saturating_sub(sync_state.last_hot_cache_count);
-            if new_count > 0 {
-                let new_entries: Vec<_> = hot_cache
-                    .hot_cache
-                    .entries
-                    .iter()
-                    .rev()
-                    .take(new_count)
-                    .map(|e| {
-                        let tier = match e.tier {
-                            ConfidenceTier::Loud => "LOUD",
-                            ConfidenceTier::Clear => "CLEAR",
-                            ConfidenceTier::Whisper => "WHISPER",
-                        };
-                        format!(
-                            "[{}] {}",
-                            tier,
-                            escape_xml(&truncate_to_chars(&e.content, 120))
-                        )
-                    })
-                    .collect();
-                parts.push(format!(
-                    "<cache_promotions count=\"{new_count}\">\n{}\n</cache_promotions>",
-                    new_entries.join("\n")
-                ));
-            }
+            let new_entries: Vec<_> = hot_cache
+                .hot_cache
+                .entries
+                .iter()
+                .rev()
+                .take(new_count)
+                .map(|e| {
+                    let tier = match e.tier {
+                        ConfidenceTier::Loud => "LOUD",
+                        ConfidenceTier::Clear => "CLEAR",
+                        ConfidenceTier::Whisper => "WHISPER",
+                    };
+                    format!(
+                        "[{}] {}",
+                        tier,
+                        escape_xml(&truncate_to_chars(&e.content, 120))
+                    )
+                })
+                .collect();
+            parts.push(format!(
+                "<cache_promotions count=\"{new_count}\">\n{}\n</cache_promotions>",
+                new_entries.join("\n")
+            ));
         } else if hot_cache_hash != sync_state.last_hot_cache_hash {
-            // Cache at capacity: entries replaced without count change.
-            // Emit a summary of the current cache state.
+            // Cache content changed without net growth (eviction at capacity,
+            // or count decreased). Emit a summary of the current state.
             let entries: Vec<_> = hot_cache
                 .hot_cache
                 .entries
