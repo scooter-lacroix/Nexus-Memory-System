@@ -141,10 +141,8 @@ pub async fn run_nap(
         cache.save(&nexus_dir)?;
 
         // 5. Mark session as merged only after cache is persisted
-        if merged > 0 {
-            if let Err(e) = session_manager.mark_session_merged(session_id) {
-                tracing::warn!(error = %e, "Failed to mark session as merged");
-            }
+        if let Err(e) = session_manager.mark_session_merged(session_id) {
+            tracing::warn!(error = %e, "Failed to mark session as merged");
         }
 
         Ok::<NapResult, AgentError>(NapResult {

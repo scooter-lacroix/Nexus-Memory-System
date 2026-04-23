@@ -49,9 +49,7 @@ pub async fn execute_start(
     let injection_session_id = session_key.clone().unwrap_or_else(|| {
         derive_session_key(&agent, None, Some(cwd_path.to_str().unwrap_or(".")))
     });
-    if let Err(e) = injection::on_session_start(&cwd_path, &agent, &injection_session_id).await {
-        tracing::warn!("Injection pipeline error (non-fatal): {}", e);
-    }
+    injection::on_session_start(&cwd_path, &agent, &injection_session_id).await?;
 
     let raw_payload = read_optional_stdin_json();
     let detail = format!("mode={mode}");
