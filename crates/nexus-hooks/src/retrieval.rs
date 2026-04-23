@@ -187,6 +187,33 @@ impl RetrievalEngine {
                     new_entries.join("\n")
                 ));
             }
+        } else if hot_cache_hash != sync_state.last_hot_cache_hash {
+            // Cache at capacity: entries replaced without count change.
+            // Emit a summary of the current cache state.
+            let entries: Vec<_> = hot_cache
+                .hot_cache
+                .entries
+                .iter()
+                .rev()
+                .take(5)
+                .map(|e| {
+                    let tier = match e.tier {
+                        ConfidenceTier::Loud => "LOUD",
+                        ConfidenceTier::Clear => "CLEAR",
+                        ConfidenceTier::Whisper => "WHISPER",
+                    };
+                    format!(
+                        "[{}] {}",
+                        tier,
+                        escape_xml(&truncate_to_chars(&e.content, 120))
+                    )
+                })
+                .collect();
+            parts.push(format!(
+                "<cache_update count=\"{}\">\n{}\n</cache_update>",
+                hot_cache.hot_cache.entries.len(),
+                entries.join("\n")
+            ));
         }
 
         if parts.is_empty() {
@@ -665,6 +692,14 @@ mod tests {
         let soul_content = engine.load_soul_content();
         state.last_soul_hash = sync_state::soul_content_hash(soul_content.as_deref().unwrap_or(""));
         state.last_hot_cache_count = engine.load_hot_cache().hot_cache.entries.len();
+        let hot_cache_ids: Vec<String> = engine
+            .load_hot_cache()
+            .hot_cache
+            .entries
+            .iter()
+            .map(|e| e.memory_id.to_string())
+            .collect();
+        state.last_hot_cache_hash = sync_state::hot_cache_hash(&hot_cache_ids);
         assert!(engine.check_for_updates(&mut state).is_none());
     }
 

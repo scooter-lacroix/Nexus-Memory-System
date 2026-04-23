@@ -263,45 +263,49 @@ impl AgentSupervisor {
 
                     // 1. Threshold dream (trigger when enough new memories accumulate
                     //    since the last dream, not on every single increment)
-                    if let Ok(count) = memory_repo.count_by_namespace(namespace_id).await {
-                        let count_usize = count as usize;
-                        let threshold = cognitive_system.dream_triggers.dream_memory_threshold;
-                        let new_since_last = count_usize.saturating_sub(last_dream_count);
-                        if count_usize >= threshold && new_since_last >= threshold {
-                            info!(
-                                "Dream threshold reached ({} memories). Running dream cycle.",
-                                count
-                            );
-                            let cwd = project_root.clone();
-                            let services = crate::dream_cycle::DreamServices {
-                                pool: pool.clone(),
-                                cognition: cognition.clone(),
-                                agent: config.clone(),
-                                llm: llm.clone(),
-                                embeddings: embedder.clone(),
-                                cognitive_system: cognitive_system.clone(),
-                            };
-                            match crate::dream_cycle::run_dream(&cwd, namespace_id, &services).await
-                            {
-                                Ok(_) => {
-                                    last_dream_count = count_usize;
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        error = %e,
-                                        namespace_id,
-                                        count = count_usize,
-                                        "Threshold dream failed"
-                                    );
+                    match memory_repo.count_by_namespace(namespace_id).await {
+                        Ok(count) => {
+                            let count_usize = count as usize;
+                            let threshold = cognitive_system.dream_triggers.dream_memory_threshold;
+                            let new_since_last = count_usize.saturating_sub(last_dream_count);
+                            if count_usize >= threshold && new_since_last >= threshold {
+                                info!(
+                                    "Dream threshold reached ({} memories). Running dream cycle.",
+                                    count
+                                );
+                                let cwd = project_root.clone();
+                                let services = crate::dream_cycle::DreamServices {
+                                    pool: pool.clone(),
+                                    cognition: cognition.clone(),
+                                    agent: config.clone(),
+                                    llm: llm.clone(),
+                                    embeddings: embedder.clone(),
+                                    cognitive_system: cognitive_system.clone(),
+                                };
+                                match crate::dream_cycle::run_dream(&cwd, namespace_id, &services)
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        last_dream_count = count_usize;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            error = %e,
+                                            namespace_id,
+                                            count = count_usize,
+                                            "Threshold dream failed"
+                                        );
+                                    }
                                 }
                             }
                         }
-                    } else if let Err(e) = memory_repo.count_by_namespace(namespace_id).await {
-                        tracing::warn!(
-                            error = %e,
-                            namespace_id,
-                            "Failed to query memory count for threshold dream"
-                        );
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                namespace_id,
+                                "Failed to query memory count for threshold dream"
+                            );
+                        }
                     }
 
                     // 2. Deep dream
