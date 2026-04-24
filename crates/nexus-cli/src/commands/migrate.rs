@@ -451,7 +451,7 @@ async fn backfill_namespace_cognition(
             let merged = inferred.merge_into(&memory.metadata);
 
             println!(
-                "[{}] backfill #{} -> {} ({})",
+                "[{}] backfill #{} -> {} ({:?})",
                 namespace_name, memory.id, inferred.level, inferred.generated_by
             );
 
@@ -465,7 +465,11 @@ async fn backfill_namespace_cognition(
             {
                 let payload =
                     serde_json::json!({ "memory_id": memory.id, "reason": "cognition_backfill" });
-                let perspective = serde_json::to_value(inferred.perspective())?;
+                let perspective = serde_json::json!({
+                    "observer": inferred.observer,
+                    "subject": inferred.subject,
+                    "session_key": inferred.session_key,
+                });
                 if !dry_run {
                     repo.enqueue_job(EnqueueJobParams {
                         namespace_id,

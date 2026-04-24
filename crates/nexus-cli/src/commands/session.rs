@@ -8,11 +8,12 @@ use nexus_agent::{
     RuntimeShutdownReason,
 };
 use nexus_core::{CognitiveLevel, CognitiveMetadata, Config, MemoryCategory};
-use nexus_hooks::retry_buffer::RetryBuffer;
+use nexus_hooks::{injection, retry_buffer::RetryBuffer};
 use nexus_storage::repository::{MemoryRepository, NamespaceRepository, StoreMemoryParams};
 use nexus_storage::StorageManager;
 use serde_json::{json, Value};
 use std::io::IsTerminal;
+use std::path::PathBuf;
 
 fn parse_runtime_mode(mode: &str) -> RuntimeMode {
     match mode {
@@ -40,13 +41,23 @@ pub async fn execute_start(
         )
         .await?;
 
+    // ── Run centralized injection pipeline (morning recall, context.md, config injection) ──
+    let cwd_path: PathBuf = match cwd {
+        Some(ref c) => c.into(),
+        None => std::env::current_dir()?,
+    };
+    let injection_session_id = session_key.clone().unwrap_or_else(|| {
+        derive_session_key(&agent, None, Some(cwd_path.to_str().unwrap_or(".")))
+    });
+    injection::on_session_start(&cwd_path, &agent, &injection_session_id).await?;
+
     let raw_payload = read_optional_stdin_json();
     let detail = format!("mode={mode}");
     store_session_memory(
         &config,
         &agent,
         session_key.as_deref(),
-        cwd.as_deref(),
+        Some(cwd_path.to_str().unwrap_or(".")),
         "session_start",
         &detail,
         raw_payload.as_ref(),

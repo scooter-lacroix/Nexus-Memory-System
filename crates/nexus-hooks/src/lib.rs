@@ -8,13 +8,13 @@
 //! 3. **Inactivity Detector** (90%): Configurable timeout detection
 //! 4. **Persistent Buffer** (99%): Crash recovery from buffer
 //!
-//! # Supported Agents
+//! ## Supported Agents
 //!
 //! ## Native Lifecycle (dedicated hook implementation + skill installation)
 //!
 //! - **Claude Code**: Skills-based (SKILL.md format) — session start, end, checkpoint, error, compact
 //! - **Droid (Factory CLI)**: settings-based (`~/.factory/settings.json`) — SessionStart, SessionEnd, PostToolUse, PreCompact, Stop
-//! - **pi-mono**: Skills-based (TypeScript/Bun) — session end, checkpoint, compact
+//! - **pi-mono**: Extension-based (TypeScript) — session start, end, checkpoint, error, compact
 //! - **oh-my-pi**: Skills-based (TypeScript/Bun + Rust N-API) — session end, checkpoint, error, compact
 //! - **pi-skills**: Cross-compatible skills — session end, checkpoint, compact
 //!
@@ -62,11 +62,16 @@ pub mod enrichment;
 pub mod error;
 pub mod extractor;
 pub mod factory;
+pub mod injection;
 pub mod monitor;
 pub mod persistence;
+pub mod rescorer;
+pub mod retrieval;
 pub mod retry_buffer;
 pub mod session;
 pub mod signal;
+pub mod sync_state;
+pub mod transcript;
 pub mod types;
 
 // Re-export main types
@@ -84,8 +89,11 @@ pub use extractor::MultiLayerExtractor;
 pub use factory::HookFactory;
 pub use monitor::{ProcessMonitor, SessionMonitor};
 pub use persistence::{persist_enriched_memories, PersistResult};
+pub use retrieval::{RetrievalEngine, RetrievalResult, SubconsciousMode};
 pub use retry_buffer::{RetryArtifact, RetryBuffer};
 pub use session::SessionContext;
+pub use sync_state::SyncState;
+pub use transcript::{read_transcript, read_transcript_from, TranscriptEntry};
 pub use types::{AgentType, DetectionLayer, ExtractionSource, SessionActivity, SupportTier};
 
 // Re-export agent hooks

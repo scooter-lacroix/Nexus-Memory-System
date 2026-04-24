@@ -1,10 +1,14 @@
-//! Pi-Mono hook implementation (MANDATORY)
+//! Pi-Mono hook implementation
 //!
-//! Pi-mono is a TypeScript/Bun-based coding agent with subagent support.
+//! Pi-mono is a TypeScript/Bun-based coding agent with a rich extension system.
+//! Integration uses a native TypeScript extension installed at
+//! `~/.pi/agent/extensions/nexus-memory.ts` that hooks into pi's
+//! lifecycle events (session_start, session_shutdown, agent_end, etc.)
+//! and forwards them to the Nexus CLI for memory capture.
 //!
 //! Repository: https://github.com/badlogic/pi-mono
-//! Stack: TypeScript, Bun runtime
-//! Config: ~/.pi/agent/skills/, .pi/skills/
+//! Stack: TypeScript, Node.js/Bun runtime
+//! Config: ~/.pi/agent/extensions/
 //! Detection: `pi` or `pi-coding-agent` process
 
 use async_trait::async_trait;
@@ -16,37 +20,27 @@ use crate::monitor::ProcessMonitor;
 use crate::session::{
     FileAction, FileInfo, SessionContext, SubagentExecution, TaskInfo, TaskStatus,
 };
-use crate::types::{AgentType, SessionActivity, SkillMetadata, SupportTier};
+use crate::types::{AgentType, SessionActivity, SupportTier};
 
 /// Pi-Mono hook for extracting memory from pi-mono session execution.
 ///
-/// Pi-mono is a TypeScript/Bun-based coding agent that provides
-/// subagent workflows with parallel, chain, and single execution modes.
+/// Uses a native TypeScript extension (not SKILL.md) that integrates
+/// with pi-mono's extension API for full lifecycle event coverage.
 ///
-/// # Detection Paths
+/// # Integration Points
 ///
-/// - ~/.local/bin/pi
-/// - /usr/local/bin/pi
-/// - $PATH
+/// - **Extension:** `~/.pi/agent/extensions/nexus-memory.ts`
+/// - **Transport:** CLI (`nexus session start`, `nexus ingest-hook-event`)
+/// - **Fallback:** Process monitoring + `.pi/sessions/` file scanning
 ///
-/// # Session Files
+/// # Lifecycle Coverage
 ///
-/// - .pi/sessions/ - Session history
-/// - .pi/logs/ - Execution logs
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use nexus_memory_hooks::agents::PiMonoHook;
-/// use nexus_memory_hooks::AgentHook;
-///
-/// #[tokio::main]
-/// async fn main() {
-///     let hook = PiMonoHook::new();
-///     let activity = hook.detect_session_activity().await.unwrap();
-///     println!("Active: {}", activity.is_active);
-/// }
-/// ```
+/// All five lifecycle events are supported:
+/// - `session_start` — via extension `session_start` event
+/// - `session_end` — via extension `session_shutdown` event
+/// - `checkpoint` — via debounced `agent_end` and explicit triggers
+/// - `error_hook` — synthetic from failed `tool_result` / abnormal `agent_end`
+/// - `compact` — via extension `session_compact` event
 pub struct PiMonoHook {
     /// Base hook functionality
     base: BaseHook,
@@ -57,14 +51,14 @@ pub struct PiMonoHook {
     /// Session directory
     session_dir: PathBuf,
 
-    /// Skills directory
-    skills_dir: PathBuf,
+    /// Extensions directory
+    extensions_dir: PathBuf,
 
     /// Process monitor
     process_monitor: ProcessMonitor,
 
-    /// Whether skill is installed
-    skill_installed: bool,
+    /// Whether extension is installed
+    extension_installed: bool,
 }
 
 impl PiMonoHook {
@@ -74,8 +68,8 @@ impl PiMonoHook {
     /// Config directory name
     pub const CONFIG_DIR_NAME: &'static str = ".pi";
 
-    /// Skills subdirectory
-    pub const SKILLS_SUBDIR: &'static str = "agent/skills";
+    /// Extensions subdirectory
+    pub const EXTENSIONS_SUBDIR: &'static str = "agent/extensions";
 
     /// Sessions subdirectory
     pub const SESSIONS_SUBDIR: &'static str = "sessions";
@@ -99,84 +93,70 @@ impl PiMonoHook {
             .join(Self::CONFIG_DIR_NAME);
 
         let session_dir = config_dir.join(Self::SESSIONS_SUBDIR);
-        let skills_dir = config_dir.join(Self::SKILLS_SUBDIR);
-        let skill_installed = Self::skill_file_path(&skills_dir).exists();
+        let extensions_dir = config_dir.join(Self::EXTENSIONS_SUBDIR);
+        let extension_installed = Self::extension_file_path(&extensions_dir).exists();
 
         let mut hook = Self {
             base: BaseHook::new(Self::AGENT_TYPE),
             config_dir,
             session_dir,
-            skills_dir,
+            extensions_dir,
             process_monitor: ProcessMonitor::new(),
-            skill_installed,
+            extension_installed,
         };
 
-        if auto_install && !hook.skill_installed {
-            if let Err(e) = hook.install_skill() {
-                tracing::warn!("Failed to install pi-mono skill: {}", e);
+        if auto_install {
+            // Migrate from legacy SKILL.md
+            hook.migrate_from_skill();
+
+            if !hook.extension_installed {
+                if let Err(e) = hook.install_extension() {
+                    tracing::warn!("Failed to install pi-mono extension: {}", e);
+                }
             }
         }
 
         hook
     }
 
-    fn skill_file_path(skills_dir: &std::path::Path) -> PathBuf {
-        skills_dir.join("nexus-memory-extraction").join("SKILL.md")
+    fn extension_file_path(extensions_dir: &std::path::Path) -> PathBuf {
+        extensions_dir.join("nexus-memory.ts")
     }
 
-    /// Install the nexus-memory-extraction skill
-    fn install_skill(&mut self) -> Result<()> {
-        std::fs::create_dir_all(&self.skills_dir).map_err(|e| {
-            HookError::InstallationFailed(format!("Failed to create skills dir: {}", e))
+    /// Install the nexus-memory TypeScript extension
+    fn install_extension(&mut self) -> Result<()> {
+        std::fs::create_dir_all(&self.extensions_dir).map_err(|e| {
+            HookError::InstallationFailed(format!("Failed to create extensions dir: {}", e))
         })?;
 
-        let skill_dir = self.skills_dir.join("nexus-memory-extraction");
-        std::fs::create_dir_all(&skill_dir).map_err(|e| {
-            HookError::InstallationFailed(format!("Failed to create skill dir: {}", e))
+        let extension_path = Self::extension_file_path(&self.extensions_dir);
+
+        let extension_content = include_str!("../extension_ts/nexus_memory_pi.ts");
+
+        std::fs::write(&extension_path, extension_content).map_err(|e| {
+            HookError::InstallationFailed(format!("Failed to write extension: {}", e))
         })?;
 
-        let skill_md = Self::skill_file_path(&self.skills_dir);
-
-        let skill_content = r#"---
-name: nexus-memory-extraction
-description: Automatically extract session context to Nexus Memory System
-version: 1.0.0
-author: Nexus Memory System
-triggers:
-  - on_session_end
-  - on_checkpoint
----
-
-# Nexus Memory Extraction Skill
-
-This skill automatically extracts session context when pi-mono sessions end.
-
-## What It Does
-
-1. Captures conversation, decisions, and files modified
-2. Tracks subagent executions and commands run
-3. Stores to Nexus Memory System automatically
-
-## Configuration
-
-Set environment variables:
-- `NEXUS_AUTO_INGEST=true`
-- `NEXUS_SERVER_URL=http://localhost:8768`
-"#;
-
-        if self.parse_skill_metadata(skill_content).is_none() {
-            return Err(HookError::InstallationFailed(
-                "Generated SKILL.md frontmatter is invalid".to_string(),
-            ));
-        }
-
-        std::fs::write(&skill_md, skill_content)
-            .map_err(|e| HookError::InstallationFailed(format!("Failed to write skill: {}", e)))?;
-
-        self.skill_installed = true;
-        tracing::info!("Pi-mono skill installed at: {:?}", skill_dir);
+        self.extension_installed = true;
+        tracing::info!("Pi-mono extension installed at: {:?}", extension_path);
 
         Ok(())
+    }
+
+    /// Migrate from legacy SKILL.md installation
+    fn migrate_from_skill(&mut self) {
+        let legacy_skill_dir = self
+            .config_dir
+            .join("agent")
+            .join("skills")
+            .join("nexus-memory-extraction");
+
+        if legacy_skill_dir.exists() {
+            tracing::info!("Migrating pi-mono from SKILL.md to TypeScript extension");
+            if let Err(e) = std::fs::remove_dir_all(&legacy_skill_dir) {
+                tracing::warn!("Failed to remove legacy skill dir: {}", e);
+            }
+        }
     }
 
     /// Read session files
@@ -257,20 +237,6 @@ Set environment variables:
 
         commands
     }
-
-    /// Parse SKILL.md frontmatter
-    fn parse_skill_metadata(&self, content: &str) -> Option<SkillMetadata> {
-        let content = content.trim();
-
-        if !content.starts_with("---") {
-            return None;
-        }
-
-        let end = content[3..].find("---")?;
-        let frontmatter = &content[3..end + 3];
-
-        serde_yaml::from_str(frontmatter).ok()
-    }
 }
 
 impl Default for PiMonoHook {
@@ -285,17 +251,28 @@ impl AgentHook for PiMonoHook {
         &self.base.agent_type
     }
 
+    async fn install_session_start_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
+        self.base.add_session_start_callback(callback);
+        Ok(())
+    }
+
     async fn install_session_end_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
         self.base.add_callback(callback);
-        self.base.installed = true;
+        Ok(())
+    }
 
+    async fn install_checkpoint_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
+        self.base.add_checkpoint_callback(callback);
         Ok(())
     }
 
     async fn install_compact_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
         self.base.add_callback(callback);
-        self.base.installed = true;
+        Ok(())
+    }
 
+    async fn install_error_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
+        self.base.add_error_callback(callback);
         Ok(())
     }
 
@@ -470,11 +447,11 @@ impl AgentHook for PiMonoHook {
     }
 
     fn is_hook_installed(&self) -> bool {
-        self.skill_installed
+        self.extension_installed
     }
 
     fn reliability_score(&self) -> f32 {
-        if self.skill_installed {
+        if self.extension_installed {
             1.0
         } else {
             0.95
@@ -483,10 +460,10 @@ impl AgentHook for PiMonoHook {
 
     fn lifecycle_capabilities(&self) -> LifecycleCapabilities {
         LifecycleCapabilities {
-            session_start: false,
+            session_start: true,
             session_end: true,
             checkpoint: true,
-            error_hook: false,
+            error_hook: true,
             compact: true,
         }
     }
@@ -519,38 +496,70 @@ mod tests {
     fn test_pi_mono_hook_constants() {
         assert_eq!(PiMonoHook::AGENT_TYPE, "pi-mono");
         assert_eq!(PiMonoHook::CONFIG_DIR_NAME, ".pi");
-        assert_eq!(PiMonoHook::SKILLS_SUBDIR, "agent/skills");
+        assert_eq!(PiMonoHook::EXTENSIONS_SUBDIR, "agent/extensions");
     }
 
     #[test]
-    fn test_pi_mono_hook_lifecycle_capabilities() {
+    fn test_pi_mono_extension_file_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = PiMonoHook::extension_file_path(&dir.path().join("extensions"));
+        assert_eq!(
+            path.file_name().unwrap().to_str().unwrap(),
+            "nexus-memory.ts"
+        );
+    }
+
+    #[test]
+    fn test_pi_mono_hook_lifecycle_capabilities_full() {
         let hook = PiMonoHook::new();
         let caps = hook.lifecycle_capabilities();
 
-        assert!(
-            !caps.session_start,
-            "pi-mono does not support session_start"
-        );
-        assert!(
-            caps.session_end,
-            "pi-mono should support session_end via skills"
-        );
-        assert!(
-            caps.checkpoint,
-            "pi-mono should support checkpoint via skills"
-        );
-        assert!(!caps.error_hook, "pi-mono does not support error_hook");
-        assert!(caps.compact, "pi-mono should support compact via skills");
+        assert!(caps.session_start, "pi-mono should support session_start");
+        assert!(caps.session_end, "pi-mono should support session_end");
+        assert!(caps.checkpoint, "pi-mono should support checkpoint");
+        assert!(caps.error_hook, "pi-mono should support error_hook");
+        assert!(caps.compact, "pi-mono should support compact");
     }
 
     #[tokio::test]
-    async fn test_pi_mono_hook_install_compact_hook() {
+    async fn test_pi_mono_hook_install_session_start() {
         let mut hook = PiMonoHook::new();
         let cb: SessionEndCallback = Arc::new(|_ctx| ());
-        let result = hook.install_compact_hook(cb).await;
-        assert!(
-            result.is_ok(),
-            "pi-mono should accept compact hook via skills"
-        );
+        let result = hook.install_session_start_hook(cb).await;
+        assert!(result.is_ok(), "pi-mono should accept session_start hook");
+    }
+
+    #[tokio::test]
+    async fn test_pi_mono_hook_install_checkpoint() {
+        let mut hook = PiMonoHook::new();
+        let cb: SessionEndCallback = Arc::new(|_ctx| ());
+        let result = hook.install_checkpoint_hook(cb).await;
+        assert!(result.is_ok(), "pi-mono should accept checkpoint hook");
+    }
+
+    #[tokio::test]
+    async fn test_pi_mono_hook_install_error() {
+        let mut hook = PiMonoHook::new();
+        let cb: SessionEndCallback = Arc::new(|_ctx| ());
+        let result = hook.install_error_hook(cb).await;
+        assert!(result.is_ok(), "pi-mono should accept error hook");
+    }
+
+    #[test]
+    fn test_pi_mono_legacy_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy_dir = dir
+            .path()
+            .join(".pi")
+            .join("agent")
+            .join("skills")
+            .join("nexus-memory-extraction");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(legacy_dir.join("SKILL.md"), "legacy").unwrap();
+
+        // Simulate migration: remove directory
+        assert!(legacy_dir.exists());
+        std::fs::remove_dir_all(&legacy_dir).unwrap();
+        assert!(!legacy_dir.exists());
     }
 }

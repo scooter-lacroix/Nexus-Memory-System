@@ -13,6 +13,11 @@ pub enum Provider {
     Zai,
     Minimax,
     Mistral,
+    Nvidia,
+    #[serde(rename = "openai_compatible")]
+    OpenAiCompatible,
+    #[serde(rename = "anthropic_compatible")]
+    AnthropicCompatible,
 }
 
 /// All supported providers in display order.
@@ -25,6 +30,9 @@ pub const ALL_PROVIDERS: &[Provider] = &[
     Provider::Zai,
     Provider::Minimax,
     Provider::Mistral,
+    Provider::Nvidia,
+    Provider::OpenAiCompatible,
+    Provider::AnthropicCompatible,
 ];
 
 impl Provider {
@@ -38,6 +46,13 @@ impl Provider {
             "zai" | "z.ai" | "zhipu" | "bigmodel" => Some(Self::Zai),
             "minimax" => Some(Self::Minimax),
             "mistral" => Some(Self::Mistral),
+            "nvidia" => Some(Self::Nvidia),
+            "openai_compatible" | "openai-compatible" | "openai_compat" => {
+                Some(Self::OpenAiCompatible)
+            }
+            "anthropic_compatible" | "anthropic-compatible" | "anthropic_compat" => {
+                Some(Self::AnthropicCompatible)
+            }
             _ => None,
         }
     }
@@ -52,6 +67,10 @@ impl Provider {
             Provider::Zai => "https://api.z.ai/api/anthropic",
             Provider::Minimax => "https://api.minimax.io/v1",
             Provider::Mistral => "https://api.mistral.ai/v1",
+            Provider::Nvidia => "https://integrate.api.nvidia.com/v1",
+            // Generic compatible providers have no meaningful default — user must supply one.
+            Provider::OpenAiCompatible => "",
+            Provider::AnthropicCompatible => "",
         }
     }
 
@@ -65,6 +84,9 @@ impl Provider {
             Provider::Zai => "ZAI_API_KEY",
             Provider::Minimax => "MINIMAX_API_KEY",
             Provider::Mistral => "MISTRAL_API_KEY",
+            Provider::Nvidia => "NVIDIA_API_KEY",
+            Provider::OpenAiCompatible => "LLM_API_KEY",
+            Provider::AnthropicCompatible => "LLM_API_KEY",
         }
     }
 
@@ -78,15 +100,37 @@ impl Provider {
             Provider::Zai => "glm-4.7",
             Provider::Minimax => "MiniMax-M1-80k",
             Provider::Mistral => "mistral-small-latest",
+            Provider::Nvidia => "nvidia/llama-3.1-nemotron-70b-instruct",
+            Provider::OpenAiCompatible => "",
+            Provider::AnthropicCompatible => "",
         }
     }
 
     pub fn is_anthropic_protocol(&self) -> bool {
-        matches!(self, Provider::Anthropic | Provider::Zai)
+        matches!(
+            self,
+            Provider::Anthropic | Provider::Zai | Provider::AnthropicCompatible
+        )
     }
 
     pub fn is_openai_protocol(&self) -> bool {
         !self.is_anthropic_protocol()
+    }
+
+    /// Whether the base URL must be provided by the user (no sensible default).
+    pub fn requires_base_url(&self) -> bool {
+        matches!(
+            self,
+            Provider::OpenAiCompatible | Provider::AnthropicCompatible
+        )
+    }
+
+    /// Whether the model must be provided by the user (no sensible default).
+    pub fn requires_model(&self) -> bool {
+        matches!(
+            self,
+            Provider::OpenAiCompatible | Provider::AnthropicCompatible
+        )
     }
 
     /// Human-readable label for interactive prompts.
@@ -100,6 +144,9 @@ impl Provider {
             Provider::Zai => "Z.ai",
             Provider::Minimax => "Minimax",
             Provider::Mistral => "Mistral",
+            Provider::Nvidia => "NVIDIA NIM",
+            Provider::OpenAiCompatible => "OpenAI-compatible (bring your own endpoint)",
+            Provider::AnthropicCompatible => "Anthropic-compatible (bring your own endpoint)",
         }
     }
 
@@ -110,41 +157,6 @@ impl Provider {
             .iter()
             .find(|p| p.to_string() == lower || p.display_label().to_lowercase().contains(&lower))
             .copied()
-    }
-
-    /// Supplemental model IDs known to exist for this provider but not always
-    /// returned by the standard `/models` listing endpoint.
-    pub fn supplemental_models(&self) -> &'static [&'static str] {
-        match self {
-            Provider::Zai => &[
-                "glm-4.7-flash",
-                "glm-4-flash",
-                "glm-4-flash-250414",
-                "glm-4-plus",
-                "glm-4-long",
-                "glm-4-air",
-                "glm-4-airx",
-                "glm-4v",
-                "glm-4v-plus",
-                "glm-z1-air",
-                "glm-z1-airx",
-                "glm-z1-flash",
-                "cogview-4",
-            ],
-            Provider::Gemini => &[
-                "gemini-2.0-flash",
-                "gemini-2.5-pro-preview-05-06",
-                "gemini-2.5-flash-preview-05-20",
-            ],
-            Provider::OpenAi => &[
-                "o3-mini",
-                "o4-mini",
-                "gpt-4.1",
-                "gpt-4.1-mini",
-                "gpt-4.1-nano",
-            ],
-            _ => &[],
-        }
     }
 }
 
@@ -159,6 +171,9 @@ impl std::fmt::Display for Provider {
             Provider::Zai => write!(f, "zai"),
             Provider::Minimax => write!(f, "minimax"),
             Provider::Mistral => write!(f, "mistral"),
+            Provider::Nvidia => write!(f, "nvidia"),
+            Provider::OpenAiCompatible => write!(f, "openai_compatible"),
+            Provider::AnthropicCompatible => write!(f, "anthropic_compatible"),
         }
     }
 }

@@ -442,7 +442,7 @@ impl AgentHook for DroidHook {
 
     async fn install_session_start_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
         self.ensure_mutable()?;
-        self.base.add_callback(callback);
+        self.base.add_session_start_callback(callback);
         self.install_settings_hooks().await
     }
 
@@ -455,7 +455,7 @@ impl AgentHook for DroidHook {
 
     async fn install_checkpoint_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
         self.ensure_mutable()?;
-        self.base.add_callback(callback);
+        self.base.add_checkpoint_callback(callback);
         self.install_settings_hooks().await
     }
 
@@ -467,7 +467,7 @@ impl AgentHook for DroidHook {
 
     async fn install_error_hook(&mut self, callback: SessionEndCallback) -> Result<()> {
         self.ensure_mutable()?;
-        self.base.add_callback(callback);
+        self.base.add_error_callback(callback);
         self.install_settings_hooks().await
     }
 

@@ -24,7 +24,7 @@ impl Default for OrchestratorConfig {
 pub struct Orchestrator {
     config: OrchestratorConfig,
     session_manager: SessionManager,
-    event_bus: EventBus,
+    pub event_bus: EventBus,
     sync_coordinator: SyncCoordinator,
     context_enhancer: ContextEnhancer,
 }
@@ -73,6 +73,14 @@ impl Orchestrator {
 
 impl Default for Orchestrator {
     fn default() -> Self {
-        Self::new(OrchestratorConfig::default())
+        let cfg = OrchestratorConfig::default();
+        let idle_timeout = cfg.session_idle_timeout_secs;
+        Self {
+            config: cfg,
+            session_manager: SessionManager::with_idle_timeout(idle_timeout),
+            event_bus: EventBus::global().clone(),
+            sync_coordinator: SyncCoordinator::new(),
+            context_enhancer: ContextEnhancer::new(),
+        }
     }
 }

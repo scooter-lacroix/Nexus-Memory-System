@@ -139,6 +139,21 @@ impl AppState {
                     data,
                 ))
             }
+            EventType::CognitiveDrift => {
+                let similarity = event.get::<f32>("similarity").unwrap_or(0.0);
+                let agent_type = event.get::<String>("agent_type").unwrap_or_default();
+                Some(WebSocketMessage::cognitive_drift(similarity, &agent_type))
+            }
+            EventType::DreamCompleted => {
+                let agent_type = event.get::<String>("agent_type").unwrap_or_default();
+                let processed = event.get::<usize>("processed").unwrap_or(0);
+                Some(WebSocketMessage::dream_completed(&agent_type, processed))
+            }
+            EventType::MorningRecall => {
+                let namespace = event.get::<String>("namespace").unwrap_or_default();
+                let count = event.get::<usize>("count").unwrap_or(0);
+                Some(WebSocketMessage::morning_recall(&namespace, count))
+            }
             _ => None,
         }
     }
@@ -177,7 +192,11 @@ impl AppState {
             .await
             .map_err(|e| WebError::Storage(e.to_string()))?;
 
-        let mut supervisor = AgentSupervisor::new(config.agent, llm, pool.clone(), namespace.id);
+        let project_root =
+            nexus_core::ProjectIdentity::resolve(&std::env::current_dir().unwrap_or_default())
+                .root_dir;
+        let mut supervisor =
+            AgentSupervisor::new(config.agent, llm, pool.clone(), namespace.id, project_root);
         if let Some(embedder) = query_embedder {
             supervisor = supervisor.with_query_embedder(embedder);
         }

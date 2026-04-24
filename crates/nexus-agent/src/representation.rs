@@ -552,10 +552,41 @@ impl RepresentationService {
         repo: &MemoryRepository,
     ) -> Result<Vec<Memory>, AgentError> {
         let representation = self.build(request, repo).await?;
-        Ok(flatten_ranked_representation(representation, request)
+        let flat: Vec<Memory> = flatten_ranked_representation(representation, request)
             .into_iter()
             .map(|bucketed| bucketed.memory)
-            .collect())
+            .collect();
+
+        // Fall back to storage primitive when the representation yields nothing.
+        // This covers cases where include_* flags are all false or perspective
+        // queries return empty but data exists in the namespace.
+        if flat.is_empty()
+            && !request.include_raw
+            && !request.include_digests
+            && !request.include_recent
+            && !request.include_semantic
+            && !request.include_derived
+            && !request.include_contradictions
+        {
+            let limit = request.max_items.max(1) as i64;
+            return repo
+                .list_filtered(
+                    request.namespace_id,
+                    nexus_storage::repository::ListMemoryFilters {
+                        category: None,
+                        since: None,
+                        until: None,
+                        content_like: None,
+                        include_raw: request.include_raw,
+                        limit,
+                        offset: 0,
+                    },
+                )
+                .await
+                .map_err(|e| AgentError::Storage(e.to_string()));
+        }
+
+        Ok(flat)
     }
 }
 

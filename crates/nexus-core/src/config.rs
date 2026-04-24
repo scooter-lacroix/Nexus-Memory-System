@@ -43,6 +43,8 @@ pub struct AgentConfig {
     pub enabled: bool,
     /// Namespace name for agent-generated memories
     pub namespace: String,
+    /// Agent type label for token budget estimation (e.g. "claude-code", "gemini")
+    pub agent_type: String,
     /// Directory to watch for new files
     pub inbox_dir: String,
     /// File scan interval in seconds
@@ -60,6 +62,8 @@ impl Default for AgentConfig {
         Self {
             enabled: false,
             namespace: "nexus-agent".to_string(),
+            agent_type: std::env::var("NEXUS_AGENT_TYPE")
+                .unwrap_or_else(|_| "nexus-agent".to_string()),
             inbox_dir: "./inbox".to_string(),
             scan_interval_secs: 5,
             consolidation_interval_mins: 30,
@@ -162,6 +166,75 @@ impl Default for CognitionConfig {
     }
 }
 
+/// Dream trigger configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DreamTriggerConfig {
+    /// Whether to trigger a nap on session end
+    pub nap_on_session_end: bool,
+    /// Idle timeout in seconds before a nap is triggered
+    pub nap_idle_timeout_secs: u64,
+    /// Number of new memories that trigger a dream cycle
+    pub dream_memory_threshold: usize,
+    /// Minimum hours between deep dream cycles
+    pub deep_dream_cooldown_hours: u64,
+    /// Minimum inactivity minutes before deep dream
+    pub deep_dream_inactivity_mins: u64,
+}
+
+impl Default for DreamTriggerConfig {
+    fn default() -> Self {
+        Self {
+            nap_on_session_end: true,
+            nap_idle_timeout_secs: 600,
+            dream_memory_threshold: 20,
+            deep_dream_cooldown_hours: 24,
+            deep_dream_inactivity_mins: 30,
+        }
+    }
+}
+
+/// Autonomous cognitive system configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CognitiveSystemConfig {
+    pub enabled: bool,
+    /// System bootstrap mode: "silent" (default) or "chatty" (verbose)
+    pub bootstrap_mode: String,
+    /// Dream triggers
+    pub dream_triggers: DreamTriggerConfig,
+    /// Maximum entries in the hot cognitive cache
+    pub hot_cache_max_entries: usize,
+    /// Percentage of context window allocated to Nexus context
+    pub context_allocation_pct: f32,
+    /// Whether mid-session rescoring is enabled
+    pub mid_session_rescore_enabled: bool,
+    /// Turn interval for rescoring
+    pub rescore_turn_interval: u32,
+    /// Topic drift threshold for rescoring
+    pub rescore_drift_threshold: f32,
+    /// Similarity threshold for pattern clustering in dream
+    pub similarity_threshold: f32,
+    /// Subconscious mode: "whisper" (default), "full", or "off"
+    pub subconscious_mode: String,
+}
+
+impl Default for CognitiveSystemConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            bootstrap_mode: "silent".to_string(),
+            dream_triggers: DreamTriggerConfig::default(),
+            hot_cache_max_entries: 20,
+            context_allocation_pct: 0.10,
+            mid_session_rescore_enabled: true,
+            rescore_turn_interval: 5,
+            rescore_drift_threshold: 0.70,
+            similarity_threshold: 0.85,
+            subconscious_mode: "whisper".to_string(),
+        }
+    }
+}
+
 /// Main configuration for Nexus
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -185,6 +258,9 @@ pub struct Config {
 
     /// Cognition/runtime configuration
     pub cognition: CognitionConfig,
+
+    /// Autonomous cognitive system configuration
+    pub cognitive_system: CognitiveSystemConfig,
 }
 
 impl Config {
@@ -413,6 +489,76 @@ impl Config {
                 .unwrap_or(CognitionConfig::default().adaptive_dream_max_interval_secs);
         }
 
+        // Cognitive System configuration
+        if let Ok(enabled) = std::env::var("NEXUS_COGNITIVE_ENABLED") {
+            config.cognitive_system.enabled = enabled.parse().unwrap_or(true);
+        }
+        if let Ok(mode) = std::env::var("NEXUS_BOOTSTRAP_MODE") {
+            config.cognitive_system.bootstrap_mode = mode;
+        }
+        if let Ok(max) = std::env::var("NEXUS_HOT_CACHE_MAX") {
+            config.cognitive_system.hot_cache_max_entries = max
+                .parse()
+                .unwrap_or(CognitiveSystemConfig::default().hot_cache_max_entries);
+        }
+        if let Ok(pct) = std::env::var("NEXUS_CONTEXT_ALLOCATION_PCT") {
+            config.cognitive_system.context_allocation_pct = pct
+                .parse::<f32>()
+                .ok()
+                .filter(|&v| (0.0..=1.0).contains(&v))
+                .unwrap_or(CognitiveSystemConfig::default().context_allocation_pct);
+        }
+        if let Ok(enabled) = std::env::var("NEXUS_RESCORE_ENABLED") {
+            config.cognitive_system.mid_session_rescore_enabled = enabled.parse().unwrap_or(true);
+        }
+        if let Ok(interval) = std::env::var("NEXUS_RESCORE_TURN_INTERVAL") {
+            config.cognitive_system.rescore_turn_interval = interval
+                .parse()
+                .unwrap_or(CognitiveSystemConfig::default().rescore_turn_interval);
+        }
+        if let Ok(threshold) = std::env::var("NEXUS_RESCORE_DRIFT_THRESHOLD") {
+            config.cognitive_system.rescore_drift_threshold = threshold
+                .parse()
+                .ok()
+                .filter(|&v: &f32| (0.0..=1.0).contains(&v))
+                .unwrap_or(CognitiveSystemConfig::default().rescore_drift_threshold);
+        }
+        if let Ok(mode) = std::env::var("NEXUS_SUBCONSCIOUS_MODE") {
+            config.cognitive_system.subconscious_mode = mode;
+        }
+        if let Ok(threshold) = std::env::var("NEXUS_DREAM_THRESHOLD") {
+            config
+                .cognitive_system
+                .dream_triggers
+                .dream_memory_threshold = threshold
+                .parse()
+                .unwrap_or(DreamTriggerConfig::default().dream_memory_threshold);
+        }
+        if let Ok(hours) = std::env::var("NEXUS_DEEP_DREAM_COOLDOWN_HOURS") {
+            config
+                .cognitive_system
+                .dream_triggers
+                .deep_dream_cooldown_hours = hours
+                .parse()
+                .unwrap_or(DreamTriggerConfig::default().deep_dream_cooldown_hours);
+        }
+
+        if let Ok(mins) = std::env::var("NEXUS_DEEP_DREAM_INACTIVITY_MINS") {
+            config
+                .cognitive_system
+                .dream_triggers
+                .deep_dream_inactivity_mins = mins
+                .parse()
+                .unwrap_or(DreamTriggerConfig::default().deep_dream_inactivity_mins);
+        }
+        if let Ok(threshold) = std::env::var("NEXUS_SIMILARITY_THRESHOLD") {
+            config.cognitive_system.similarity_threshold = threshold
+                .parse()
+                .ok()
+                .filter(|&v: &f32| (0.0..=1.0).contains(&v))
+                .unwrap_or(CognitiveSystemConfig::default().similarity_threshold);
+        }
+
         Ok(config)
     }
 
@@ -604,6 +750,49 @@ mod tests {
         std::env::remove_var("NEXUS_COGNITION_MAX_JOB_BATCH");
         std::env::remove_var("NEXUS_COGNITION_REPRESENTATION_MAX_ITEMS");
         std::env::remove_var("NEXUS_COGNITION_INCLUDE_RAW_BY_DEFAULT");
+    }
+
+    #[test]
+    fn test_cognitive_system_config_defaults() {
+        let config = Config::default();
+        assert!(config.cognitive_system.enabled);
+        assert_eq!(config.cognitive_system.bootstrap_mode, "silent");
+        assert_eq!(config.cognitive_system.hot_cache_max_entries, 20);
+        assert!((config.cognitive_system.context_allocation_pct - 0.10).abs() < f32::EPSILON);
+        assert!(config.cognitive_system.dream_triggers.nap_on_session_end);
+        assert_eq!(
+            config
+                .cognitive_system
+                .dream_triggers
+                .dream_memory_threshold,
+            20
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_cognitive_system_config_from_env() {
+        std::env::set_var("NEXUS_COGNITIVE_ENABLED", "false");
+        std::env::set_var("NEXUS_BOOTSTRAP_MODE", "chatty");
+        std::env::set_var("NEXUS_HOT_CACHE_MAX", "50");
+        std::env::set_var("NEXUS_DREAM_THRESHOLD", "10");
+
+        let config = Config::from_env().expect("config from env");
+        assert!(!config.cognitive_system.enabled);
+        assert_eq!(config.cognitive_system.bootstrap_mode, "chatty");
+        assert_eq!(config.cognitive_system.hot_cache_max_entries, 50);
+        assert_eq!(
+            config
+                .cognitive_system
+                .dream_triggers
+                .dream_memory_threshold,
+            10
+        );
+
+        std::env::remove_var("NEXUS_COGNITIVE_ENABLED");
+        std::env::remove_var("NEXUS_BOOTSTRAP_MODE");
+        std::env::remove_var("NEXUS_HOT_CACHE_MAX");
+        std::env::remove_var("NEXUS_DREAM_THRESHOLD");
     }
 
     #[test]

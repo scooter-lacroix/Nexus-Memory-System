@@ -576,6 +576,7 @@ async fn handle_contradiction(
     cognitive.source_memory_ids = vec![left.id, right.id];
     cognitive.confidence = Some(0.70);
     cognitive.times_contradicted = 1;
+    cognitive.generated_by = Some(REFLECT_GENERATED_BY.to_string());
 
     let metadata = cognitive.merge_into(&serde_json::json!({
         "contradiction_source_ids": [left.id, right.id],
@@ -652,21 +653,13 @@ async fn increment_cognitive_counter(
     // Parse cognitive metadata exactly once.  The snapshot call was redundant
     // here because we need the full CognitiveMetadata struct to merge_into
     // anyway; the snapshot only stores a subset of its fields.
-    let mut cognitive =
-        CognitiveMetadata::from_metadata(&memory.metadata).unwrap_or_else(|| CognitiveMetadata {
-            level: CognitiveLevel::Raw,
-            observer: "unknown".to_string(),
-            subject: "unknown".to_string(),
-            session_key: None,
-            source_memory_ids: Vec::new(),
-            confidence: None,
-            times_reinforced: 0,
-            times_contradicted: 0,
-            generated_by: REFLECT_GENERATED_BY.to_string(),
-            derived_at: None,
-            last_belief_revision: None,
-            resolution_status: None,
-        });
+    let mut cognitive = CognitiveMetadata::from_metadata(&memory.metadata).unwrap_or_else(|| {
+        CognitiveMetadata::new(CognitiveLevel::Raw, "unknown", "unknown", None, "recovery")
+    });
+
+    if cognitive.generated_by.is_none() {
+        cognitive.generated_by = Some(REFLECT_GENERATED_BY.to_string());
+    }
 
     match counter_key {
         "times_reinforced" => {
@@ -1375,7 +1368,10 @@ mod tests {
         let cognitive = CognitiveMetadata::from_metadata(&contradiction.metadata)
             .expect("contradiction memory should have cognitive metadata");
         assert_eq!(cognitive.level, CognitiveLevel::Contradiction);
-        assert_eq!(cognitive.generated_by, REFLECT_GENERATED_BY);
+        assert_eq!(
+            cognitive.generated_by,
+            Some(REFLECT_GENERATED_BY.to_string())
+        );
         assert_eq!(cognitive.source_memory_ids.len(), 2);
         assert!(cognitive.confidence.is_some());
         assert!(cognitive.confidence.unwrap() > 0.0);

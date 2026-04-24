@@ -1,6 +1,7 @@
 //! CLI command implementations
 
 pub mod clean;
+pub mod cognitive;
 pub mod config;
 pub mod consolidate;
 pub mod digest;
@@ -19,7 +20,10 @@ pub mod represent;
 pub mod search;
 pub mod serve;
 pub mod session;
+pub mod soul;
 pub mod stats;
 pub mod store;
 pub mod tools;
 pub mod update;
+
+pub mod subconscious;

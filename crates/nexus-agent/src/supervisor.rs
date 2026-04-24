@@ -3,11 +3,11 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use nexus_core::config::{AgentConfig, CognitionConfig};
+use nexus_core::config::AgentConfig;
 use nexus_core::traits::EmbeddingService;
-use nexus_core::{CognitiveLevel, CognitiveMetadata, Config};
+use nexus_core::Config;
 use nexus_llm::LlmClient;
-use nexus_storage::repository::{ListMemoryFilters, MemoryRepository, ProcessedFileRepository};
+use nexus_storage::repository::{MemoryRepository, ProcessedFileRepository};
 use sqlx::SqlitePool;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
@@ -15,12 +15,14 @@ use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
+use crate::activity_monitor::ActivityMonitor;
 use crate::dream_cycle::{drain_cognition_jobs, run_dream_cycle, DreamCycleRequest};
 use crate::error::AgentError;
 use crate::inbox::InboxScanner;
 use crate::ingest::IngestService;
 use crate::pulse;
 use crate::query::QueryService;
+use crate::soul::SoulBuilder;
 use crate::types::{AgentStatus, QueryIntrospection};
 
 /// How long to wait for tasks to shut down gracefully before force-aborting.
@@ -32,6 +34,7 @@ pub struct AgentSupervisor {
     query_embedder: Option<Arc<dyn EmbeddingService>>,
     pool: SqlitePool,
     namespace_id: i64,
+    project_root: std::path::PathBuf,
     status: Arc<RwLock<AgentStatus>>,
     cancel_token: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
@@ -43,6 +46,7 @@ impl AgentSupervisor {
         llm: Arc<dyn LlmClient>,
         pool: SqlitePool,
         namespace_id: i64,
+        project_root: std::path::PathBuf,
     ) -> Self {
         let status = Arc::new(RwLock::new(AgentStatus {
             enabled: config.enabled,
@@ -62,6 +66,7 @@ impl AgentSupervisor {
             query_embedder: None,
             pool,
             namespace_id,
+            project_root,
             status,
             cancel_token: CancellationToken::new(),
             tasks: Vec::new(),
@@ -121,8 +126,6 @@ impl AgentSupervisor {
             {
                 Ok(()) => info!("All tasks shut down gracefully"),
                 Err(_) => {
-                    // Tasks didn't finish in time — they were already cancelled,
-                    // and their JoinHandles will return once the loop exits.
                     info!("Graceful shutdown timed out");
                 }
             }
@@ -141,7 +144,6 @@ impl AgentSupervisor {
         self
     }
 
-    /// Increment the queries answered counter (for external callers like the web API).
     pub async fn increment_queries_answered(&self) {
         let mut s = self.status.write().await;
         s.queries_answered += 1;
@@ -159,12 +161,10 @@ impl AgentSupervisor {
         IngestService::new(self.llm.clone(), self.config.clone())
     }
 
-    /// Get the agent namespace ID
     pub fn namespace_id(&self) -> i64 {
         self.namespace_id
     }
 
-    /// Compute query introspection (ranking decisions) without calling the LLM.
     pub async fn query_introspection(
         &self,
         question: &str,
@@ -236,17 +236,112 @@ impl AgentSupervisor {
         let llm = self.llm.clone();
         let pool = self.pool.clone();
         let namespace_id = self.namespace_id;
+        let project_root = self.project_root.clone();
         let status = self.status.clone();
+        let embedder = self.query_embedder.clone();
         let base_interval_secs = config.consolidation_interval_mins * 60;
         let cancel = self.cancel_token.clone();
-        let cognition = Config::from_env()
-            .map(|config| config.cognition)
-            .unwrap_or_default();
+
+        let full_config = Config::from_env().unwrap_or_default();
+        let cognition = full_config.cognition.clone();
+        let cognitive_system = full_config.cognitive_system.clone();
 
         let handle = tokio::spawn(async move {
+            let soul_builder = SoulBuilder::new(llm.clone());
+            let mut last_dream_count: usize = 0;
+
             loop {
+                // Reload activity monitor from disk each iteration
+                let mut activity_monitor = ActivityMonitor::load();
+                activity_monitor.deep_dream_cooldown = chrono::Duration::hours(
+                    cognitive_system.dream_triggers.deep_dream_cooldown_hours as i64,
+                );
+                activity_monitor.deep_dream_inactivity_mins =
+                    cognitive_system.dream_triggers.deep_dream_inactivity_mins;
+                if cognitive_system.enabled {
+                    let memory_repo = MemoryRepository::new(pool.clone());
+
+                    // 1. Threshold dream (trigger when enough new memories accumulate
+                    //    since the last dream, not on every single increment)
+                    match memory_repo.count_by_namespace(namespace_id).await {
+                        Ok(count) => {
+                            let count_usize = count as usize;
+                            let threshold = cognitive_system.dream_triggers.dream_memory_threshold;
+                            let new_since_last = count_usize.saturating_sub(last_dream_count);
+                            if count_usize >= threshold && new_since_last >= threshold {
+                                info!(
+                                    "Dream threshold reached ({} memories). Running dream cycle.",
+                                    count
+                                );
+                                let cwd = project_root.clone();
+                                let services = crate::dream_cycle::DreamServices {
+                                    pool: pool.clone(),
+                                    cognition: cognition.clone(),
+                                    agent: config.clone(),
+                                    llm: llm.clone(),
+                                    embeddings: embedder.clone(),
+                                    cognitive_system: cognitive_system.clone(),
+                                };
+                                match crate::dream_cycle::run_dream(&cwd, namespace_id, &services)
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        last_dream_count = count_usize;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            error = %e,
+                                            namespace_id,
+                                            count = count_usize,
+                                            "Threshold dream failed"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                namespace_id,
+                                "Failed to query memory count for threshold dream"
+                            );
+                        }
+                    }
+
+                    // 2. Deep dream
+                    if activity_monitor.should_deep_dream() {
+                        info!("Deep dream conditions met. Running global synthesis.");
+                        let services = crate::dream_cycle::DreamServices {
+                            pool: pool.clone(),
+                            cognition: cognition.clone(),
+                            agent: config.clone(),
+                            llm: llm.clone(),
+                            embeddings: embedder.clone(),
+                            cognitive_system: cognitive_system.clone(),
+                        };
+                        if let Err(e) = crate::dream_cycle::run_deep_dream(
+                            &services,
+                            &soul_builder,
+                            &mut activity_monitor,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %e, "Deep dream cycle failed");
+                        }
+                    }
+                }
+
+                // Persist activity monitor state after potential deep dream.
+                // Reload activity_log from disk first to merge any samples
+                // recorded by hooks during the deep-dream run.
+                let disk_monitor = ActivityMonitor::load();
+                activity_monitor.activity_log = disk_monitor.activity_log;
+                if let Err(e) = activity_monitor.save() {
+                    tracing::warn!(error = %e, "Failed to save activity monitor");
+                }
+
                 let sleep_duration = if cognition.adaptive_dream_enabled {
-                    compute_adaptive_dream_interval(
+                    crate::dream_cycle::compute_adaptive_dream_interval(
                         pool.clone(),
                         namespace_id,
                         base_interval_secs,
@@ -298,11 +393,6 @@ impl AgentSupervisor {
                     }
                     Err(e) => {
                         error!(error = %e, namespace_id, "Consolidation failed");
-                        let mut s = status.write().await;
-                        s.errors.push(format!("Consolidation error: {}", e));
-                        if s.errors.len() > 10 {
-                            s.errors.remove(0);
-                        }
                     }
                 }
             }
@@ -312,18 +402,17 @@ impl AgentSupervisor {
     }
 
     async fn spawn_cognition_worker_task(&self) -> Result<JoinHandle<()>, AgentError> {
-        let config = self.config.clone();
-        let pool = self.pool.clone();
-        let namespace_id = self.namespace_id;
-        let status = self.status.clone();
-        let llm = self.llm.clone();
-        let cancel = self.cancel_token.clone();
-        let cognition = nexus_core::Config::from_env()
+        let cognition = Config::from_env()
             .map(|config| config.cognition)
             .unwrap_or_default();
+        let agent = self.config.clone();
+        let llm = self.llm.clone();
+        let pool = self.pool.clone();
+        let namespace_id = self.namespace_id;
+        let cancel = self.cancel_token.clone();
 
         let handle = tokio::spawn(async move {
-            let mut ticker = interval(Duration::from_secs(config.scan_interval_secs.max(1)));
+            let mut ticker = interval(Duration::from_secs(agent.scan_interval_secs.max(1)));
 
             loop {
                 tokio::select! {
@@ -338,33 +427,19 @@ impl AgentSupervisor {
                     pool.clone(),
                     namespace_id,
                     &cognition,
-                    &config,
+                    &agent,
                     llm.clone(),
                     None,
-                    &format!("supervisor-{}", namespace_id),
+                    &format!("worker-{}", namespace_id),
                 )
                 .await
                 {
-                    Ok(processed) => {
-                        if processed > 0 {
-                            debug!(namespace_id, processed, "Cognition worker drained jobs");
-                            let mut s = status.write().await;
-                            s.last_consolidation = Some(Utc::now());
-                            s.memories_consolidated += processed as u64;
-                            pulse::write_pulse(
-                                "cognition",
-                                s.memories_consolidated,
-                                s.files_processed,
-                            );
-                        }
+                    Ok(processed) if processed > 0 => {
+                        debug!(processed, "Cognition worker drained jobs");
                     }
-                    Err(error) => {
-                        error!(error = %error, namespace_id, "Cognition worker failed");
-                        let mut s = status.write().await;
-                        s.errors.push(format!("Cognition error: {}", error));
-                        if s.errors.len() > 10 {
-                            s.errors.remove(0);
-                        }
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!(error = %e, namespace_id, "Cognition worker failed");
                     }
                 }
             }
@@ -372,57 +447,4 @@ impl AgentSupervisor {
 
         Ok(handle)
     }
-}
-
-/// Compute the next dream-cycle interval based on contradiction density.
-///
-/// When contradictions exist in the namespace, the interval is shortened
-/// proportionally (down to `adaptive_dream_min_interval_secs`). Otherwise
-/// the base interval is used (capped at `adaptive_dream_max_interval_secs`).
-async fn compute_adaptive_dream_interval(
-    pool: SqlitePool,
-    namespace_id: i64,
-    base_interval_secs: u64,
-    cognition: &CognitionConfig,
-) -> Duration {
-    let repo = MemoryRepository::new(pool);
-    let min = cognition.adaptive_dream_min_interval_secs;
-    let max = cognition.adaptive_dream_max_interval_secs;
-    let base = base_interval_secs.clamp(min, max);
-
-    let contradiction_count = match repo
-        .list_filtered(
-            namespace_id,
-            ListMemoryFilters {
-                category: None,
-                since: None,
-                until: None,
-                content_like: None,
-                include_raw: false,
-                limit: 256,
-                offset: 0,
-            },
-        )
-        .await
-    {
-        Ok(memories) => memories
-            .iter()
-            .filter(|m| {
-                CognitiveMetadata::from_metadata(&m.metadata)
-                    .map(|c| c.level == CognitiveLevel::Contradiction)
-                    .unwrap_or(false)
-            })
-            .count(),
-        Err(_) => return Duration::from_secs(base),
-    };
-
-    if contradiction_count == 0 {
-        return Duration::from_secs(base);
-    }
-
-    // Shorten interval proportionally: each contradiction shaves 10% off the base,
-    // down to the minimum.
-    let factor = 1.0 - ((contradiction_count as f32 * 0.10).min(0.9));
-    let adapted = (base as f32 * factor) as u64;
-    Duration::from_secs(adapted.clamp(min, max))
 }

@@ -27,6 +27,9 @@ pub enum LlmError {
 
     #[error("Timeout after {0}s")]
     Timeout(u64),
+
+    #[error("Invalid configuration: {0}")]
+    Configuration(String),
 }
 
 pub type Result<T> = std::result::Result<T, LlmError>;

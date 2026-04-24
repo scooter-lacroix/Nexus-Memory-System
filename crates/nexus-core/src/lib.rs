@@ -5,11 +5,16 @@
 
 pub mod config;
 pub mod error;
+pub mod fsutil;
+pub mod math;
+pub mod project_identity;
 pub mod traits;
 pub mod types;
 
 pub use config::Config;
 pub use error::{NexusError, Result};
+pub use math::cosine_similarity;
+pub use project_identity::ProjectIdentity;
 pub use traits::*;
 pub use types::*;
 

@@ -46,6 +46,7 @@ notify = "6"
 # Misc
 uuid = { workspace = true }
 dirs = { workspace = true }
+regex = "1.12.3"
 
 [dev-dependencies]
 nexus-hooks = { workspace = true }

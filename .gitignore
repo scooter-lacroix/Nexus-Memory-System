@@ -224,3 +224,10 @@ Thumbs.db
 .idea/
 *.sublime-project
 *.sublime-workspace
+.nexus/
+
+# Review artifacts
+REVIEW_FIX_PLAN*.md
+tzar_report.md
+git_workflow_archive_logs/
+ARCHITECTURAL_PLANS*.md

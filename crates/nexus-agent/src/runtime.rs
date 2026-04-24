@@ -184,7 +184,7 @@ impl RuntimeController {
                 &derived_session_key,
             )
             .await?;
-            let plan = dream_cycle::choose_dream_schedule(&self.cognition, &signals, reason);
+            let plan = dream_cycle::choose_dream_schedule(&signals, reason);
             debug!(
                 agent_type,
                 session_key = ?session_key,
@@ -696,7 +696,6 @@ mod tests {
     #[test]
     fn choose_dream_schedule_immediate_for_contradictions() {
         let plan = choose_dream_schedule(
-            &CognitionConfig::default(),
             &DreamSignals {
                 contradiction_count: 1,
                 raw_event_count: 1,
@@ -710,9 +709,7 @@ mod tests {
 
     #[test]
     fn choose_dream_schedule_digest_only_for_light_digest_gap() {
-        let config = CognitionConfig::default();
         let plan = choose_dream_schedule(
-            &config,
             &DreamSignals {
                 raw_event_count: 1,
                 has_digest_gap: true,
@@ -727,7 +724,6 @@ mod tests {
     #[test]
     fn choose_dream_schedule_delays_idle_medium_signal_sessions() {
         let plan = choose_dream_schedule(
-            &CognitionConfig::default(),
             &DreamSignals {
                 raw_event_count: 2,
                 explicit_count: 2,
@@ -743,7 +739,6 @@ mod tests {
     #[test]
     fn choose_dream_schedule_session_end_flushes_explicit_reflection() {
         let plan = choose_dream_schedule(
-            &CognitionConfig::default(),
             &DreamSignals {
                 explicit_count: 2,
                 has_digest_gap: true,
@@ -940,11 +935,8 @@ mod tests {
 
     #[test]
     fn test_choose_dream_schedule_uses_contradiction_density() {
-        let cognition = CognitionConfig::default();
-
         // No signals → skip.
         let plan = choose_dream_schedule(
-            &cognition,
             &DreamSignals::default(),
             RuntimeShutdownReason::SessionEnded,
         );
@@ -957,11 +949,7 @@ mod tests {
             contradiction_density: 0.30,
             ..DreamSignals::default()
         };
-        let plan = choose_dream_schedule(
-            &cognition,
-            &high_density,
-            RuntimeShutdownReason::SessionEnded,
-        );
+        let plan = choose_dream_schedule(&high_density, RuntimeShutdownReason::SessionEnded);
         assert_eq!(plan.action, DreamScheduleAction::ImmediateBounded);
         assert!(plan.reason.contains("high contradiction density"));
 
@@ -973,20 +961,12 @@ mod tests {
             explicit_count: 5,
             ..DreamSignals::default()
         };
-        let plan = choose_dream_schedule(
-            &cognition,
-            &moderate_density,
-            RuntimeShutdownReason::SessionEnded,
-        );
+        let plan = choose_dream_schedule(&moderate_density, RuntimeShutdownReason::SessionEnded);
         assert_eq!(plan.action, DreamScheduleAction::ImmediateBounded);
         assert!(plan.reason.contains("moderate contradiction density"));
 
         // Moderate contradiction density at idle timeout → not immediate.
-        let plan = choose_dream_schedule(
-            &cognition,
-            &moderate_density,
-            RuntimeShutdownReason::IdleTimeout,
-        );
+        let plan = choose_dream_schedule(&moderate_density, RuntimeShutdownReason::IdleTimeout);
         assert_ne!(plan.action, DreamScheduleAction::ImmediateBounded);
     }
 

@@ -267,6 +267,9 @@ pub enum WebSocketMessageType {
     StatsUpdated,
     Ping,
     Pong,
+    CognitiveDrift,
+    DreamCompleted,
+    MorningRecall,
 }
 
 /// WebSocket message
@@ -315,6 +318,30 @@ impl WebSocketMessage {
 
     pub fn pong() -> Self {
         Self::new(WebSocketMessageType::Pong, serde_json::Value::Null)
+    }
+
+    pub fn cognitive_drift(similarity: f32, agent_type: &str) -> Self {
+        let data = serde_json::json!({
+            "similarity": similarity,
+            "agent_type": agent_type,
+        });
+        Self::new(WebSocketMessageType::CognitiveDrift, data)
+    }
+
+    pub fn dream_completed(agent_type: &str, processed: usize) -> Self {
+        let data = serde_json::json!({
+            "agent_type": agent_type,
+            "processed": processed,
+        });
+        Self::new(WebSocketMessageType::DreamCompleted, data)
+    }
+
+    pub fn morning_recall(namespace: &str, count: usize) -> Self {
+        let data = serde_json::json!({
+            "namespace": namespace,
+            "count": count,
+        });
+        Self::new(WebSocketMessageType::MorningRecall, data)
     }
 }
 
@@ -379,6 +406,25 @@ pub struct AgentStatusResponse {
     pub last_consolidation: Option<String>,
     pub errors: Vec<String>,
     pub uptime_secs: u64,
+}
+
+/// Request to pin or boost a memory in cognitive cache
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentBoostRequest {
+    pub memory_id: i64,
+    #[serde(default)]
+    pub pin: bool,
+    pub boost_score: Option<f32>,
+    /// Project root path. Required for the web API — the handler does not fall back to cwd.
+    #[serde(default)]
+    pub root_dir: Option<String>,
+}
+
+/// Response from agent boost
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentBoostResponse {
+    pub success: bool,
+    pub error: Option<String>,
 }
 
 // =============================================================================

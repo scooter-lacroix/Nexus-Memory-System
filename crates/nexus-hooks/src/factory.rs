@@ -96,7 +96,11 @@ impl HookFactory {
         let agent_type_enum = self.supported.get(&normalized).copied();
 
         match agent_type_enum {
-            Some(AgentType::ClaudeCode) => Ok(Box::new(ClaudeCodeHook::new())),
+            Some(AgentType::ClaudeCode) => Ok(Box::new(if readonly {
+                ClaudeCodeHook::new_readonly()
+            } else {
+                ClaudeCodeHook::new()
+            })),
             Some(AgentType::Gemini) => Ok(Box::new(GeminiHook::new())),
             Some(AgentType::Qwen) => Ok(Box::new(QwenHook::new())),
             Some(AgentType::PiMono) => Ok(Box::new(if readonly {

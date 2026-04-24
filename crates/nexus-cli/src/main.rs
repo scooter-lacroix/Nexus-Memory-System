@@ -334,6 +334,11 @@ enum Commands {
         introspect: bool,
     },
 
+    /// Manage the unified soul.md identity file
+    Soul {
+        #[command(subcommand)]
+        command: commands::soul::SoulCommands,
+    },
     /// Inspect evidence lineage for a memory
     Lineage {
         /// Memory ID whose lineage should be shown
@@ -351,6 +356,18 @@ enum Commands {
         /// Only check whether an update is available
         #[arg(long)]
         check: bool,
+    },
+
+    /// Inspect the autonomous cognitive system
+    Cognitive {
+        #[command(subcommand)]
+        command: commands::cognitive::CognitiveCommands,
+    },
+
+    /// Subconscious memory retrieval and injection (bidirectional hooks)
+    Subconscious {
+        #[command(subcommand)]
+        command: commands::subconscious::SubconsciousCommands,
     },
 }
 
@@ -581,6 +598,9 @@ async fn main() -> anyhow::Result<()> {
         } => {
             commands::dream::execute(agent, session_key, format).await?;
         }
+        Commands::Soul { command } => {
+            commands::soul::execute(command).await?;
+        }
         Commands::Represent {
             agent,
             query,
@@ -634,6 +654,12 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Update { check } => {
             commands::update::execute(check).await?;
+        }
+        Commands::Cognitive { command } => {
+            commands::cognitive::execute(command).await?;
+        }
+        Commands::Subconscious { command } => {
+            commands::subconscious::execute(command).await?;
         }
     }
 

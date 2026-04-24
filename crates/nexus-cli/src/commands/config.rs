@@ -206,9 +206,17 @@ async fn prompt_llm_selection(
         eprintln!();
     }
 
+    let default_url = provider.default_base_url();
+    let base_url_prompt = if provider.requires_base_url() {
+        "Base URL (required for this provider)".to_string()
+    } else if default_url.is_empty() {
+        "Base URL (press Enter for default)".to_string()
+    } else {
+        format!("Base URL (press Enter for {})", default_url)
+    };
     let base_url_input: String = Input::new()
-        .with_prompt("Base URL (press Enter for default)")
-        .allow_empty(true)
+        .with_prompt(&base_url_prompt)
+        .default(default_url.to_string())
         .interact_text()?;
     let base_url = (!base_url_input.trim().is_empty()).then_some(base_url_input.clone());
 
