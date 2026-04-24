@@ -1850,7 +1850,6 @@ dependencies = [
  "dirs",
  "nexus-memory-core",
  "nexus-memory-embeddings",
- "nexus-memory-hooks",
  "nexus-memory-lephase",
  "nexus-memory-llm",
  "nexus-memory-storage",
