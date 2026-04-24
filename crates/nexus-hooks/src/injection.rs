@@ -256,11 +256,11 @@ pub async fn on_session_start(
     let namespace = ns_repo.get_or_create(agent_type, agent_type).await?;
 
     // 3. Load Cache and Perform Morning Recall
-    let cache = nexus_memory_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
+    let cache = nexus_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
 
     // Attempt to get embedder if available
     let embedder = if config.embedding.enabled {
-        nexus_memory_agent::runtime::create_embedding_service(&config).await
+        nexus_agent::runtime::create_embedding_service(&config).await
     } else {
         None
     };
@@ -277,10 +277,10 @@ pub async fn on_session_start(
         .await;
 
     // 4. Build and Write context.md
-    let window_size = nexus_memory_agent::TokenBudget::estimate_window(agent_type) as f32;
+    let window_size = nexus_agent::TokenBudget::estimate_window(agent_type) as f32;
     let max_context_tokens =
         (window_size * config.cognitive_system.context_allocation_pct) as usize;
-    let context_md = nexus_memory_agent::context_builder::build_context_md(
+    let context_md = nexus_agent::context_builder::build_context_md(
         &cache.hot_cache,
         &recalls,
         max_context_tokens,
@@ -309,8 +309,7 @@ pub async fn on_session_start(
     }
 
     // 7. Start session scratch file
-    let session_manager =
-        nexus_memory_agent::session_manager::SessionManager::new(&project.root_dir);
+    let session_manager = nexus_agent::session_manager::SessionManager::new(&project.root_dir);
     session_manager.start_session(session_id, agent_type)?;
 
     // 8. Hardening: .gitignore — ensure .nexus/ is always ignored

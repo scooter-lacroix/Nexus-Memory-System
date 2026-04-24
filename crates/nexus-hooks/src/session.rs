@@ -123,7 +123,7 @@ impl SessionContext {
                 handle.spawn(async move {
                     let config = nexus_core::Config::from_env().unwrap_or_default();
                     let embeddings = if config.embedding.enabled {
-                        nexus_memory_agent::runtime::create_embedding_service(&config).await
+                        nexus_agent::runtime::create_embedding_service(&config).await
                     } else {
                         None
                     };

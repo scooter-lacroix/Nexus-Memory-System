@@ -7,6 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme.workspace = true
 description = "Semantic search over storage-backed embeddings for Nexus Memory System"
 
 [dependencies]

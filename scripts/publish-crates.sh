@@ -52,12 +52,15 @@ ws_names = set(name_by_id.values())
 
 for pkg in pkgs.values():
     for dep in pkg.get('dependencies', []):
-        dep_pkg = dep.get('rename') or dep['name']
-        # Resolve the actual package name (handles renames like nexus-core -> nexus-memory-core)
-        actual = dep.get('name', dep_pkg)
-        if actual in ws_names:
-            deps_of[pkg['name']].add(actual)
-            dependents_of[actual].add(pkg['name'])
+        # Skip dev-dependencies: they don't constrain publish order
+        if dep.get('kind') == 'dev':
+            continue
+        # dep['name'] is the real package name (e.g. nexus-memory-core);
+        # dep['rename'] would be the local alias — not needed here.
+        dep_name = dep['name']
+        if dep_name in ws_names:
+            deps_of[pkg['name']].add(dep_name)
+            dependents_of[dep_name].add(pkg['name'])
 
 # Kahn's algorithm for topological sort
 in_degree = {n: len(deps_of.get(n, set())) for n in ws_names}
