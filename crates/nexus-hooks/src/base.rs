@@ -335,8 +335,7 @@ impl BaseHook {
                                     }
                                 };
                                 let embeddings = if config.embedding.enabled {
-                                    nexus_agent::runtime::create_embedding_service(&config)
-                                        .await
+                                    nexus_agent::runtime::create_embedding_service(&config).await
                                 } else {
                                     None
                                 };

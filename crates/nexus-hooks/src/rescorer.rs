@@ -6,10 +6,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
-use nexus_core::{cosine_similarity, EmbeddingService, ProjectIdentity};
 use nexus_agent::cognitive_cache::{CognitiveCache, ConfidenceTier};
 use nexus_agent::context_builder::build_context_md;
 use nexus_agent::token_budget::TokenBudget;
+use nexus_core::{cosine_similarity, EmbeddingService, ProjectIdentity};
 
 /// Tracks session topic drift and triggers re-scoring of the hot cache.
 #[derive(Debug)]

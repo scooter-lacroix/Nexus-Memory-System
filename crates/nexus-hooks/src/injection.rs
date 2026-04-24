@@ -309,8 +309,7 @@ pub async fn on_session_start(
     }
 
     // 7. Start session scratch file
-    let session_manager =
-        nexus_agent::session_manager::SessionManager::new(&project.root_dir);
+    let session_manager = nexus_agent::session_manager::SessionManager::new(&project.root_dir);
     session_manager.start_session(session_id, agent_type)?;
 
     // 8. Hardening: .gitignore — ensure .nexus/ is always ignored
