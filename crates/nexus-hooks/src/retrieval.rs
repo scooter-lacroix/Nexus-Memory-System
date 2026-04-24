@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use nexus_core::Config;
-use nexus_memory_agent::cognitive_cache::{CognitiveCache, ConfidenceTier};
-use nexus_memory_agent::soul::soul_path;
+use nexus_agent::cognitive_cache::{CognitiveCache, ConfidenceTier};
+use nexus_agent::soul::soul_path;
 
 use crate::sync_state::{self, SyncState};
 

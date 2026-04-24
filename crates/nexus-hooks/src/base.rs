@@ -11,8 +11,8 @@ use std::sync::{Arc, RwLock};
 use crate::error::Result;
 use crate::session::SessionContext;
 use crate::types::{ExtractionSource, SessionActivity, SupportTier};
-use nexus_memory_agent::activity_monitor::ActivityMonitor;
-use nexus_memory_agent::dream_cycle::run_nap;
+use nexus_agent::activity_monitor::ActivityMonitor;
+use nexus_agent::dream_cycle::run_nap;
 
 /// Callback type for session end events
 pub type SessionEndCallback = Arc<dyn Fn(SessionContext) + Send + Sync>;
@@ -220,7 +220,7 @@ impl BaseHook {
                 handle.spawn(async move {
                     let config = nexus_core::Config::from_env().unwrap_or_default();
                     let embeddings = if config.embedding.enabled {
-                        nexus_memory_agent::runtime::create_embedding_service(&config).await
+                        nexus_agent::runtime::create_embedding_service(&config).await
                     } else {
                         None
                     };
@@ -335,7 +335,7 @@ impl BaseHook {
                                     }
                                 };
                                 let embeddings = if config.embedding.enabled {
-                                    nexus_memory_agent::runtime::create_embedding_service(&config)
+                                    nexus_agent::runtime::create_embedding_service(&config)
                                         .await
                                 } else {
                                     None
@@ -343,7 +343,7 @@ impl BaseHook {
                                 let timeout = std::time::Duration::from_secs(
                                     config.cognition.session_end_dream_timeout_secs,
                                 );
-                                let services = nexus_memory_agent::dream_cycle::DreamServices {
+                                let services = nexus_agent::dream_cycle::DreamServices {
                                     pool: storage.pool().clone(),
                                     cognition: config.cognition.clone(),
                                     agent: config.agent.clone(),
