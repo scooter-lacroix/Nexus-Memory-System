@@ -86,6 +86,7 @@ nexus-web = { package = "nexus-memory-web", version = "1.2.5", path = "crates/ne
 nexus-hooks = { package = "nexus-memory-hooks", version = "1.2.5", path = "crates/nexus-hooks" }
 nexus-llm = { package = "nexus-memory-llm", version = "1.2.5", path = "crates/nexus-llm" }
 nexus-agent = { package = "nexus-memory-agent", version = "1.2.5", path = "crates/nexus-agent" }
+nexus-memory-agent = { version = "1.2.5", path = "crates/nexus-agent" }
 
 # ONNX Runtime and tokenizers
 ort = { version = "2.0.0-rc.11", features = ["load-dynamic"] }
