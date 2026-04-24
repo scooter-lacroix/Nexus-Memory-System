@@ -52,6 +52,9 @@ ws_names = set(name_by_id.values())
 
 for pkg in pkgs.values():
     for dep in pkg.get('dependencies', []):
+        # Skip dev-dependencies: they don't constrain publish order
+        if dep.get('kind') == 'dev':
+            continue
         dep_pkg = dep.get('rename') or dep['name']
         # Resolve the actual package name (handles renames like nexus-core -> nexus-memory-core)
         actual = dep.get('name', dep_pkg)

@@ -7,6 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+readme.workspace = true
 description = "Agent hooks system for Nexus Memory System - automated memory extraction"
 
 [dependencies]
@@ -41,7 +42,7 @@ nexus-core = { workspace = true }
 nexus-llm = { workspace = true }
 nexus-storage = { workspace = true }
 nexus-orchestrator = { workspace = true }
-nexus-memory-agent = { version = "1.2.2", path = "../nexus-agent" }
+nexus-memory-agent = { version = "1.2.5", path = "../nexus-agent" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
