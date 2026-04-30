@@ -135,56 +135,48 @@ impl DroidHook {
     }
 
     fn desired_commands() -> [(String, String); 5] {
-        let nexus_bin = Self::find_nexus_binary()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"");
+        let nexus_bin = Self::find_nexus_binary();
+        #[cfg(not(windows))]
+        let nexus_bin = nexus_bin.replace('\'', "'\\''");
+        #[cfg(windows)]
+        let nexus_bin = nexus_bin.replace('"', "\\\"");
 
-        let scoped = |base: &str| -> String {
+        let scoped = |args: &str| -> String {
             #[cfg(not(windows))]
             {
-                format!(
-                    "bash -c \"{base} --session-key \\\"${{FACTORY_SESSION_ID:-${{SESSION_ID:-}}}}\\\" --cwd \\\"${{FACTORY_CWD:-${{PWD:-}}}}\\\"\""
-                )
+                let session_key = "\"${FACTORY_SESSION_ID:-${SESSION_ID:-}}\"";
+                let cwd = "\"${FACTORY_CWD:-${PWD:-}}\"";
+                format!("'{nexus_bin}' {args} --session-key {session_key} --cwd {cwd}")
             }
             #[cfg(windows)]
             {
-                // On Windows, invoke the binary directly without bash.
-                // Shell variable expansion is not available; nexus gracefully
-                // handles missing session-key/cwd at runtime via derived keys.
-                format!("{base}")
+                // On Windows, invoke the binary directly without an extra
+                // shell wrapper. Session metadata falls back to derived keys
+                // when the shell-specific variables are unavailable.
+                format!("\"{nexus_bin}\" {args}")
             }
         };
 
         [
             (
                 SESSION_START_EVENT.to_string(),
-                scoped(&format!(
-                    "\"{nexus_bin}\" session start --agent droid --mode session"
-                )),
+                scoped("session start --agent droid --mode session"),
             ),
             (
                 SESSION_END_EVENT.to_string(),
-                scoped(&format!(
-                    "\"{nexus_bin}\" session end --agent droid --reason session-end"
-                )),
+                scoped("session end --agent droid --reason session-end"),
             ),
             (
                 CHECKPOINT_EVENT.to_string(),
-                scoped(&format!(
-                    "\"{nexus_bin}\" session event --agent droid --kind checkpoint"
-                )),
+                scoped("session event --agent droid --kind checkpoint"),
             ),
             (
                 COMPACT_EVENT.to_string(),
-                scoped(&format!(
-                    "\"{nexus_bin}\" session event --agent droid --kind compact"
-                )),
+                scoped("session event --agent droid --kind compact"),
             ),
             (
                 ERROR_EVENT.to_string(),
-                scoped(&format!(
-                    "\"{nexus_bin}\" session event --agent droid --kind error"
-                )),
+                scoped("session event --agent droid --kind error"),
             ),
         ]
     }
@@ -538,6 +530,25 @@ mod tests {
         let bin = DroidHook::find_nexus_binary();
         assert!(!bin.is_empty());
         assert!(bin.contains("nexus"));
+    }
+
+    #[test]
+    fn test_desired_commands_are_direct_shell_commands() {
+        let commands = DroidHook::desired_commands();
+        for (event, command) in commands {
+            assert!(
+                !command.contains("bash -c"),
+                "{event} command should not be wrapped in bash -c: {command}"
+            );
+            assert!(
+                command.contains("session"),
+                "{event} command should invoke a session subcommand"
+            );
+            assert!(
+                command.contains("--agent droid"),
+                "{event} command should target droid"
+            );
+        }
     }
 
     #[test]
