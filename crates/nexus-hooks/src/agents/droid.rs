@@ -145,8 +145,8 @@ impl DroidHook {
         let scoped = |args: &str| -> String {
             #[cfg(not(windows))]
             {
-                let session_key = "\"${FACTORY_SESSION_ID:-${SESSION_ID:-}}\"";
-                let cwd = "\"${FACTORY_CWD:-${PWD:-}}\"";
+                let session_key = "\\\"${FACTORY_SESSION_ID:-${SESSION_ID:-}}\\\"";
+                let cwd = "\\\"${FACTORY_CWD:-${PWD:-}}\\\"";
                 format!(
                     "bash -lc \"exec '{nexus_bin}' {args} --session-key {session_key} --cwd {cwd}\""
                 )
@@ -524,10 +524,17 @@ mod tests {
     fn test_desired_commands_are_direct_shell_commands() {
         let commands = DroidHook::desired_commands();
         for (event, command) in commands {
-            assert!(
-                command.contains("bash -lc"),
-                "{event} command should keep shell expansion: {command}"
-            );
+            if cfg!(windows) {
+                assert!(
+                    !command.contains("bash -lc"),
+                    "{event} command should use the Windows direct invocation path: {command}"
+                );
+            } else {
+                assert!(
+                    command.contains("bash -lc"),
+                    "{event} command should keep shell expansion: {command}"
+                );
+            }
             assert!(
                 command.contains("session"),
                 "{event} command should invoke a session subcommand"
