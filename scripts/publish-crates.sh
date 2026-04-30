@@ -116,10 +116,26 @@ for CRATE in "${CRATES[@]}"; do
   SUCCESS=false
 
   while [[ "${RETRY}" -lt "${MAX_RETRIES}" ]]; do
-    if cargo publish -p "${CRATE}" --locked ${DRY_RUN} --allow-dirty 2>&1; then
+    PUBLISH_OUTPUT=""
+    set +e
+    PUBLISH_OUTPUT=$(cargo publish -p "${CRATE}" --locked ${DRY_RUN} --allow-dirty 2>&1)
+    PUBLISH_STATUS=$?
+    set -e
+
+    if [[ "${PUBLISH_STATUS}" -eq 0 ]]; then
       SUCCESS=true
       break
     fi
+
+    if [[ "${PUBLISH_OUTPUT}" == *"already exists on crates.io index"* ]] ||
+      [[ "${PUBLISH_OUTPUT}" == *"crate \`${CRATE}\` already exists"* ]] ||
+      [[ "${PUBLISH_OUTPUT}" == *"already uploaded"* ]]; then
+      echo "  Already published — skipping"
+      SUCCESS=true
+      break
+    fi
+
+    echo "${PUBLISH_OUTPUT}"
     RETRY=$((RETRY + 1))
     if [[ "${RETRY}" -lt "${MAX_RETRIES}" ]]; then
       echo "  Attempt ${RETRY} failed, waiting 60s for index propagation..."
