@@ -22,13 +22,30 @@ pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == ErrorKind::AlreadyExists => {
             // Some mounted filesystems do not replace an existing destination
-            // during rename. Fall back to a remove-and-replace flow so writes
-            // remain idempotent on overwrite-hostile mounts.
+            // during rename. Move the old file aside first so we can restore it
+            // if the replacement rename fails. This is not fully atomic, but it
+            // preserves the previous contents across crashes and errors.
             match std::fs::symlink_metadata(path) {
                 Ok(metadata) if metadata.file_type().is_dir() => Err(err),
                 Ok(_) => {
-                    let _ = std::fs::remove_file(path);
-                    std::fs::rename(&tmp_path, path)
+                    let backup_path = path.with_extension(format!(
+                        "bak.{}-{}",
+                        std::process::id(),
+                        uuid::Uuid::new_v4()
+                    ));
+                    match std::fs::rename(path, &backup_path) {
+                        Ok(()) => match std::fs::rename(&tmp_path, path) {
+                            Ok(()) => {
+                                let _ = std::fs::remove_file(&backup_path);
+                                Ok(())
+                            }
+                            Err(rename_err) => {
+                                let _ = std::fs::rename(&backup_path, path);
+                                Err(rename_err)
+                            }
+                        },
+                        Err(backup_err) => Err(backup_err),
+                    }
                 }
                 Err(_) => std::fs::rename(&tmp_path, path),
             }

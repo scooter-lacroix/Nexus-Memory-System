@@ -11,6 +11,7 @@ use crate::error::{HookError, Result};
 use crate::monitor::ProcessMonitor;
 use crate::session::SessionContext;
 use crate::types::{AgentType, SessionActivity, SupportTier};
+use nexus_core::fsutil::atomic_write;
 
 const SESSION_START_EVENT: &str = "SessionStart";
 const SESSION_END_EVENT: &str = "SessionEnd";
@@ -146,7 +147,9 @@ impl DroidHook {
             {
                 let session_key = "\"${FACTORY_SESSION_ID:-${SESSION_ID:-}}\"";
                 let cwd = "\"${FACTORY_CWD:-${PWD:-}}\"";
-                format!("'{nexus_bin}' {args} --session-key {session_key} --cwd {cwd}")
+                format!(
+                    "bash -lc \"exec '{nexus_bin}' {args} --session-key {session_key} --cwd {cwd}\""
+                )
             }
             #[cfg(windows)]
             {
@@ -267,22 +270,7 @@ impl DroidHook {
         let serialized = serde_json::to_string_pretty(&settings).map_err(|e| {
             HookError::InstallationFailed(format!("Failed to serialize settings: {}", e))
         })?;
-        let tmp_path = settings_path.with_extension("json.tmp");
-        fs::write(&tmp_path, serialized).await.map_err(|e| {
-            HookError::InstallationFailed(format!("Failed to write temporary settings: {}", e))
-        })?;
-        #[cfg(windows)]
-        if fs::try_exists(&settings_path).await.map_err(|e| {
-            HookError::InstallationFailed(format!("Failed to check settings.json: {}", e))
-        })? {
-            fs::remove_file(&settings_path).await.map_err(|e| {
-                HookError::InstallationFailed(format!(
-                    "Failed to remove existing settings.json before replace: {}",
-                    e
-                ))
-            })?;
-        }
-        fs::rename(&tmp_path, &settings_path).await.map_err(|e| {
+        atomic_write(&settings_path, &serialized).map_err(|e| {
             HookError::InstallationFailed(format!("Failed to replace settings.json: {}", e))
         })?;
 
@@ -537,8 +525,8 @@ mod tests {
         let commands = DroidHook::desired_commands();
         for (event, command) in commands {
             assert!(
-                !command.contains("bash -c"),
-                "{event} command should not be wrapped in bash -c: {command}"
+                command.contains("bash -lc"),
+                "{event} command should keep shell expansion: {command}"
             );
             assert!(
                 command.contains("session"),
