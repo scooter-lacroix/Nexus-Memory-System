@@ -41,10 +41,16 @@ pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
                                 let _ = std::fs::remove_file(&backup_path);
                                 Ok(())
                             }
-                            Err(rename_err) => {
-                                let _ = std::fs::rename(&backup_path, path);
-                                Err(rename_err)
-                            }
+                            Err(rename_err) => match std::fs::rename(&backup_path, path) {
+                                Ok(()) => Err(rename_err),
+                                Err(restore_err) => Err(std::io::Error::new(
+                                    restore_err.kind(),
+                                    format!(
+                                        "atomic_write failed: {}; backup restore failed: {}",
+                                        rename_err, restore_err
+                                    ),
+                                )),
+                            },
                         },
                         Err(backup_err) => Err(backup_err),
                     }

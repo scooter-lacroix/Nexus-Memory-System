@@ -270,9 +270,14 @@ impl DroidHook {
         let serialized = serde_json::to_string_pretty(&settings).map_err(|e| {
             HookError::InstallationFailed(format!("Failed to serialize settings: {}", e))
         })?;
-        atomic_write(&settings_path, &serialized).map_err(|e| {
-            HookError::InstallationFailed(format!("Failed to replace settings.json: {}", e))
-        })?;
+        tokio::task::spawn_blocking(move || atomic_write(&settings_path, &serialized))
+            .await
+            .map_err(|e| {
+                HookError::InstallationFailed(format!("settings.json write task failed: {}", e))
+            })?
+            .map_err(|e| {
+                HookError::InstallationFailed(format!("Failed to replace settings.json: {}", e))
+            })?;
 
         self.settings_hook_installed = true;
         Ok(())
