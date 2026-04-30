@@ -115,6 +115,27 @@ pub async fn execute(command: SubconsciousCommands) -> Result<()> {
     }
 }
 
+/// Render the initial session-start context payload.
+///
+/// This is shared by the `session start` lifecycle command and the explicit
+/// `subconscious session-start` command so both paths surface the same
+/// prompt-visible memory payload.
+pub(crate) fn render_session_start(cwd: Option<String>) -> String {
+    if SubconsciousMode::from_env() == SubconsciousMode::Off {
+        return String::new();
+    }
+
+    let project_root = resolve_project_root(cwd.as_deref());
+    let config = load_config();
+    let engine = RetrievalEngine::new(&project_root, config);
+
+    let soul_content = engine.load_soul_content();
+    let nexus_dir = project_root.join(".nexus");
+    let hot_cache = nexus_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
+
+    engine.format_session_start(&hot_cache, soul_content.as_deref())
+}
+
 fn resolve_project_root(cwd: Option<&str>) -> PathBuf {
     cwd.map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
@@ -125,25 +146,7 @@ fn load_config() -> Config {
 }
 
 async fn execute_session_start(cwd: Option<String>) -> Result<()> {
-    let mode = SubconsciousMode::from_env();
-    if mode == SubconsciousMode::Off {
-        return Ok(());
-    }
-
-    let project_root = resolve_project_root(cwd.as_deref());
-    let config = load_config();
-    let engine = RetrievalEngine::new(&project_root, config);
-
-    // Load hot cache and soul content for initial injection
-    let soul_content = engine.load_soul_content();
-    // Access internal method via a public wrapper — format_session_start takes &CognitiveCache
-    // We need access to the internal load_hot_cache. Since it's private, use the public interface.
-    // For session start, we output the initial context via the engine's format_session_start.
-    // Read hot cache via canonical load path
-    let nexus_dir = project_root.join(".nexus");
-    let hot_cache = nexus_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
-
-    let output = engine.format_session_start(&hot_cache, soul_content.as_deref());
+    let output = render_session_start(cwd);
     if !output.is_empty() {
         println!("{output}");
     }

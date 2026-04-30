@@ -9,7 +9,9 @@
 //! 4. Factory alias resolution works correctly.
 //! 5. All hooks produce correct `agent_type()` strings.
 
-use nexus_hooks::{AgentHook, CLIHook, DroidHook, GeminiHook, HookFactory, QwenHook, SupportTier};
+use nexus_memory_hooks::{
+    AgentHook, CLIHook, DroidHook, GeminiHook, HookFactory, QwenHook, SupportTier,
+};
 
 // ---------------------------------------------------------------------------
 // Behavior 2: Factory routing

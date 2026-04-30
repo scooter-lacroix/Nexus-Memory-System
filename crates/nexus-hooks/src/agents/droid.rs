@@ -11,6 +11,7 @@ use crate::error::{HookError, Result};
 use crate::monitor::ProcessMonitor;
 use crate::session::SessionContext;
 use crate::types::{AgentType, SessionActivity, SupportTier};
+use nexus_core::fsutil::atomic_write;
 
 const SESSION_START_EVENT: &str = "SessionStart";
 const SESSION_END_EVENT: &str = "SessionEnd";
@@ -135,56 +136,50 @@ impl DroidHook {
     }
 
     fn desired_commands() -> [(String, String); 5] {
-        let nexus_bin = Self::find_nexus_binary()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"");
+        let nexus_bin = Self::find_nexus_binary();
+        #[cfg(not(windows))]
+        let nexus_bin = nexus_bin.replace('\'', "'\\''");
+        #[cfg(windows)]
+        let nexus_bin = nexus_bin.replace('"', "\\\"");
 
-        let scoped = |base: &str| -> String {
+        let scoped = |args: &str| -> String {
             #[cfg(not(windows))]
             {
+                let session_key = "\\\"${FACTORY_SESSION_ID:-${SESSION_ID:-}}\\\"";
+                let cwd = "\\\"${FACTORY_CWD:-${PWD:-}}\\\"";
                 format!(
-                    "bash -c \"{base} --session-key \\\"${{FACTORY_SESSION_ID:-${{SESSION_ID:-}}}}\\\" --cwd \\\"${{FACTORY_CWD:-${{PWD:-}}}}\\\"\""
+                    "bash -lc \"exec '{nexus_bin}' {args} --session-key {session_key} --cwd {cwd}\""
                 )
             }
             #[cfg(windows)]
             {
-                // On Windows, invoke the binary directly without bash.
-                // Shell variable expansion is not available; nexus gracefully
-                // handles missing session-key/cwd at runtime via derived keys.
-                format!("{base}")
+                // On Windows, invoke the binary directly without an extra
+                // shell wrapper. Session metadata falls back to derived keys
+                // when the shell-specific variables are unavailable.
+                format!("\"{nexus_bin}\" {args}")
             }
         };
 
         [
             (
                 SESSION_START_EVENT.to_string(),
-                scoped(&format!(
-                    "\"{nexus_bin}\" session start --agent droid --mode session"
-                )),
+                scoped("session start --agent droid --mode session"),
             ),
             (
                 SESSION_END_EVENT.to_string(),
-                scoped(&format!(
-                    "\"{nexus_bin}\" session end --agent droid --reason session-end"
-                )),
+                scoped("session end --agent droid --reason session-end"),
             ),
             (
                 CHECKPOINT_EVENT.to_string(),
-                scoped(&format!(
-                    "\"{nexus_bin}\" session event --agent droid --kind checkpoint"
-                )),
+                scoped("session event --agent droid --kind checkpoint"),
             ),
             (
                 COMPACT_EVENT.to_string(),
-                scoped(&format!(
-                    "\"{nexus_bin}\" session event --agent droid --kind compact"
-                )),
+                scoped("session event --agent droid --kind compact"),
             ),
             (
                 ERROR_EVENT.to_string(),
-                scoped(&format!(
-                    "\"{nexus_bin}\" session event --agent droid --kind error"
-                )),
+                scoped("session event --agent droid --kind error"),
             ),
         ]
     }
@@ -275,24 +270,14 @@ impl DroidHook {
         let serialized = serde_json::to_string_pretty(&settings).map_err(|e| {
             HookError::InstallationFailed(format!("Failed to serialize settings: {}", e))
         })?;
-        let tmp_path = settings_path.with_extension("json.tmp");
-        fs::write(&tmp_path, serialized).await.map_err(|e| {
-            HookError::InstallationFailed(format!("Failed to write temporary settings: {}", e))
-        })?;
-        #[cfg(windows)]
-        if fs::try_exists(&settings_path).await.map_err(|e| {
-            HookError::InstallationFailed(format!("Failed to check settings.json: {}", e))
-        })? {
-            fs::remove_file(&settings_path).await.map_err(|e| {
-                HookError::InstallationFailed(format!(
-                    "Failed to remove existing settings.json before replace: {}",
-                    e
-                ))
+        tokio::task::spawn_blocking(move || atomic_write(&settings_path, &serialized))
+            .await
+            .map_err(|e| {
+                HookError::InstallationFailed(format!("settings.json write task failed: {}", e))
+            })?
+            .map_err(|e| {
+                HookError::InstallationFailed(format!("Failed to replace settings.json: {}", e))
             })?;
-        }
-        fs::rename(&tmp_path, &settings_path).await.map_err(|e| {
-            HookError::InstallationFailed(format!("Failed to replace settings.json: {}", e))
-        })?;
 
         self.settings_hook_installed = true;
         Ok(())
@@ -538,6 +523,32 @@ mod tests {
         let bin = DroidHook::find_nexus_binary();
         assert!(!bin.is_empty());
         assert!(bin.contains("nexus"));
+    }
+
+    #[test]
+    fn test_desired_commands_are_direct_shell_commands() {
+        let commands = DroidHook::desired_commands();
+        for (event, command) in commands {
+            if cfg!(windows) {
+                assert!(
+                    !command.contains("bash -lc"),
+                    "{event} command should use the Windows direct invocation path: {command}"
+                );
+            } else {
+                assert!(
+                    command.contains("bash -lc"),
+                    "{event} command should keep shell expansion: {command}"
+                );
+            }
+            assert!(
+                command.contains("session"),
+                "{event} command should invoke a session subcommand"
+            );
+            assert!(
+                command.contains("--agent droid"),
+                "{event} command should target droid"
+            );
+        }
     }
 
     #[test]

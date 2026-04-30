@@ -28,6 +28,7 @@ pub async fn execute_start(
     cwd: Option<String>,
     mode: String,
 ) -> Result<()> {
+    let session_key = session_key.filter(|value| !value.trim().is_empty());
     let config = Config::from_env()?;
     let embeddings = create_embedding_service(&config).await;
     let controller =
@@ -64,7 +65,14 @@ pub async fn execute_start(
     )
     .await?;
 
-    println!(
+    let output = crate::commands::subconscious::render_session_start(Some(
+        cwd_path.to_string_lossy().into_owned(),
+    ));
+    if !output.is_empty() {
+        println!("{output}");
+    }
+
+    tracing::debug!(
         "Session runtime ready for {} ({})",
         agent,
         derive_session_key(&agent, session_key.as_deref(), cwd.as_deref())
@@ -78,6 +86,7 @@ pub async fn execute_event(
     cwd: Option<String>,
     kind: String,
 ) -> Result<()> {
+    let session_key = session_key.filter(|value| !value.trim().is_empty());
     let config = Config::from_env()?;
     let should_record = !matches!(kind.as_str(), "compact" | "checkpoint" | "completion")
         || config.cognition.checkpoint_flush_enabled;
@@ -114,7 +123,7 @@ pub async fn execute_event(
             .await?;
     }
 
-    println!("Session event recorded for {}: {}", agent, kind);
+    tracing::debug!("Session event recorded for {}: {}", agent, kind);
     Ok(())
 }
 
@@ -124,6 +133,7 @@ pub async fn execute_end(
     cwd: Option<String>,
     reason: Option<String>,
 ) -> Result<()> {
+    let session_key = session_key.filter(|value| !value.trim().is_empty());
     let config = Config::from_env()?;
     let reason = reason.unwrap_or_else(|| "session-ended".to_string());
     let raw_payload = read_optional_stdin_json();
@@ -162,7 +172,7 @@ pub async fn execute_end(
         )
         .await?;
 
-    println!(
+    tracing::debug!(
         "Session finalized for {} ({})",
         agent,
         derive_session_key(&agent, session_key.as_deref(), cwd.as_deref())
