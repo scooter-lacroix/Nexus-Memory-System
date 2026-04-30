@@ -110,16 +110,34 @@ for CRATE in "${CRATES[@]}"; do
     fi
   fi
 
-  # Publish with retries for index propagation lag
-  MAX_RETRIES=3
-  RETRY=0
-  SUCCESS=false
+   # Publish with retries for index propagation lag
+   MAX_RETRIES=3
+   RETRY=0
+   SUCCESS=false
+   SKIPPED_THIS_CRATE=false
 
-  while [[ "${RETRY}" -lt "${MAX_RETRIES}" ]]; do
-    if cargo publish -p "${CRATE}" --locked ${DRY_RUN} --allow-dirty 2>&1; then
+   while [[ "${RETRY}" -lt "${MAX_RETRIES}" ]]; do
+    PUBLISH_OUTPUT=""
+    set +e
+    PUBLISH_OUTPUT=$(cargo publish -p "${CRATE}" --locked ${DRY_RUN} --allow-dirty 2>&1)
+    PUBLISH_STATUS=$?
+    set -e
+
+    if [[ "${PUBLISH_STATUS}" -eq 0 ]]; then
       SUCCESS=true
       break
     fi
+
+     if [[ "${PUBLISH_OUTPUT}" == *"already exists on crates.io index"* ]] ||
+       [[ "${PUBLISH_OUTPUT}" == *"crate \`${CRATE}\` already exists"* ]] ||
+       [[ "${PUBLISH_OUTPUT}" == *"already uploaded"* ]]; then
+       echo "  Already published — skipping"
+       SKIPPED_THIS_CRATE=true
+       SUCCESS=true
+       break
+     fi
+
+    echo "${PUBLISH_OUTPUT}"
     RETRY=$((RETRY + 1))
     if [[ "${RETRY}" -lt "${MAX_RETRIES}" ]]; then
       echo "  Attempt ${RETRY} failed, waiting 60s for index propagation..."
@@ -127,20 +145,22 @@ for CRATE in "${CRATES[@]}"; do
     fi
   done
 
-  if [[ "${SUCCESS}" == "true" ]]; then
-    echo "  ✓ Published"
-    PUBLISHED=$((PUBLISHED + 1))
-  else
-    echo "  ✗ Failed after ${MAX_RETRIES} attempts"
-    FAILED=$((FAILED + 1))
-    exit 1
-  fi
+   if [[ "${SKIPPED_THIS_CRATE}" == "true" ]]; then
+     SKIPPED=$((SKIPPED + 1))
+   elif [[ "${SUCCESS}" == "true" ]]; then
+     echo "  ✓ Published"
+     PUBLISHED=$((PUBLISHED + 1))
+   else
+     echo "  ✗ Failed after ${MAX_RETRIES} attempts"
+     FAILED=$((FAILED + 1))
+     exit 1
+   fi
 
-  # Wait for crates.io index to propagate before next crate
-  if [[ -z "${DRY_RUN}" ]]; then
-    echo "  Waiting 30s for index propagation..."
-    sleep 30
-  fi
+   # Wait for crates.io index to propagate before next crate (only after real publishes)
+   if [[ -z "${DRY_RUN}" && "${SKIPPED_THIS_CRATE}" == "false" ]]; then
+     echo "  Waiting 30s for index propagation..."
+     sleep 30
+   fi
   echo ""
 done
 
