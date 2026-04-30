@@ -1,6 +1,5 @@
 //! Filesystem utilities shared across crates.
 
-use std::ffi::OsString;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
@@ -24,8 +23,7 @@ pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
         Err(err) if err.kind() == ErrorKind::AlreadyExists => {
             // Some mounted filesystems do not replace an existing destination
             // during rename. Fall back to a remove-and-replace flow with a
-            // single reusable backup file so repeated writes do not accumulate
-            // orphaned backups on overwrite-hostile mounts.
+            // per-write backup so we never touch a user-owned sibling file.
             match std::fs::symlink_metadata(path) {
                 Ok(metadata) if metadata.file_type().is_dir() => Err(err),
                 Ok(_) => {
@@ -65,15 +63,11 @@ pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
 }
 
 fn backup_path(path: &Path) -> PathBuf {
-    let backup_name = path.file_name().map_or_else(
-        || OsString::from("backup.bak"),
-        |name| {
-            let mut backup_name = name.to_os_string();
-            backup_name.push(".bak");
-            backup_name
-        },
-    );
-    path.with_file_name(backup_name)
+    path.with_extension(format!(
+        "bak.{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ))
 }
 
 #[cfg(test)]
