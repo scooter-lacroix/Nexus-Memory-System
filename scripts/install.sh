@@ -2,7 +2,8 @@
 # Nexus Memory System — complete build + install
 #
 # Builds all workspace crates from source and installs the CLI binary,
-# env files, shell profiles, Claude Code hooks, and tool wrappers.
+# env files, shell profiles, agent hooks (Claude Code, Droid, Pi-Mono,
+# Oh-My-Pi, Pi-Skills), and tool wrappers.
 #
 # Usage:
 #   ./scripts/install.sh              # Full build + install (default)
@@ -55,7 +56,7 @@ Builds all workspace crates from source and installs everything:
   - nexus CLI binary  (installed to ${BIN_DIR}/nexus)
   - environment files  (bash + fish)
   - shell profiles     (auto-detected or --profile)
-  - Claude Code hooks  (env vars + lifecycle hook shim)
+  - agent hooks        (Claude Code, Droid, Pi-Mono, Oh-My-Pi, Pi-Skills)
   - tool wrappers      (codex-nexus, claude-nexus, etc. with auto session lifecycle)
 
 Usage: $0 [options]
@@ -954,6 +955,317 @@ PYTHON_EOF
     fi
 }
 
+# ── Droid (Factory CLI) hooks ──────────────────────────────────────────
+configure_droid_hooks() {
+    step "Configuring Droid (Factory CLI) lifecycle hooks"
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        warn "python3 not found; skipping Droid hook configuration"
+        return
+    fi
+
+    local settings_file="${HOME}/.factory/settings.json"
+    local shim_path="${CONFIG_DIR}/hooks/event-ingest.js"
+
+    if [[ ! -f "${settings_file}" ]]; then
+        warn "Factory settings not found at ${settings_file}"
+        return
+    fi
+
+    # Resolve nexus binary path (same logic as DroidHook::find_nexus_binary)
+    local nexus_bin="${BIN_DIR}/nexus"
+    if [[ -x "${nexus_bin}" ]]; then
+        :
+    else
+        for candidate in \
+            "${HOME}/.cargo/bin/nexus" \
+            "${HOME}/.cargo/bin/nexus-bin" \
+            "${HOME}/.local/bin/nexus" \
+            "${HOME}/.local/bin/nexus-bin" \
+            "/usr/local/bin/nexus" \
+            "/usr/local/bin/nexus-bin"
+        do
+            if [[ -x "${candidate}" ]]; then
+                nexus_bin="${candidate}"
+                break
+            fi
+        done
+    fi
+
+    # Escape single quotes for bash -lc 'exec ...' on POSIX
+    if [[ "${nexus_bin}" == *\'* ]]; then
+        nexus_bin="${nexus_bin//\'/\'\\\'\'}"
+    fi
+
+    python3 << PYTHON_EOF
+import json
+import os
+
+settings_path = '${settings_file}'
+shim_path = '${shim_path}'
+nexus_bin = '${nexus_bin}'
+
+def scoped(args):
+    session_key = '\\\"${FACTORY_SESSION_ID:-${SESSION_ID:-}}\\\"'
+    cwd = '\\\"${FACTORY_CWD:-${PWD:-}}\\\"'
+    return f"bash -lc \\"exec '{nexus_bin}' {args} --session-key {session_key} --cwd {cwd}\\""
+
+def scoped_subconscious(args):
+    session_id = '\\\"${FACTORY_SESSION_ID:-${SESSION_ID:-}}\\\"'
+    cwd = '\\\"${FACTORY_CWD:-${PWD:-}}\\\"'
+    return f"bash -lc \\"exec '{nexus_bin}' {args} --session-id {session_id} --cwd {cwd}\\""
+
+desired_commands = [
+    ('SessionStart',  scoped('session start --agent droid --mode session')),
+    ('SessionEnd',    scoped('session end --agent droid --reason session-end')),
+    ('PostToolUse',   scoped('ingest-hook-event --agent droid --event PostToolUse')),
+    ('PreCompact',    scoped('session event --agent droid --kind compact')),
+    ('Stop',          scoped_subconscious('subconscious ingest-transcript --agent droid')),
+]
+
+with open(settings_path) as f:
+    s = json.load(f)
+
+if 'hooks' not in s:
+    s['hooks'] = {}
+
+def normalize_entry(entry):
+    if not isinstance(entry, dict):
+        return None
+    matcher = entry.get('matcher', '')
+    hooks = entry.get('hooks')
+    if isinstance(hooks, list):
+        normalized_hooks = []
+        for hook in hooks:
+            if not isinstance(hook, dict):
+                continue
+            if hook.get('type') != 'command':
+                normalized_hooks.append(hook)
+                continue
+            command = hook.get('command')
+            if not command:
+                continue
+            normalized = {
+                'type': 'command',
+                'command': command,
+            }
+            if 'timeout' in hook:
+                normalized['timeout'] = hook['timeout']
+            normalized_hooks.append(normalized)
+        if normalized_hooks:
+            return {'matcher': matcher, 'hooks': normalized_hooks}
+        return None
+    command = entry.get('command')
+    if command:
+        hook = {'type': 'command', 'command': command}
+        if 'timeout' in entry:
+            hook['timeout'] = entry['timeout']
+        return {'matcher': matcher, 'hooks': [hook]}
+    return None
+
+def entry_commands(entry):
+    commands = []
+    for hook in entry.get('hooks', []):
+        if isinstance(hook, dict):
+            command = hook.get('command')
+            if command:
+                commands.append(command)
+    return commands
+
+def canonical_entry(command, timeout):
+    return {
+        'matcher': '',
+        'hooks': [{
+            'type': 'command',
+            'command': command,
+            'timeout': timeout,
+        }],
+    }
+
+# Clean existing hook entries
+for hook_name, entries in list(s.get('hooks', {}).items()):
+    if not isinstance(entries, list):
+        continue
+    cleaned = []
+    for entry in entries:
+        normalized = normalize_entry(entry)
+        if normalized is not None:
+            cleaned.append(normalized)
+    s['hooks'][hook_name] = cleaned
+
+# Upsert desired hooks
+for hook_name, (command, timeout) in [
+    ('SessionStart', (desired_commands[0][1], 10000)),
+    ('PostToolUse', (desired_commands[1][1], 30000)),
+    ('PreCompact', (desired_commands[2][1], 5000)),
+    ('Stop', (desired_commands[3][1], 30000)),
+    ('SessionEnd', (desired_commands[4][1], 30000)),
+]:
+    existing = s['hooks'].get(hook_name, [])
+    preserved = []
+    for entry in existing:
+        cmds = entry_commands(entry)
+        # Remove any existing Nexus droid hooks
+        if any('nexus' in c and '--agent droid' in c for c in cmds):
+            continue
+        preserved.append(entry)
+    preserved.append(canonical_entry(command, timeout))
+    s['hooks'][hook_name] = preserved
+
+with open(settings_path, 'w') as f:
+    json.dump(s, f, indent=2)
+    f.write('\n')
+PYTHON_EOF
+
+    if [[ $? -eq 0 ]]; then
+        ok "Configured Droid lifecycle hooks"
+    else
+        warn "Failed to configure Droid lifecycle hooks"
+    fi
+}
+
+# ── Pi-Mono extension ───────────────────────────────────────────────────
+install_pi_mono_extension() {
+    step "Installing Pi-Mono extension"
+
+    local extension_dir="${HOME}/.pi/agent/extensions"
+    local extension_path="${extension_dir}/nexus-memory.ts"
+    local repo_extension_path="${REPO_ROOT}/crates/nexus-hooks/src/extension_ts/nexus_memory_pi.ts"
+
+    mkdir -p "${extension_dir}"
+
+    if [[ ! -f "${repo_extension_path}" ]]; then
+        warn "Pi-Mono extension source not found at ${repo_extension_path}"
+        return
+    fi
+
+    cp "${repo_extension_path}" "${extension_path}"
+    chmod 0644 "${extension_path}"
+    ok "Installed Pi-Mono extension to ${extension_path}"
+}
+
+# ── Oh-My-Pi skill ───────────────────────────────────────────────────────
+install_oh_my_pi_skill() {
+    step "Installing Oh-My-Pi skill"
+
+    local skills_dir="${HOME}/.omp/agent/skills"
+    local skill_dir="${skills_dir}/nexus-memory-extraction"
+    local skill_path="${skill_dir}/SKILL.md"
+
+    mkdir -p "${skill_dir}"
+
+    cat > "${skill_path}" <<'SKILL_EOF'
+---
+name: nexus-memory-extraction
+description: Automatically extract session context to Nexus Memory System
+version: 1.0.0
+author: Nexus Memory System
+triggers:
+  - on_session_end
+  - on_checkpoint
+  - on_completion
+  - on_error
+priority: high
+---
+
+# Nexus Memory Extraction Skill (Oh-My-Pi)
+
+This skill automatically extracts session context when oh-my-pi sessions end.
+
+## Features
+
+- **Native Rust Integration**: Works with OMP's native engine
+- **TTSR Support**: Time Traveling Streamed Rules for complex workflows
+- **Full Context Capture**: Conversations, decisions, files, commands
+
+## Native Engine Features
+
+The skill leverages OMP's native Rust engine for:
+- `grep`: Fast searching
+- `shell`: Command execution
+- `glob`: File pattern matching
+- `task`: Subagent management
+
+## Configuration
+
+Set environment variables:
+- `NEXUS_AUTO_INGEST=true`
+- `NEXUS_SERVER_URL=http://localhost:8768`
+SKILL_EOF
+
+    ok "Installed Oh-My-Pi skill to ${skill_path}"
+}
+
+# ── Pi-Skills hook ───────────────────────────────────────────────────────
+install_pi_skills() {
+    step "Installing Pi-Skills nexus-memory-extraction skill"
+
+    # Search for an existing skills directory in order of preference
+    local skills_dir=""
+    for dir in \
+        "${HOME}/.pi-skills" \
+        "${HOME}/.pi/skills" \
+        "${HOME}/.omp/skills"
+    do
+        if [[ -d "${dir}" ]]; then
+            skills_dir="${dir}"
+            break
+        fi
+    done
+
+    if [[ -z "${skills_dir}" ]]; then
+        # Create first available location
+        if [[ ! -d "${HOME}/.pi-skills" ]]; then
+            mkdir -p "${HOME}/.pi-skills"
+        fi
+        skills_dir="${HOME}/.pi-skills"
+    fi
+
+    local skill_dir="${skills_dir}/nexus-memory-extraction"
+    local skill_path="${skill_dir}/SKILL.md"
+
+    mkdir -p "${skill_dir}"
+
+    cat > "${skill_path}" <<'SKILL_EOF'
+---
+name: nexus-memory-extraction
+description: Automatically extract session context to Nexus Memory System
+version: 1.0.0
+author: Nexus Memory System
+triggers:
+  - on_session_end
+  - on_checkpoint
+---
+
+# Nexus Memory Extraction Skill
+
+Cross-compatible skill for extracting session context.
+
+## Compatible Platforms
+
+- pi-mono
+- oh-my-pi
+- Claude Code
+- Codex CLI
+- Amp
+- Droid
+
+## Usage
+
+This skill runs automatically when sessions end.
+
+## Configuration
+
+Helper files available at: {baseDir}/
+
+Set environment variables:
+- `NEXUS_AUTO_INGEST=true`
+- `NEXUS_SERVER_URL=http://localhost:8768`
+SKILL_EOF
+
+    ok "Installed Pi-Skills skill to ${skill_path}"
+}
+
 # ── Clean uninstall ───────────────────────────────────────────────────
 uninstall_components() {
     step "Removing installed components"
@@ -1081,6 +1393,81 @@ PYTHON_EOF
         fi
     fi
 
+    # ── Droid lifecycle hooks in settings.json ──
+    if command -v python3 >/dev/null 2>&1; then
+        local droid_settings="${HOME}/.factory/settings.json"
+        if [[ -f "${droid_settings}" ]]; then
+            python3 << PYTHON_EOF
+import json, re
+
+settings_path = '${droid_settings}'
+
+with open(settings_path) as f:
+    s = json.load(f)
+
+if 'hooks' not in s:
+    exit(0)
+
+def entry_commands(entry):
+    commands = []
+    for hook in entry.get('hooks', []):
+        if isinstance(hook, dict):
+            command = hook.get('command')
+            if command:
+                commands.append(command)
+    return commands
+
+for hook_name, entries in list(s['hooks'].items()):
+    if not isinstance(entries, list):
+        continue
+    cleaned = []
+    for entry in entries:
+        commands = entry_commands(entry)
+        # Remove Nexus droid-specific hooks
+        is_droid = any('nexus' in c and '--agent droid' in c for c in commands)
+        if not is_droid:
+            cleaned.append(entry)
+    if cleaned:
+        s['hooks'][hook_name] = cleaned
+    else:
+        del s['hooks'][hook_name]
+
+with open(settings_path, 'w') as f:
+    json.dump(s, f, indent=2)
+    f.write('\n')
+PYTHON_EOF
+            ok "Cleaned Droid settings.json"
+        fi
+    fi
+
+    # ── Pi-Mono extension ──
+    local pi_ext="${HOME}/.pi/agent/extensions/nexus-memory.ts"
+    if [[ -f "${pi_ext}" ]]; then
+        rm -f "${pi_ext}"
+        ok "Removed Pi-Mono extension"
+    fi
+
+    # ── Oh-My-Pi skill ──
+    local omp_skill="${HOME}/.omp/agent/skills/nexus-memory-extraction/SKILL.md"
+    if [[ -f "${omp_skill}" ]]; then
+        rm -f "${omp_skill}"
+        # Remove parent dir if empty
+        rmdir "${HOME}/.omp/agent/skills/nexus-memory-extraction" 2>/dev/null || true
+        ok "Removed Oh-My-Pi skill"
+    fi
+
+    # ── Pi-Skills (multiple locations) ──
+    for pi_skill_dir in \
+        "${HOME}/.pi-skills/nexus-memory-extraction" \
+        "${HOME}/.pi/skills/nexus-memory-extraction" \
+        "${HOME}/.omp/skills/nexus-memory-extraction"
+    do
+        if [[ -d "${pi_skill_dir}" ]]; then
+            rm -rf "${pi_skill_dir}"
+            ok "Removed Pi-Skills skill at ${pi_skill_dir}"
+        fi
+    done
+
     # ── Database ──
     if [[ ${RESET_DB} -eq 1 ]]; then
         if [[ -f "${DB_PATH}" ]]; then
@@ -1136,6 +1523,10 @@ main() {
     initialize_database
     configure_claude_code
     configure_claude_hooks
+    configure_droid_hooks
+    install_pi_mono_extension
+    install_oh_my_pi_skill
+    install_pi_skills
 
     echo
     ok "Installation complete"
@@ -1145,6 +1536,13 @@ main() {
     echo "  Config:   ${ENV_FILE}"
     echo "  Hooks:    ${CONFIG_DIR}/hooks/event-ingest.js"
     echo "  Inbox:    ${DATA_DIR}/inbox/"
+    echo
+    echo "Agent integrations installed:"
+    echo "  • Claude Code  (settings.json + shim)"
+    echo "  • Droid        (Factory settings.json lifecycle hooks)"
+    echo "  • Pi-Mono      (~/.pi/agent/extensions/nexus-memory.ts)"
+    echo "  • Oh-My-Pi     (~/.omp/agent/skills/nexus-memory-extraction/SKILL.md)"
+    echo "  • Pi-Skills    (~/.pi-skills/ or ~/.pi/skills/ or ~/.omp/skills/)"
     echo
     echo "Restart your shell or run:"
     echo "  source ${ENV_FILE}"
