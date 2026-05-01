@@ -19,6 +19,17 @@ pub struct AgentInjectionTarget {
 pub const NEXUS_BLOCK_START: &str = "<!-- NEXUS:START -->";
 pub const NEXUS_BLOCK_END: &str = "<!-- NEXUS:END -->";
 
+/// Check if a JSON value is a Nexus-managed entry.
+///
+/// Nexus-owned entries have `"source": "nexus-memory"` at the top level.
+fn is_nexus_owned(value: &Value) -> bool {
+    value
+        .get("source")
+        .and_then(|v| v.as_str())
+        .map(|s| s == "nexus-memory")
+        .unwrap_or(false)
+}
+
 impl AgentInjectionTarget {
     /// Get known agent injection targets.
     pub fn known_agents() -> Vec<Self> {
@@ -61,7 +72,7 @@ impl AgentInjectionTarget {
     pub fn find(agent_type: &str) -> Option<Self> {
         Self::known_agents()
             .into_iter()
-            .find(|t| t.agent_type == agent_type || agent_type.contains(&t.agent_type))
+            .find(|t| t.agent_type == agent_type)
     }
 }
 
@@ -80,7 +91,8 @@ pub fn inject_reference(
     let original_content = content.clone();
 
     // Detect JSON config files (Droid's settings.json, etc.)
-    let is_json = config_file.extension()
+    let is_json = config_file
+        .extension()
         .map(|ext| ext == "json")
         .unwrap_or(false);
 
@@ -154,7 +166,7 @@ fn inject_into_json(
     context_path: &Path,
     _agent_type: Option<&str>,
 ) -> io::Result<String> {
-    use serde_json::{Map, Value};
+    use serde_json::Value;
 
     let mut json: Value = serde_json::from_str(content)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -182,20 +194,36 @@ fn inject_into_json(
     match json {
         Value::Object(ref mut map) => {
             if let Some(Value::Object(hooks)) = map.get_mut("hooks") {
+                if let Some(existing) = hooks.get("nexus") {
+                    if !is_nexus_owned(existing) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "Refusing to overwrite non-Nexus-managed hooks.nexus",
+                        ));
+                    }
+                }
                 hooks.insert("nexus".to_string(), nexus_obj);
             } else {
+                if let Some(existing) = map.get("nexus") {
+                    if !is_nexus_owned(existing) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "Refusing to overwrite non-Nexus-managed nexus key",
+                        ));
+                    }
+                }
                 map.insert("nexus".to_string(), nexus_obj);
             }
         }
         _ => {
-            let mut wrapper = Map::new();
-            wrapper.insert("nexus".to_string(), nexus_obj);
-            wrapper.insert("original".to_string(), json.clone());
-            json = Value::Object(wrapper);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Expected top-level JSON object for Nexus injection",
+            ));
         }
     }
 
-    serde_json::to_string_pretty(&json).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    serde_json::to_string_pretty(&json).map_err(std::io::Error::other)
 }
 
 /// Inject only the soul identity reference into a config file (no project context).
@@ -207,7 +235,8 @@ pub fn inject_soul_only(config_file: &Path, soul_path: &Path) -> io::Result<()> 
     let content = fs::read_to_string(config_file)?;
     let original_content = content.clone();
 
-    let is_json = config_file.extension()
+    let is_json = config_file
+        .extension()
         .map(|ext| ext == "json")
         .unwrap_or(false);
 
@@ -270,11 +299,8 @@ pub fn inject_soul_only(config_file: &Path, soul_path: &Path) -> io::Result<()> 
 }
 
 /// Inject soul-only reference into JSON config
-fn inject_into_json_soul_only(
-    content: &str,
-    soul_path: &Path,
-) -> io::Result<String> {
-    use serde_json::{Map, Value};
+fn inject_into_json_soul_only(content: &str, soul_path: &Path) -> io::Result<String> {
+    use serde_json::Value;
 
     let mut json: Value = serde_json::from_str(content)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -297,14 +323,14 @@ fn inject_into_json_soul_only(
             }
         }
         _ => {
-            let mut wrapper = Map::new();
-            wrapper.insert("nexus".to_string(), nexus_obj);
-            wrapper.insert("original".to_string(), json.clone());
-            json = Value::Object(wrapper);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Expected top-level JSON object for Nexus injection",
+            ));
         }
     }
 
-    serde_json::to_string_pretty(&json).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    serde_json::to_string_pretty(&json).map_err(std::io::Error::other)
 }
 
 /// Remove Nexus references from a config file.
@@ -313,7 +339,8 @@ pub fn remove_reference(config_file: &Path) -> io::Result<()> {
         return Ok(());
     }
 
-    let is_json = config_file.extension()
+    let is_json = config_file
+        .extension()
         .map(|ext| ext == "json")
         .unwrap_or(false);
 
@@ -331,8 +358,7 @@ pub fn remove_reference(config_file: &Path) -> io::Result<()> {
             }
         }
 
-        let updated = serde_json::to_string_pretty(&json)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let updated = serde_json::to_string_pretty(&json).map_err(std::io::Error::other)?;
         atomic_write(config_file, &updated)?;
     } else {
         let content = fs::read_to_string(config_file)?;
@@ -390,7 +416,10 @@ pub async fn on_session_start(
     // 3. Load Cache and Perform Morning Recall
     let mut cache = nexus_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
     // Remove internal session lifecycle memories from hot cache (cleanup from previous runs)
-    cache.hot_cache.entries.retain(|e| !e.content.starts_with("Session lifecycle event"));
+    cache
+        .hot_cache
+        .entries
+        .retain(|e| !e.content.starts_with("Session lifecycle event"));
 
     // Attempt to get embedder if available
     let embedder = if config.embedding.enabled {
