@@ -180,8 +180,9 @@ impl DroidHook {
             ),
             (
                 ERROR_EVENT.to_string(),
-                // Capture error context and transcript via ingest-hook-event (payload includes transcript_path, error details)
-                scoped("ingest-hook-event --agent droid --event Stop"),
+                // Capture full conversation transcript via subconscious ingest-transcript
+                // The Stop payload contains transcript_path; this reads the JSONL and ingests it
+                scoped("subconscious ingest-transcript --agent droid"),
             ),
         ]
     }
@@ -402,7 +403,9 @@ impl DroidHook {
         let command = command.to_ascii_lowercase();
         command.contains("nexus")
             && command.contains("--agent droid")
-            && (command.contains(" session ") || command.contains("ingest-hook-event"))
+            && (command.contains(" session ")
+                || command.contains("ingest-hook-event")
+                || command.contains("subconscious"))
     }
 
     fn ensure_mutable(&self) -> Result<()> {
