@@ -153,9 +153,21 @@ impl DroidHook {
             }
             #[cfg(windows)]
             {
-                // On Windows, invoke the binary directly without an extra
-                // shell wrapper. Session metadata falls back to derived keys
-                // when the shell-specific variables are unavailable.
+                format!("\"{nexus_bin}\" {args}")
+            }
+        };
+
+        let scoped_subconscious = |args: &str| -> String {
+            #[cfg(not(windows))]
+            {
+                let session_id = "\\\"${FACTORY_SESSION_ID:-${SESSION_ID:-}}\\\"";
+                let cwd = "\\\"${FACTORY_CWD:-${PWD:-}}\\\"";
+                format!(
+                    "bash -lc \"exec '{nexus_bin}' {args} --session-id {session_id} --cwd {cwd}\""
+                )
+            }
+            #[cfg(windows)]
+            {
                 format!("\"{nexus_bin}\" {args}")
             }
         };
@@ -182,7 +194,7 @@ impl DroidHook {
                 ERROR_EVENT.to_string(),
                 // Capture full conversation transcript via subconscious ingest-transcript
                 // The Stop payload contains transcript_path; this reads the JSONL and ingests it
-                scoped("subconscious ingest-transcript --agent droid"),
+                scoped_subconscious("subconscious ingest-transcript --agent droid"),
             ),
         ]
     }
