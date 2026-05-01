@@ -15,6 +15,7 @@ nexus-agent = { workspace = true }
 nexus-core = { workspace = true }
 nexus-storage = { workspace = true }
 nexus-vectors = { workspace = true }
+nexus-llm = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

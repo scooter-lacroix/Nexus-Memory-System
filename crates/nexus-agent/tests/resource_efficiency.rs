@@ -175,7 +175,7 @@ async fn cognition_fixture_stays_resource_bounded() {
         namespace_id: namespace.id,
         perspective: Some(perspective),
         query: Some("What happened in this session?".to_string()),
-        max_items: CognitionConfig::default().representation_max_items,
+        max_items: CognitionConfig::default().working_representation_max_items,
         include_raw: false,
         include_recent: true,
         include_semantic: true,
@@ -193,7 +193,7 @@ async fn cognition_fixture_stays_resource_bounded() {
         .flat_working_set(&request, &repo)
         .await
         .unwrap();
-    assert!(flat.len() <= CognitionConfig::default().representation_max_items);
+    assert!(flat.len() <= CognitionConfig::default().working_representation_max_items);
     assert!(!representation.digests.is_empty());
 
     let query_service = QueryService::new(llm, AgentConfig::default());

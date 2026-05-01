@@ -12,9 +12,10 @@
 //! - Phase detection accuracy: >80%
 
 use crate::{Phase, PhaseAnalysis, PhaseAnalyzer, PhaseType};
-use nexus_core::Memory;
+use anyhow::Result;
+use nexus_core::{types::WorkingRepresentation, Memory};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Compression format modes (aligned with LePhase FormatMode)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -486,6 +487,49 @@ impl LePhaseIntegration {
         }
 
         output
+    }
+
+    /// Format a working representation for model context injection.
+    ///
+    /// Takes a structured collection of memories (digests, recent, semantic, derived, contradictions)
+    /// and produces a token-aware formatted string in priority order:
+    /// 1. digests
+    /// 2. derived
+    /// 3. contradictions
+    /// 4. semantic
+    /// 5. recent
+    ///
+    /// Duplicates are removed (first occurrence wins).
+    pub fn format_representation_for_model(
+        &self,
+        representation: &WorkingRepresentation,
+        max_tokens: Option<usize>,
+    ) -> Result<String> {
+        let mut ordered_memories: Vec<Memory> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        // Helper to add memories from a bucket, preserving first-wins
+        let add_bucket = |bucket: &[Memory], seen: &mut HashSet<i64>, ordered: &mut Vec<Memory>| {
+            for memory in bucket {
+                if seen.insert(memory.id) {
+                    ordered.push(memory.clone());
+                }
+            }
+        };
+
+        // Priority order: digests -> derived -> contradictions -> semantic -> recent
+        add_bucket(&representation.digests, &mut seen, &mut ordered_memories);
+        add_bucket(&representation.derived, &mut seen, &mut ordered_memories);
+        add_bucket(
+            &representation.contradictions,
+            &mut seen,
+            &mut ordered_memories,
+        );
+        add_bucket(&representation.semantic, &mut seen, &mut ordered_memories);
+        add_bucket(&representation.recent, &mut seen, &mut ordered_memories);
+
+        // Delegate to existing formatter
+        Ok(self.format_for_model(&ordered_memories, max_tokens))
     }
 
     /// Get compression statistics

@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::io::Read;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use nexus_agent::{create_embedding_service, RuntimeController, RuntimeMode};
 use nexus_core::{
     infer_perspective, CognitiveLevel, CognitiveMetadata, Config, MemoryCategory, PerspectiveSource,
@@ -256,6 +257,10 @@ pub(crate) async fn store_raw_activity_memory(
         "hook_raw_activity",
     );
     cognitive.confidence = Some(0.35);
+    cognitive.times_reinforced = 0;
+    cognitive.times_contradicted = 0;
+    cognitive.derived_at = Some(Utc::now());
+    cognitive.generated_by = Some("hook_raw_activity".to_string());
     let metadata = cognitive.merge_into(&serde_json::json!({
         "raw_activity": {
             "agent": event.agent,

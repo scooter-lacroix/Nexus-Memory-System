@@ -22,6 +22,7 @@ pub mod prompts;
 pub mod pulse;
 pub mod query;
 mod ranking;
+pub mod recall;
 pub mod reflect;
 pub mod representation;
 pub mod runtime;
@@ -44,6 +45,7 @@ pub use error::{AgentError, Result};
 pub use inbox::{InboxScanner, ScanResult};
 pub use ingest::IngestService;
 pub use query::{introspect_query, QueryService};
+pub use recall::RecallToolService;
 pub use reflect::{ReflectService, ReflectionCase, ReflectionOutput, ReflectionResult};
 pub use representation::RepresentationService;
 pub use runtime::{

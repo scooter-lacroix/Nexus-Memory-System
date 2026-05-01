@@ -1982,6 +1982,7 @@ dependencies = [
  "futures",
  "nexus-memory-agent",
  "nexus-memory-core",
+ "nexus-memory-llm",
  "nexus-memory-storage",
  "nexus-memory-vectors",
  "serde",

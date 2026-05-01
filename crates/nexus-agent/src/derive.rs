@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use chrono::Utc;
 use nexus_core::config::AgentConfig;
 use nexus_core::traits::EmbeddingService;
 use nexus_core::{
@@ -227,6 +228,10 @@ fn derive_metadata(
     );
     cognitive.source_memory_ids = vec![source.id];
     cognitive.confidence = Some(confidence.max(0.70));
+    cognitive.times_reinforced = 0;
+    cognitive.times_contradicted = 0;
+    cognitive.derived_at = Some(Utc::now());
+    cognitive.generated_by = Some(DERIVE_GENERATED_BY.to_string());
     cognitive.merge_into(&sanitized_source_metadata(source))
 }
 

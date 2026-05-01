@@ -510,6 +510,9 @@ async fn handle_reinforcement(
     cognitive.source_memory_ids = vec![left.id, right.id];
     cognitive.confidence = Some(0.75);
     cognitive.times_reinforced = 2;
+    cognitive.times_contradicted = 0;
+    cognitive.derived_at = Some(Utc::now());
+    cognitive.generated_by = Some(REFLECT_GENERATED_BY.to_string());
 
     let metadata = cognitive.merge_into(&serde_json::json!({}));
     let (embedding, embedding_model) = maybe_embed(embeddings, &content).await;
@@ -576,6 +579,8 @@ async fn handle_contradiction(
     cognitive.source_memory_ids = vec![left.id, right.id];
     cognitive.confidence = Some(0.70);
     cognitive.times_contradicted = 1;
+    cognitive.times_reinforced = 0;
+    cognitive.derived_at = Some(Utc::now());
     cognitive.generated_by = Some(REFLECT_GENERATED_BY.to_string());
 
     let metadata = cognitive.merge_into(&serde_json::json!({
@@ -762,6 +767,9 @@ async fn synthesize_reinforcement_insights(
         cognitive.source_memory_ids = source_ids.clone();
         cognitive.confidence = Some(insight_confidence(component_memories.len()));
         cognitive.times_reinforced = component_memories.len() as i64;
+        cognitive.times_contradicted = 0;
+        cognitive.derived_at = Some(Utc::now());
+        cognitive.generated_by = Some(REFLECT_GENERATED_BY.to_string());
 
         let metadata = cognitive.merge_into(&serde_json::json!({
             "reflection_kind": "insight",

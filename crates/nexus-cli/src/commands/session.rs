@@ -222,6 +222,10 @@ async fn store_session_memory(
         "session_lifecycle",
     );
     cognitive.confidence = Some(1.0);
+    cognitive.times_reinforced = 0;
+    cognitive.times_contradicted = 0;
+    cognitive.derived_at = Some(Utc::now());
+    cognitive.generated_by = Some("session_lifecycle".to_string());
     let metadata = cognitive.merge_into(&metadata);
     let labels = vec![
         "session".to_string(),

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use chrono::Utc;
 use nexus_core::config::AgentConfig;
 use nexus_core::traits::EmbeddingService;
 use nexus_core::{
@@ -362,6 +363,10 @@ async fn store_digest_memory(
     );
     cognitive.source_memory_ids = source_ids.to_vec();
     cognitive.confidence = Some(0.80);
+    cognitive.times_reinforced = 0;
+    cognitive.times_contradicted = 0;
+    cognitive.derived_at = Some(Utc::now());
+    cognitive.generated_by = Some(DIGEST_GENERATED_BY.to_string());
 
     let metadata = cognitive.merge_into(&serde_json::json!({}));
     let (embedding, embedding_model) = maybe_embed(embeddings, content).await;

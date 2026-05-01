@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use chrono::Utc;
 use nexus_core::config::AgentConfig;
 use nexus_core::{
     infer_perspective, CognitiveLevel, CognitiveMetadata, MemoryCategory, PerspectiveSource,
@@ -88,6 +89,9 @@ impl IngestService {
             "ingest_service",
         );
         cognitive.confidence = Some(extraction.importance_score);
+        cognitive.times_reinforced = 0;
+        cognitive.times_contradicted = 0;
+        cognitive.derived_at = Some(Utc::now());
         cognitive.generated_by = Some("ingest_service".to_string());
 
         // Step 3: Build metadata with agent extraction info

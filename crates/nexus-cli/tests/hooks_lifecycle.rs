@@ -534,6 +534,9 @@ fn session_checkpoint_replays_retry_buffer_artifacts_into_raw_activity() {
             tool_response_text: Some("ok".to_string()),
             assistant_message_text: None,
             user_message_text: None,
+            observer: Some(agent.to_string()),
+            subject: Some(agent.to_string()),
+            session_key: Some(session_key.to_string()),
             raw_payload: serde_json::json!({
                 "hook_event_name": "post-tool-use",
                 "session_id": session_key,

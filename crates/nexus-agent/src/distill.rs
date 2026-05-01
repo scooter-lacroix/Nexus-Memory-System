@@ -381,5 +381,9 @@ fn build_distill_cognitive_metadata(
     );
     cognitive.source_memory_ids = source_memory_ids.to_vec();
     cognitive.confidence = Some(0.8);
+    cognitive.times_reinforced = 0;
+    cognitive.times_contradicted = 0;
+    cognitive.derived_at = Some(Utc::now());
+    cognitive.generated_by = Some("nexus:distill-v1".to_string());
     cognitive
 }

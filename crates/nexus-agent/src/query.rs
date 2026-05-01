@@ -74,18 +74,43 @@ impl QueryService {
         memory_repo: &MemoryRepository,
         relation_repo: &MemoryRelationRepository<'_>,
     ) -> Result<QueryAnswer, AgentError> {
+        // Build representation request with all bucket inclusion flags enabled.
         let request = WorkingRepresentationRequest {
             namespace_id,
             perspective: None,
             query: Some(question.to_string()),
             max_items: self.config.query_context_limit,
             include_raw: false,
+            include_digests: true,
+            include_recent: true,
+            include_semantic: true,
+            include_derived: true,
+            include_contradictions: true,
             ..WorkingRepresentationRequest::default()
         };
-        let request = self.with_cross_namespace_ids(request, memory_repo).await?;
+        // Resolve cross-namespace aliases; if this fails, fall back.
+        let request = match self.with_cross_namespace_ids(request, memory_repo).await {
+            Ok(req) => req,
+            Err(e) => {
+                warn!(error = %e, "Failed to prepare representation request, falling back to legacy search");
+                return self
+                    .query_legacy(question, namespace_id, memory_repo, relation_repo)
+                    .await;
+            }
+        };
 
-        self.query_with_representation(question, request, memory_repo, relation_repo)
+        // Try the representation pipeline; on failure, fall back to legacy text search.
+        match self
+            .query_with_representation(question, request, memory_repo, relation_repo)
             .await
+        {
+            Ok(answer) => Ok(answer),
+            Err(e) => {
+                warn!(error = %e, "Representation pipeline failed, falling back to legacy search");
+                self.query_legacy(question, namespace_id, memory_repo, relation_repo)
+                    .await
+            }
+        }
     }
 
     pub async fn query_with_representation(
@@ -419,6 +444,30 @@ impl QueryService {
         let answer: QueryAnswer =
             parse_json_response(&response).map_err(|e| AgentError::Llm(e.to_string()))?;
         Ok((answer, usage))
+    }
+
+    /// Legacy fallback query using simple text search when representation fails.
+    async fn query_legacy(
+        &self,
+        question: &str,
+        namespace_id: i64,
+        memory_repo: &MemoryRepository,
+        _relation_repo: &MemoryRelationRepository<'_>,
+    ) -> Result<QueryAnswer, AgentError> {
+        let limit = self.config.query_context_limit;
+        let memories = memory_repo
+            .search_by_text_memories(namespace_id, question, limit as i32, false)
+            .await
+            .map_err(|e| AgentError::Storage(e.to_string()))?;
+
+        let context = memories
+            .iter()
+            .map(|m| format!("[Memory #{}] {}", m.id, m.content))
+            .collect::<Vec<String>>()
+            .join("\n\n");
+
+        let (answer, _) = self.generate_answer(question, &context).await?;
+        Ok(answer)
     }
 }
 
