@@ -159,7 +159,6 @@ fn inject_into_json(
     let mut json: Value = serde_json::from_str(content)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-    // Determine relative paths for injection
     let soul_name = "Soul";
     let context_name = "Project Context";
 
@@ -180,20 +179,15 @@ fn inject_into_json(
     });
 
     // Handle settings.json-style structure with "hooks" key
-    // We inject nexus reference either in the root or in hooks section
     match json {
         Value::Object(ref mut map) => {
-            // Check if there's a "hooks" section - Droid's convention
             if let Some(Value::Object(hooks)) = map.get_mut("hooks") {
-                // Add nexus reference to hooks structure
                 hooks.insert("nexus".to_string(), nexus_obj);
             } else {
-                // Add to root level
                 map.insert("nexus".to_string(), nexus_obj);
             }
         }
         _ => {
-            // Non-object JSON - create wrapper
             let mut wrapper = Map::new();
             wrapper.insert("nexus".to_string(), nexus_obj);
             wrapper.insert("original".to_string(), json.clone());
@@ -205,7 +199,6 @@ fn inject_into_json(
 }
 
 /// Inject only the soul identity reference into a config file (no project context).
-/// Used for global config files that should not reference project-specific context.md.
 pub fn inject_soul_only(config_file: &Path, soul_path: &Path) -> io::Result<()> {
     if !config_file.exists() {
         return Ok(());
@@ -313,6 +306,7 @@ fn inject_into_json_soul_only(
 
     serde_json::to_string_pretty(&json).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
 }
+
 /// Remove Nexus references from a config file.
 pub fn remove_reference(config_file: &Path) -> io::Result<()> {
     if !config_file.exists() {
@@ -394,7 +388,7 @@ pub async fn on_session_start(
     let namespace = ns_repo.get_or_create(agent_type, agent_type).await?;
 
     // 3. Load Cache and Perform Morning Recall
-    let cache = nexus_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
+    let mut cache = nexus_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
 
     // Attempt to get embedder if available
     let embedder = if config.embedding.enabled {
@@ -414,6 +408,22 @@ pub async fn on_session_start(
         )
         .await;
 
+    // Promote morning recall results to hot cache for future sessions
+    for recall in &recalls {
+        let entry = nexus_agent::cognitive_cache::HotCacheEntry {
+            memory_id: recall.memory_id,
+            content: recall.content.clone(),
+            relevance_score: recall.relevance_score,
+            tier: recall.tier,
+            promoted_at: chrono::Utc::now(),
+            last_surfaced: chrono::Utc::now(),
+            hot_streak: 1,
+            pinned: false,
+            source_agent: Some(agent_type.to_string()),
+        };
+        cache.hot_cache.promote(entry, 100);
+    }
+
     // 4. Build and Write context.md
     let window_size = nexus_agent::TokenBudget::estimate_window(agent_type) as f32;
     let max_context_tokens =
@@ -426,6 +436,9 @@ pub async fn on_session_start(
 
     let context_path = nexus_dir.join("context.md");
     atomic_write(&context_path, &context_md)?;
+
+    // Save updated hot cache to disk (so future sessions see these memories)
+    cache.save(&nexus_dir)?;
 
     // 5. Compute soul path for injection reference
     // (soul.md is only created/modified during deep dream cycles, per spec)
@@ -469,8 +482,9 @@ pub async fn on_session_start(
     }
 
     info!(
-        "Nexus session start pipeline completed in {:?}",
-        start_time.elapsed()
+        "Nexus session start pipeline completed in {:?} (hot cache: {} entries)",
+        start_time.elapsed(),
+        cache.hot_cache.entries.len()
     );
     Ok(())
 }
@@ -520,14 +534,12 @@ mod tests {
     #[tokio::test]
     async fn test_on_session_start_creates_structure() {
         let dir = tempdir().unwrap();
-        // Use NEXUS_DATABASE_PATH to isolate DB instead of HOME manipulation
         let db_path = dir.path().join("test.db");
         let original_db = std::env::var("NEXUS_DATABASE_PATH").ok();
         std::env::set_var("NEXUS_DATABASE_PATH", &db_path);
 
         let result = on_session_start(dir.path(), "claude-code", "test-session").await;
 
-        // Restore before assertions
         if let Some(orig) = original_db {
             std::env::set_var("NEXUS_DATABASE_PATH", orig);
         } else {
@@ -542,19 +554,16 @@ mod tests {
     }
 
     #[test]
-    fn test_pi_mono_injection_target_exists() {
-        let target = AgentInjectionTarget::find("pi-mono");
-        assert!(target.is_some(), "pi-mono must be in known_agents()");
+    fn test_droid_injection_target_registered() {
+        let target = AgentInjectionTarget::find("droid");
+        assert!(target.is_some(), "droid must be in known_agents()");
 
         let target = target.unwrap();
-        assert_eq!(target.agent_type, "pi-mono");
+        assert_eq!(target.agent_type, "droid");
         assert!(target.global_config.is_some());
-        assert_eq!(target.project_config_filename, ".pi/AGENTS.md");
+        assert_eq!(target.project_config_filename, ".factory/settings.json");
 
         let global = target.global_config.unwrap();
-        assert!(
-            global.ends_with(".pi/agent/AGENTS.md")
-                || global.to_string_lossy().contains(".pi/agent/AGENTS.md")
-        );
+        assert!(global.to_string_lossy().contains(".factory/settings.json"));
     }
 }
