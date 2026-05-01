@@ -419,7 +419,7 @@ pub async fn on_session_start(
     cache
         .hot_cache
         .entries
-        .retain(|e| !e.content.starts_with("Session lifecycle event"));
+        .retain(|e| !e.content.contains("Session lifecycle event"));
 
     // Attempt to get embedder if available
     let embedder = if config.embedding.enabled {
@@ -442,7 +442,7 @@ pub async fn on_session_start(
     // Filter out internal session lifecycle memories from recall results
     let filtered_recalls: Vec<_> = recalls
         .into_iter()
-        .filter(|r| !r.content.starts_with("Session lifecycle event"))
+        .filter(|r| !r.content.contains("Session lifecycle event"))
         .collect();
 
     // Promote filtered morning recall results to hot cache for future sessions
