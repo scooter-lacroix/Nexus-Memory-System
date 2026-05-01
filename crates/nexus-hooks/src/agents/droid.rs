@@ -171,7 +171,8 @@ impl DroidHook {
             ),
             (
                 CHECKPOINT_EVENT.to_string(),
-                scoped("session event --agent droid --kind checkpoint"),
+                // Capture actual tool usage via ingest-hook-event (payload includes tool_name, tool_input, tool_response)
+                scoped("ingest-hook-event --agent droid --event PostToolUse"),
             ),
             (
                 COMPACT_EVENT.to_string(),
@@ -179,7 +180,8 @@ impl DroidHook {
             ),
             (
                 ERROR_EVENT.to_string(),
-                scoped("session event --agent droid --kind error"),
+                // Capture error context and transcript via ingest-hook-event (payload includes transcript_path, error details)
+                scoped("ingest-hook-event --agent droid --event Stop"),
             ),
         ]
     }
