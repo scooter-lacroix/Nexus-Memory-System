@@ -389,6 +389,8 @@ pub async fn on_session_start(
 
     // 3. Load Cache and Perform Morning Recall
     let mut cache = nexus_agent::cognitive_cache::CognitiveCache::load_or_init(&nexus_dir);
+    // Remove internal session lifecycle memories from hot cache (cleanup from previous runs)
+    cache.hot_cache.entries.retain(|e| !e.content.starts_with("Session lifecycle event"));
 
     // Attempt to get embedder if available
     let embedder = if config.embedding.enabled {
@@ -408,8 +410,14 @@ pub async fn on_session_start(
         )
         .await;
 
-    // Promote morning recall results to hot cache for future sessions
-    for recall in &recalls {
+    // Filter out internal session lifecycle memories from recall results
+    let filtered_recalls: Vec<_> = recalls
+        .into_iter()
+        .filter(|r| !r.content.starts_with("Session lifecycle event"))
+        .collect();
+
+    // Promote filtered morning recall results to hot cache for future sessions
+    for recall in &filtered_recalls {
         let entry = nexus_agent::cognitive_cache::HotCacheEntry {
             memory_id: recall.memory_id,
             content: recall.content.clone(),
@@ -430,7 +438,7 @@ pub async fn on_session_start(
         (window_size * config.cognitive_system.context_allocation_pct) as usize;
     let context_md = nexus_agent::context_builder::build_context_md(
         &cache.hot_cache,
-        &recalls,
+        &filtered_recalls,
         max_context_tokens,
     );
 
