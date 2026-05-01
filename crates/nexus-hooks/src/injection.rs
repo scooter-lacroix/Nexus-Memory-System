@@ -1,6 +1,7 @@
 //! Reference injection system for agent configuration files.
 
 use nexus_core::fsutil::atomic_write;
+use serde_json::Value;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -48,6 +49,11 @@ impl AgentInjectionTarget {
                 global_config: Some(home.join(".pi").join("agent").join("AGENTS.md")),
                 project_config_filename: ".pi/AGENTS.md".to_string(),
             },
+            Self {
+                agent_type: "droid".to_string(),
+                global_config: Some(home.join(".factory").join("settings.json")),
+                project_config_filename: ".factory/settings.json".to_string(),
+            },
         ]
     }
 
@@ -64,6 +70,7 @@ pub fn inject_reference(
     config_file: &Path,
     soul_path: &Path,
     context_path: &Path,
+    agent_type: Option<&str>,
 ) -> io::Result<()> {
     if !config_file.exists() {
         return Ok(());
@@ -72,57 +79,62 @@ pub fn inject_reference(
     let content = fs::read_to_string(config_file)?;
     let original_content = content.clone();
 
-    // Build the Nexus block
-    let block = format!(
-        "{}\n\
-        ## Nexus Memory Substrate\n\
-        - Identity: [{soul_name}]({soul_path})\n\
-        - Project Context: [{context_name}]({context_path})\n\
-        {}",
-        NEXUS_BLOCK_START,
-        NEXUS_BLOCK_END,
-        soul_name = "Soul",
-        soul_path = soul_path.to_string_lossy(),
-        context_name = "Project Context",
-        context_path = context_path.to_string_lossy(),
-    );
+    // Detect JSON config files (Droid's settings.json, etc.)
+    let is_json = config_file.extension()
+        .map(|ext| ext == "json")
+        .unwrap_or(false);
 
-    let new_content = if let (Some(start), Some(end)) = (
-        content.find(NEXUS_BLOCK_START),
-        content.find(NEXUS_BLOCK_END),
-    ) {
-        if start >= end {
-            // Malformed markers (end before start) — strip both markers from
-            // content, then append a fresh block. Simple replace avoids the
-            // slicing bugs that kept stale markers around.
-            let stripped = content
-                .replace(NEXUS_BLOCK_START, "")
-                .replace(NEXUS_BLOCK_END, "");
-            let mut updated = stripped.trim_end().to_string();
-            updated.push('\n');
+    let new_content = if is_json {
+        // For JSON, add settings if not already present
+        inject_into_json(&content, config_file, soul_path, context_path, agent_type)?
+    } else {
+        // Standard markdown-style injection
+        let block = format!(
+            "{}\n\
+            ## Nexus Memory Substrate\n\
+            - Identity: [{soul_name}]({soul_path})\n\
+            - Project Context: [{context_name}]({context_path})\n\
+            {}",
+            NEXUS_BLOCK_START,
+            NEXUS_BLOCK_END,
+            soul_name = "Soul",
+            soul_path = soul_path.to_string_lossy(),
+            context_name = "Project Context",
+            context_path = context_path.to_string_lossy(),
+        );
+
+        if let (Some(start), Some(end)) = (
+            content.find(NEXUS_BLOCK_START),
+            content.find(NEXUS_BLOCK_END),
+        ) {
+            if start >= end {
+                let stripped = content
+                    .replace(NEXUS_BLOCK_START, "")
+                    .replace(NEXUS_BLOCK_END, "");
+                let mut updated = stripped.trim_end().to_string();
+                updated.push('\n');
+                updated.push_str(&block);
+                if !updated.ends_with('\n') {
+                    updated.push('\n');
+                }
+                updated
+            } else {
+                let mut updated = content[..start].to_string();
+                updated.push_str(&block);
+                updated.push_str(&content[end + NEXUS_BLOCK_END.len()..]);
+                updated
+            }
+        } else {
+            let mut updated = content;
+            if !updated.is_empty() && !updated.ends_with('\n') {
+                updated.push('\n');
+            }
             updated.push_str(&block);
             if !updated.ends_with('\n') {
                 updated.push('\n');
             }
             updated
-        } else {
-            // Replace existing block
-            let mut updated = content[..start].to_string();
-            updated.push_str(&block);
-            updated.push_str(&content[end + NEXUS_BLOCK_END.len()..]);
-            updated
         }
-    } else {
-        // Append to end
-        let mut updated = content;
-        if !updated.is_empty() && !updated.ends_with('\n') {
-            updated.push('\n');
-        }
-        updated.push_str(&block);
-        if !updated.ends_with('\n') {
-            updated.push('\n');
-        }
-        updated
     };
 
     if new_content != original_content {
@@ -131,6 +143,65 @@ pub fn inject_reference(
     }
 
     Ok(())
+}
+
+/// Inject Nexus references into a JSON config file (e.g., Droid's settings.json).
+/// For JSON files, we add a `"nexus"` meta field or add to hooks structure.
+fn inject_into_json(
+    content: &str,
+    _config_file: &Path,
+    soul_path: &Path,
+    context_path: &Path,
+    _agent_type: Option<&str>,
+) -> io::Result<String> {
+    use serde_json::{Map, Value};
+
+    let mut json: Value = serde_json::from_str(content)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    // Determine relative paths for injection
+    let soul_name = "Soul";
+    let context_name = "Project Context";
+
+    // Create the nexus reference object
+    let nexus_obj = serde_json::json!({
+        "identity": {
+            "name": soul_name,
+            "path": soul_path.to_string_lossy(),
+            "source": "soul.md"
+        },
+        "projectContext": {
+            "name": context_name,
+            "path": context_path.to_string_lossy(),
+            "source": "context.md"
+        },
+        "source": "nexus-memory",
+        "version": env!("CARGO_PKG_VERSION"),
+    });
+
+    // Handle settings.json-style structure with "hooks" key
+    // We inject nexus reference either in the root or in hooks section
+    match json {
+        Value::Object(ref mut map) => {
+            // Check if there's a "hooks" section - Droid's convention
+            if let Some(Value::Object(hooks)) = map.get_mut("hooks") {
+                // Add nexus reference to hooks structure
+                hooks.insert("nexus".to_string(), nexus_obj);
+            } else {
+                // Add to root level
+                map.insert("nexus".to_string(), nexus_obj);
+            }
+        }
+        _ => {
+            // Non-object JSON - create wrapper
+            let mut wrapper = Map::new();
+            wrapper.insert("nexus".to_string(), nexus_obj);
+            wrapper.insert("original".to_string(), json.clone());
+            json = Value::Object(wrapper);
+        }
+    }
+
+    serde_json::to_string_pretty(&json).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
 }
 
 /// Inject only the soul identity reference into a config file (no project context).
@@ -143,49 +214,55 @@ pub fn inject_soul_only(config_file: &Path, soul_path: &Path) -> io::Result<()> 
     let content = fs::read_to_string(config_file)?;
     let original_content = content.clone();
 
-    let block = format!(
-        "{}\n\
-        ## Nexus Memory Substrate\n\
-        - Identity: [Soul]({soul_path_val})\n\
-        {}",
-        NEXUS_BLOCK_START,
-        NEXUS_BLOCK_END,
-        soul_path_val = soul_path.to_string_lossy(),
-    );
-    let new_content = if let (Some(start), Some(end)) = (
-        content.find(NEXUS_BLOCK_START),
-        content.find(NEXUS_BLOCK_END),
-    ) {
-        if start >= end {
-            // Malformed markers (end before start) — strip both markers from
-            // content, then append a fresh block. Simple replace avoids the
-            // slicing bugs that kept stale markers around.
-            let stripped = content
-                .replace(NEXUS_BLOCK_START, "")
-                .replace(NEXUS_BLOCK_END, "");
-            let mut updated = stripped.trim_end().to_string();
-            updated.push('\n');
+    let is_json = config_file.extension()
+        .map(|ext| ext == "json")
+        .unwrap_or(false);
+
+    let new_content = if is_json {
+        inject_into_json_soul_only(&content, soul_path)?
+    } else {
+        let block = format!(
+            "{}\n\
+            ## Nexus Memory Substrate\n\
+            - Identity: [Soul]({soul_path_val})\n\
+            {}",
+            NEXUS_BLOCK_START,
+            NEXUS_BLOCK_END,
+            soul_path_val = soul_path.to_string_lossy(),
+        );
+
+        if let (Some(start), Some(end)) = (
+            content.find(NEXUS_BLOCK_START),
+            content.find(NEXUS_BLOCK_END),
+        ) {
+            if start >= end {
+                let stripped = content
+                    .replace(NEXUS_BLOCK_START, "")
+                    .replace(NEXUS_BLOCK_END, "");
+                let mut updated = stripped.trim_end().to_string();
+                updated.push('\n');
+                updated.push_str(&block);
+                if !updated.ends_with('\n') {
+                    updated.push('\n');
+                }
+                updated
+            } else {
+                let mut updated = content[..start].to_string();
+                updated.push_str(&block);
+                updated.push_str(&content[end + NEXUS_BLOCK_END.len()..]);
+                updated
+            }
+        } else {
+            let mut updated = content;
+            if !updated.is_empty() && !updated.ends_with('\n') {
+                updated.push('\n');
+            }
             updated.push_str(&block);
             if !updated.ends_with('\n') {
                 updated.push('\n');
             }
             updated
-        } else {
-            let mut updated = content[..start].to_string();
-            updated.push_str(&block);
-            updated.push_str(&content[end + NEXUS_BLOCK_END.len()..]);
-            updated
         }
-    } else {
-        let mut updated = content;
-        if !updated.is_empty() && !updated.ends_with('\n') {
-            updated.push('\n');
-        }
-        updated.push_str(&block);
-        if !updated.ends_with('\n') {
-            updated.push('\n');
-        }
-        updated
     };
 
     if new_content != original_content {
@@ -198,27 +275,88 @@ pub fn inject_soul_only(config_file: &Path, soul_path: &Path) -> io::Result<()> 
 
     Ok(())
 }
+
+/// Inject soul-only reference into JSON config
+fn inject_into_json_soul_only(
+    content: &str,
+    soul_path: &Path,
+) -> io::Result<String> {
+    use serde_json::{Map, Value};
+
+    let mut json: Value = serde_json::from_str(content)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    let nexus_obj = serde_json::json!({
+        "identity": {
+            "name": "Soul",
+            "path": soul_path.to_string_lossy(),
+            "source": "soul.md"
+        },
+        "source": "nexus-memory",
+    });
+
+    match json {
+        Value::Object(ref mut map) => {
+            if let Some(Value::Object(hooks)) = map.get_mut("hooks") {
+                hooks.insert("nexus".to_string(), nexus_obj);
+            } else {
+                map.insert("nexus".to_string(), nexus_obj);
+            }
+        }
+        _ => {
+            let mut wrapper = Map::new();
+            wrapper.insert("nexus".to_string(), nexus_obj);
+            wrapper.insert("original".to_string(), json.clone());
+            json = Value::Object(wrapper);
+        }
+    }
+
+    serde_json::to_string_pretty(&json).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+}
 /// Remove Nexus references from a config file.
 pub fn remove_reference(config_file: &Path) -> io::Result<()> {
     if !config_file.exists() {
         return Ok(());
     }
 
-    let content = fs::read_to_string(config_file)?;
-    if let (Some(start), Some(end)) = (
-        content.find(NEXUS_BLOCK_START),
-        content.find(NEXUS_BLOCK_END),
-    ) {
-        let mut updated = content[..start].to_string();
-        let remaining = &content[end + NEXUS_BLOCK_END.len()..];
-        updated.push_str(remaining);
+    let is_json = config_file.extension()
+        .map(|ext| ext == "json")
+        .unwrap_or(false);
 
-        // Final cleanup: if we're left with multiple newlines at the end, collapse them
-        while updated.ends_with("\n\n") {
-            updated.pop();
+    if is_json {
+        let content = fs::read_to_string(config_file)?;
+        let mut json: Value = serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+        if let Value::Object(ref mut map) = json {
+            // Remove nexus key from root
+            map.remove("nexus");
+            // Remove nexus key from hooks if present
+            if let Some(Value::Object(hooks)) = map.get_mut("hooks") {
+                hooks.remove("nexus");
+            }
         }
 
+        let updated = serde_json::to_string_pretty(&json)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         atomic_write(config_file, &updated)?;
+    } else {
+        let content = fs::read_to_string(config_file)?;
+        if let (Some(start), Some(end)) = (
+            content.find(NEXUS_BLOCK_START),
+            content.find(NEXUS_BLOCK_END),
+        ) {
+            let mut updated = content[..start].to_string();
+            let remaining = &content[end + NEXUS_BLOCK_END.len()..];
+            updated.push_str(remaining);
+
+            // Final cleanup: if we're left with multiple newlines at the end, collapse them
+            while updated.ends_with("\n\n") {
+                updated.pop();
+            }
+
+            atomic_write(config_file, &updated)?;
+        }
     }
 
     Ok(())
@@ -300,7 +438,7 @@ pub async fn on_session_start(
     if let Some(target) = AgentInjectionTarget::find(agent_type) {
         // Project config
         let project_config = project.root_dir.join(&target.project_config_filename);
-        inject_reference(&project_config, &soul_path, &context_path)?;
+        inject_reference(&project_config, &soul_path, &context_path, Some(agent_type))?;
 
         // Global config
         if let Some(global_config) = target.global_config {
@@ -352,12 +490,12 @@ mod tests {
         let context = PathBuf::from("/tmp/context.md");
 
         // 1. First injection
-        inject_reference(&config, &soul, &context).unwrap();
+        inject_reference(&config, &soul, &context, None).unwrap();
         let content1 = fs::read_to_string(&config).unwrap();
         assert!(content1.contains(NEXUS_BLOCK_START));
 
         // 2. Second injection (idempotent)
-        inject_reference(&config, &soul, &context).unwrap();
+        inject_reference(&config, &soul, &context, None).unwrap();
         let content2 = fs::read_to_string(&config).unwrap();
         assert_eq!(content1, content2);
     }
