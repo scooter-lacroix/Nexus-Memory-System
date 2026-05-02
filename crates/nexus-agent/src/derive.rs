@@ -111,10 +111,20 @@ impl DeriveService {
             }
         };
 
-        let observations = normalize_observations(observations);
+        let mut observations = normalize_observations(observations);
         if observations.is_empty() {
             debug!(memory_id = memory.id, "No explicit observations derived");
             return Ok(Vec::new());
+        }
+
+        // Propagate low-signal marker from source to all derived observations.
+        // Raw-activity is NOT propagated — it's only for the raw memories themselves.
+        // Low-signal derived memories should be excluded from reflection but still eligible for digest.
+        let has_low_signal = memory.labels.iter().any(|l| l == LOW_SIGNAL_LABEL);
+        for obs in &mut observations {
+            if has_low_signal && !obs.labels.iter().any(|l| l == LOW_SIGNAL_LABEL) {
+                obs.labels.push(LOW_SIGNAL_LABEL.to_string());
+            }
         }
 
         // --- PHASE 10 OPTIMIZATION: BATCH EMBEDDING ---
@@ -298,15 +308,7 @@ fn sanitized_source_metadata(source: &Memory) -> serde_json::Value {
 }
 
 fn explicit_labels_from_source(source: &Memory) -> Vec<String> {
-    let mut labels: Vec<String> = source
-        .labels
-        .iter()
-        .filter(|label| {
-            !label.eq_ignore_ascii_case(RAW_ACTIVITY_LABEL)
-                && !label.eq_ignore_ascii_case(LOW_SIGNAL_LABEL)
-        })
-        .cloned()
-        .collect();
+    let mut labels = source.labels.clone();
     dedupe_labels(&mut labels);
     labels
 }
@@ -326,10 +328,6 @@ fn normalize_observations(observations: Vec<DerivedObservation>) -> Vec<DerivedO
             continue;
         }
 
-        observation.labels.retain(|label| {
-            !label.eq_ignore_ascii_case(RAW_ACTIVITY_LABEL)
-                && !label.eq_ignore_ascii_case(LOW_SIGNAL_LABEL)
-        });
         dedupe_labels(&mut observation.labels);
         normalized.push(observation);
     }

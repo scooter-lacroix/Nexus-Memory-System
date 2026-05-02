@@ -318,6 +318,7 @@ async fn gather_candidates(
         .map_err(|e| AgentError::Storage(e.to_string()))?;
 
     // Only consider Explicit and Derived level memories for reflection.
+    // Skip system lifecycle markers (session start/end, runtime markers) and raw-activity noise.
     let mut candidates: HashMap<PerspectiveKey, Vec<Memory>> = HashMap::new();
     for memory in all {
         let snapshot = CognitionSnapshot::from_memory(&memory);
@@ -326,6 +327,22 @@ async fn gather_candidates(
             CognitiveLevel::Explicit | CognitiveLevel::Derived
         ) && !is_reflection_generated(&snapshot, &memory)
         {
+            // Exclude pure system operational memories
+            if memory.metadata.get("session_lifecycle").is_some() {
+                continue;
+            }
+            if memory.metadata.get("runtime").is_some() {
+                continue;
+            }
+            // Exclude raw-activity noise (should already be filtered by include_raw=false,
+            // but double-check in case labels were preserved)
+            if memory
+                .labels
+                .iter()
+                .any(|l| l == "raw-activity" || l == "low-signal")
+            {
+                continue;
+            }
             if let Some(perspective) = snapshot.perspective {
                 candidates.entry(perspective).or_default().push(memory);
             }

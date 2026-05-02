@@ -241,14 +241,41 @@ pub(crate) async fn store_raw_activity_memory(
         .clone()
         .or_else(|| event.tool_name.clone())
         .unwrap_or_else(|| event.observed_at.timestamp_millis().to_string());
-    let content = format!(
-        "Observed raw activity {} for {} [session:{}] [event:{}] at {}",
-        event.event_name,
-        event.agent,
-        derived_session_key,
-        event_identity,
-        event.observed_at.to_rfc3339()
-    );
+
+    // Build rich content from actual payload
+    let mut content = if let Some(tool_name) = &event.tool_name {
+        if let Some(input) = &event.tool_input {
+            if let Some(response) = &event.tool_response_text {
+                format!(
+                    "Tool '{}' executed:\nInput: {}\nResult: {}",
+                    tool_name,
+                    serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string()),
+                    response
+                )
+            } else {
+                format!("Tool '{}' executed with input: {}", tool_name, input)
+            }
+        } else if let Some(assistant_msg) = &event.assistant_message_text {
+            format!("Assistant message: {}", assistant_msg)
+        } else if let Some(user_msg) = &event.user_message_text {
+            format!("User message: {}", user_msg)
+        } else {
+            format!("Tool event: {}", tool_name)
+        }
+    } else if let Some(assistant_msg) = &event.assistant_message_text {
+        format!("Assistant: {}", assistant_msg)
+    } else if let Some(user_msg) = &event.user_message_text {
+        format!("User: {}", user_msg)
+    } else {
+        format!(
+            "Raw activity event: {} at {}",
+            event.event_name,
+            event.observed_at.to_rfc3339()
+        )
+    };
+
+    // Append event identifier for traceability (used by tests and debugging)
+    content.push_str(&format!(" [event:{}]", event_identity));
     let mut cognitive = CognitiveMetadata::new(
         CognitiveLevel::Raw,
         perspective.observer.clone(),
