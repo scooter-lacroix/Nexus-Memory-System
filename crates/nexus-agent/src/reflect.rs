@@ -37,7 +37,7 @@ const CONTRADICT_EVIDENCE_ROLE: &str = "contradicts";
 const INSIGHT_EVIDENCE_ROLE: &str = "insight_support";
 const MAX_CANDIDATES: i64 = 100;
 const MIN_INSIGHT_COMPONENT_SIZE: usize = 3;
-const MAX_INSIGHT_CONTENT_CHARS: usize = 180;
+const MAX_INSIGHT_CONTENT_CHARS: usize = 8000;
 
 /// Word-level Jaccard similarity threshold for reinforcement detection.
 const REINFORCE_SIMILARITY_THRESHOLD: f32 = 0.80;

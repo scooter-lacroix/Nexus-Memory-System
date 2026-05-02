@@ -232,7 +232,7 @@ fn derive_memory_text(event: &NormalizedHookEvent) -> String {
         let excerpt = event
             .tool_response_text
             .as_ref()
-            .map(|s| truncate_str(s, 100))
+            .map(|s| truncate_str(s, 12000))
             .unwrap_or_default();
 
         if !excerpt.is_empty() {
@@ -266,7 +266,7 @@ fn derive_memory_text(event: &NormalizedHookEvent) -> String {
             || msg.to_lowercase().contains("will")
             || msg.to_lowercase().contains("going to")
         {
-            let excerpt = truncate_str(msg, 150);
+            let excerpt = truncate_str(msg, 12000);
             return format!("Decision: {}", excerpt);
         }
     }

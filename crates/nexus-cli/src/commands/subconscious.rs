@@ -340,7 +340,7 @@ async fn execute_ingest_transcript(
         return Ok(());
     }
 
-    let ingest_entries = format_for_ingest(&entries, 1500);
+    let ingest_entries = format_for_ingest(&entries, 12000);
     let payload = build_ingest_payload(&ingest_entries, &agent, &sid, &cwd_str);
 
     // Write the payload to a temp file and invoke ingest-hook-event via CLI

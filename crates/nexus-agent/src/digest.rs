@@ -28,8 +28,8 @@ const DIGEST_MAX_SOURCE_MEMORIES: i64 = 200;
 const DIGEST_GENERATED_BY: &str = "digest_service";
 const DIGEST_KIND_SHORT: &str = "short";
 const DIGEST_KIND_LONG: &str = "long";
-const SHORT_MAX_CHARS: usize = 300;
-const LONG_MAX_CHARS: usize = 1500;
+const SHORT_MAX_CHARS: usize = 4000;
+const LONG_MAX_CHARS: usize = 12000;
 const DIGESTED_FROM_ROLE: &str = "digested_from";
 
 /// Result of a session digest operation.

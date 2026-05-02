@@ -14,8 +14,8 @@ use tracing::debug;
 /// Maximum bytes per line — prevents OOM from malformed transcripts.
 const MAX_LINE_BYTES: usize = 10 * 1024 * 1024; // 10 MB
 
-/// Maximum bytes for tool result content stored in memory.
-const MAX_TOOL_RESULT_CONTENT: usize = 2000;
+/// Maximum bytes for tool result content stored in memory (≥8K tokens).
+const MAX_TOOL_RESULT_CONTENT: usize = 12000;
 
 /// A parsed entry from a Claude Code JSONL transcript.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,7 +209,7 @@ pub fn format_for_ingest(
 
         // Add thinking (summarized)
         if let Some(ref thinking) = entry.thinking {
-            parts.push(format!("[Thinking]: {}", truncate(thinking, 300)));
+            parts.push(format!("[Thinking]: {}", truncate(thinking, 2000)));
         }
 
         // Add tool calls
@@ -218,7 +218,7 @@ pub fn format_for_ingest(
             parts.push(format!(
                 "[Tool: {}] {}",
                 tc.name,
-                truncate(&tc.input_summary, 150)
+                truncate(&tc.input_summary, 2000)
             ));
         }
 
@@ -233,7 +233,7 @@ pub fn format_for_ingest(
             } else {
                 "[Tool Result"
             };
-            let truncated = truncate(&tr.content, 1000);
+            let truncated = truncate(&tr.content, 12000);
             parts.push(format!("{prefix}: {tool_name}]\n{truncated}"));
         }
 
