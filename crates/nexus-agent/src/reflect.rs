@@ -339,7 +339,7 @@ async fn gather_candidates(
             if memory
                 .labels
                 .iter()
-                .any(|l| l == "raw-activity" || l == "low-signal")
+                .any(|l| l == RAW_ACTIVITY_LABEL || l == LOW_SIGNAL_LABEL)
             {
                 continue;
             }
