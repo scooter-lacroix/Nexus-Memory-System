@@ -1300,13 +1300,13 @@ impl ToolHandler {
 
         // Check if this is a raw session memory that can be derived
         let is_raw_session = memory.category == MemoryCategory::Session
-            && memory.labels.iter().any(|l| l == "raw-activity")
+            && memory.labels.iter().any(|l| l == RAW_ACTIVITY_LABEL)
             && memory
                 .metadata
                 .get("cognitive")
                 .and_then(|c| c.get("level"))
                 .and_then(|l| l.as_str())
-                .map(|l| l == "raw")
+                .map(|l| l == CognitiveLevel::Raw.as_str())
                 .unwrap_or(false);
 
         if !is_raw_session {
