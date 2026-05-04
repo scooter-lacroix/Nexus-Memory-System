@@ -1096,10 +1096,10 @@ for hook_name, entries in list(s.get('hooks', {}).items()):
 # Upsert desired hooks
 for hook_name, (command, timeout) in [
     ('SessionStart', (desired_commands[0][1], 10000)),
-    ('PostToolUse', (desired_commands[1][1], 30000)),
-    ('PreCompact', (desired_commands[2][1], 5000)),
-    ('Stop', (desired_commands[3][1], 30000)),
-    ('SessionEnd', (desired_commands[4][1], 30000)),
+    ('SessionEnd',   (desired_commands[1][1], 30000)),
+    ('PostToolUse',  (desired_commands[2][1], 30000)),
+    ('PreCompact',   (desired_commands[3][1], 5000)),
+    ('Stop',         (desired_commands[4][1], 30000)),
 ]:
     existing = s['hooks'].get(hook_name, [])
     preserved = []
