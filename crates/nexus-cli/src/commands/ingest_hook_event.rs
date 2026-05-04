@@ -27,8 +27,12 @@ const ACTIVITY_DISTILL_JOB: &str = "activity_distill";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IngestOutcome {
     RawActivityOnly,
+    #[allow(dead_code)]
     Deferred,
-    Persisted { stored: usize, skipped: usize },
+    Persisted {
+        stored: usize,
+        skipped: usize,
+    },
 }
 
 fn parse_stdin_json_or_empty(raw_input: &str) -> Result<serde_json::Value> {
