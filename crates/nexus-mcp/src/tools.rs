@@ -16,13 +16,14 @@ use chrono::{DateTime, Utc};
 use nexus_agent::{DeriveService, RecallToolService, ReflectService, RepresentationService};
 use nexus_core::config::{AgentConfig, CognitionConfig};
 use nexus_core::{
-    AgentNamespace, Memory, MemoryCategory, MemoryLaneType, PerspectiveKey,
+    AgentNamespace, CognitiveLevel, Memory, MemoryCategory, MemoryLaneType, PerspectiveKey,
     WorkingRepresentationRequest,
 };
 use nexus_storage::repository::StoreMemoryParams;
 use nexus_storage::{MemoryRepository, NamespaceRepository};
 use serde_json::Value as JsonValue;
 use sqlx::SqlitePool;
+const RAW_ACTIVITY_LABEL: &str = "raw-activity";
 
 /// All available MCP tools
 pub fn get_tools() -> Vec<Tool> {

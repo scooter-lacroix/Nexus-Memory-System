@@ -557,10 +557,21 @@ mod tests {
                     "{event} command should keep shell expansion: {command}"
                 );
             }
-            assert!(
-                command.contains("session"),
-                "{event} command should invoke a session subcommand"
-            );
+            match event.as_str() {
+                "SessionStart" | "SessionEnd" | "PreCompact" => assert!(
+                    command.contains("session"),
+                    "{event} command should invoke a session subcommand: {command}"
+                ),
+                "PostToolUse" => assert!(
+                    command.contains("ingest-hook-event"),
+                    "{event} command should invoke ingest-hook-event: {command}"
+                ),
+                "Stop" => assert!(
+                    command.contains("subconscious ingest-transcript"),
+                    "{event} command should invoke ingest-transcript: {command}"
+                ),
+                _ => panic!("unexpected lifecycle event: {event}"),
+            }
             assert!(
                 command.contains("--agent droid"),
                 "{event} command should target droid"

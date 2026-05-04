@@ -159,11 +159,15 @@ pub(crate) async fn process_normalized_event(
         Ok(svc) => svc,
         Err(e) => {
             tracing::warn!(error = %e, "LLM enrichment unavailable");
-            if buffer_on_failure {
-                let retry_buffer = RetryBuffer::new();
-                retry_buffer.write_failed(normalized, candidates, &e.to_string())?;
-            }
-            return Ok(IngestOutcome::Deferred);
+            // Fallback: store candidates directly without LLM enrichment
+            return store_candidates_directly(
+                namespace_id,
+                memory_repo,
+                normalized,
+                candidates,
+                config,
+            )
+            .await;
         }
     };
 
@@ -174,11 +178,19 @@ pub(crate) async fn process_normalized_event(
         Ok(batch) => batch,
         Err(e) => {
             tracing::warn!(error = %e, "LLM enrichment failed");
+            // Fallback: store candidates directly without LLM enrichment
             if buffer_on_failure {
                 let retry_buffer = RetryBuffer::new();
                 retry_buffer.write_failed(normalized, candidates, &e.to_string())?;
             }
-            return Ok(IngestOutcome::Deferred);
+            return store_candidates_directly(
+                namespace_id,
+                memory_repo,
+                normalized,
+                candidates,
+                config,
+            )
+            .await;
         }
     };
 
@@ -210,6 +222,119 @@ pub(crate) async fn process_normalized_event(
     Ok(IngestOutcome::Persisted {
         stored: result.stored,
         skipped: result.skipped,
+    })
+}
+
+/// Fallback: store candidates directly without LLM enrichment.
+/// Preserves all candidate data even when the LLM is unavailable.
+async fn store_candidates_directly(
+    namespace_id: i64,
+    memory_repo: &MemoryRepository,
+    normalized: &NormalizedHookEvent,
+    candidates: &[nexus_hooks::candidate::MemoryCandidate],
+    config: &Config,
+) -> Result<IngestOutcome> {
+    use nexus_core::{CognitiveLevel, CognitiveMetadata, MemoryCategory, PerspectiveSource};
+    use nexus_storage::repository::StoreMemoryParams;
+
+    let mut stored_count = 0;
+    let mut memory_ids = Vec::new();
+
+    for candidate in candidates {
+        // Use the candidate's memory text directly
+        let category = candidate
+            .provisional_category
+            .as_deref()
+            .unwrap_or("general")
+            .to_string();
+
+        let memory_category = match category.as_str() {
+            "preferences" => MemoryCategory::Preferences,
+            "context" => MemoryCategory::Context,
+            "specifications" => MemoryCategory::Specifications,
+            "session" => MemoryCategory::Session,
+            "facts" => MemoryCategory::General,
+            _ => MemoryCategory::General,
+        };
+
+        let derived_session_key = normalized
+            .session_id
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| {
+                nexus_agent::derive_session_key(
+                    &normalized.agent,
+                    normalized.session_id.as_deref(),
+                    normalized.cwd.as_deref(),
+                )
+            });
+
+        let perspective = infer_perspective(
+            PerspectiveSource::HookIngest,
+            normalized.agent.clone(),
+            None::<String>,
+            Some(derived_session_key.clone()),
+        );
+
+        let mut cognitive = CognitiveMetadata::new(
+            CognitiveLevel::Derived,
+            perspective.observer.clone(),
+            perspective.subject.clone(),
+            perspective.session_key.clone(),
+            "direct_candidate",
+        );
+        cognitive.confidence = Some(candidate.signal_score);
+        cognitive.derived_at = Some(Utc::now());
+        cognitive.generated_by = Some("direct_candidate_fallback".to_string());
+
+        let metadata = cognitive.merge_into(&serde_json::json!({
+            "candidate": {
+                "signal_score": candidate.signal_score,
+                "source_event": candidate.source_event_name,
+                "source_agent": candidate.source_agent,
+                "labels": candidate.labels,
+            },
+            "raw_payload": normalized.raw_payload,
+        }));
+
+        let labels = candidate.labels.clone();
+
+        match memory_repo
+            .store(StoreMemoryParams {
+                namespace_id,
+                content: &candidate.memory_text,
+                category: &memory_category,
+                memory_lane_type: None,
+                labels: &labels,
+                metadata: &metadata,
+                embedding: None,
+                embedding_model: None,
+            })
+            .await
+        {
+            Ok(mem) => {
+                memory_ids.push(mem.id);
+                stored_count += 1;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to store candidate directly: {}", e);
+            }
+        }
+    }
+
+    if !memory_ids.is_empty() {
+        enqueue_enriched_cognition_jobs(namespace_id, normalized, &memory_ids, memory_repo, config)
+            .await?;
+    }
+
+    tracing::info!(
+        stored = stored_count,
+        "Direct candidate storage complete (LLM enrichment unavailable)"
+    );
+
+    Ok(IngestOutcome::Persisted {
+        stored: stored_count,
+        skipped: 0,
     })
 }
 
@@ -273,6 +398,25 @@ pub(crate) async fn store_raw_activity_memory(
             event.observed_at.to_rfc3339()
         )
     };
+
+    // Append full tool response for comprehensive raw storage (up to 50KB)
+    if let Some(response) = &event.tool_response_text {
+        if response.len() > 50 {
+            let truncated = if response.len() > 50000 {
+                format!("{}...[truncated]", &response[..49980])
+            } else {
+                response.clone()
+            };
+            content.push_str(&format!("\n\n--- Full Response ---\n{}", truncated));
+        }
+    }
+
+    // Append full user message for comprehensive raw storage
+    if let Some(user_msg) = &event.user_message_text {
+        if user_msg.len() > 50 {
+            content.push_str(&format!("\n\n--- User Message ---\n{}", user_msg));
+        }
+    }
 
     // Append event identifier for traceability (used by tests and debugging)
     content.push_str(&format!(" [event:{}]", event_identity));

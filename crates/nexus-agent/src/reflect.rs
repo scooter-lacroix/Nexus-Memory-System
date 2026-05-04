@@ -31,6 +31,8 @@ use crate::util::{flush_metric_samples, maybe_embed, stage_metric_sample, Cognit
 // Constants
 // ---------------------------------------------------------------------------
 
+const RAW_ACTIVITY_LABEL: &str = "raw-activity";
+const LOW_SIGNAL_LABEL: &str = "low-signal";
 const REFLECT_GENERATED_BY: &str = "reflect_service";
 const REINFORCE_EVIDENCE_ROLE: &str = "reinforces";
 const CONTRADICT_EVIDENCE_ROLE: &str = "contradicts";

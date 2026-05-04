@@ -91,8 +91,8 @@ impl RetrievalEngine {
     pub fn new(project_root: &Path, _config: Config) -> Self {
         let mode = SubconsciousMode::from_env();
         let token_budget = match mode {
-            SubconsciousMode::Whisper => 512,
-            SubconsciousMode::Full => 1024,
+            SubconsciousMode::Whisper => 8192,
+            SubconsciousMode::Full => 16384,
             SubconsciousMode::Off => 0,
         };
         Self {
@@ -148,7 +148,7 @@ impl RetrievalEngine {
 
         if soul_hash != sync_state.last_soul_hash {
             if let Some(soul) = soul_content {
-                let truncated = truncate_to_chars(&soul, 300);
+                let truncated = truncate_to_chars(&soul, 8192);
                 parts.push(format!(
                     "<soul_update>\n{}\n</soul_update>",
                     escape_xml(&truncated)
@@ -180,7 +180,7 @@ impl RetrievalEngine {
                     format!(
                         "[{}] {}",
                         tier,
-                        escape_xml(&truncate_to_chars(&e.content, 120))
+                        escape_xml(&truncate_to_chars(&e.content, 8192))
                     )
                 })
                 .collect();
@@ -206,7 +206,7 @@ impl RetrievalEngine {
                     format!(
                         "[{}] {}",
                         tier,
-                        escape_xml(&truncate_to_chars(&e.content, 120))
+                        escape_xml(&truncate_to_chars(&e.content, 8192))
                     )
                 })
                 .collect();
@@ -260,15 +260,13 @@ impl RetrievalEngine {
              </nexus_context>"
         ));
 
-        // Soul section (full mode only, or whisper if explicitly requested)
-        if self.mode == SubconsciousMode::Full {
-            if let Some(ref soul) = result.soul_content {
-                let truncated = truncate_to_chars(soul, budgets.soul * 4);
-                sections.push(format!(
-                    "<nexus_soul>\n{}\n</nexus_soul>",
-                    escape_xml(&truncated)
-                ));
-            }
+        // Soul section (now included in both Whisper and Full modes)
+        if let Some(ref soul) = result.soul_content {
+            let truncated = truncate_to_chars(soul, budgets.soul * 4);
+            sections.push(format!(
+                "<nexus_soul>\n{}\n</nexus_soul>",
+                escape_xml(&truncated)
+            ));
         }
 
         // Recall section
@@ -343,15 +341,16 @@ impl RetrievalEngine {
             }
         ));
 
-        if self.mode == SubconsciousMode::Full {
-            if let Some(soul) = soul_content {
-                let truncated = truncate_to_chars(soul, 400);
-                parts.push(format!(
-                    "<nexus_soul>\n{}\n</nexus_soul>",
-                    escape_xml(&truncated)
-                ));
-            }
+        // Show soul content in both Whisper and Full modes (key difference from before)
+        if let Some(soul) = soul_content {
+            let truncated = truncate_to_chars(soul, 8192);
+            parts.push(format!(
+                "<nexus_soul>\n{}\n</nexus_soul>",
+                escape_xml(&truncated)
+            ));
+        }
 
+        if self.mode == SubconsciousMode::Full {
             // Show all hot cache entries in full mode
             if !hot_cache.hot_cache.entries.is_empty() {
                 let entries: Vec<_> = hot_cache
@@ -366,7 +365,7 @@ impl RetrievalEngine {
                         };
                         format!(
                             "[{tier}] {}",
-                            escape_xml(&truncate_to_chars(&e.content, 120))
+                            escape_xml(&truncate_to_chars(&e.content, 8192))
                         )
                     })
                     .collect();
@@ -376,7 +375,7 @@ impl RetrievalEngine {
                 ));
             }
         } else {
-            // Whisper mode: show top 3 by relevance
+            // Whisper mode: show top 10 by relevance with expanded content
             let mut sorted = hot_cache.hot_cache.entries.clone();
             sorted.sort_by(|a, b| {
                 b.relevance_score
@@ -385,7 +384,7 @@ impl RetrievalEngine {
             });
             let top: Vec<_> = sorted
                 .iter()
-                .take(3)
+                .take(10)
                 .map(|e| {
                     let tier = match e.tier {
                         ConfidenceTier::Loud => "LOUD",
@@ -394,7 +393,7 @@ impl RetrievalEngine {
                     };
                     format!(
                         "[{tier}] {}",
-                        escape_xml(&truncate_to_chars(&e.content, 80))
+                        escape_xml(&truncate_to_chars(&e.content, 8192))
                     )
                 })
                 .collect();
@@ -507,11 +506,11 @@ impl RetrievalEngine {
                 };
                 guidance.push(format!(
                     "[{tier}] {}",
-                    truncate_to_chars(&entry.content, 120)
+                    truncate_to_chars(&entry.content, 8192)
                 ));
             }
         }
-        guidance.truncate(3);
+        guidance.truncate(10);
         guidance
     }
 
@@ -519,14 +518,14 @@ impl RetrievalEngine {
         let total = self.token_budget;
         match self.mode {
             SubconsciousMode::Whisper => TokenBudgets {
-                soul: 0, // No soul in whisper mode
-                recall: total * 3 / 4,
-                guidance: total / 4,
+                soul: total / 4,
+                recall: total * 3 / 8,
+                guidance: total * 3 / 8,
             },
             SubconsciousMode::Full => TokenBudgets {
                 soul: total / 2,
-                recall: total / 3,
-                guidance: total / 6,
+                recall: total / 4,
+                guidance: total / 4,
             },
             SubconsciousMode::Off => TokenBudgets {
                 soul: 0,
