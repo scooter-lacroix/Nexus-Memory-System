@@ -27,12 +27,8 @@ const ACTIVITY_DISTILL_JOB: &str = "activity_distill";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IngestOutcome {
     RawActivityOnly,
-    #[allow(dead_code)]
     Deferred,
-    Persisted {
-        stored: usize,
-        skipped: usize,
-    },
+    Persisted { stored: usize, skipped: usize },
 }
 
 fn parse_stdin_json_or_empty(raw_input: &str) -> Result<serde_json::Value> {
@@ -162,8 +158,14 @@ pub(crate) async fn process_normalized_event(
     let enrichment_service: EnrichmentService = match EnrichmentService::new() {
         Ok(svc) => svc,
         Err(e) => {
-            tracing::warn!(error = %e, "LLM enrichment unavailable");
-            // Fallback: store candidates directly without LLM enrichment
+            tracing::warn!(error = %e, "LLM enrichment unavailable, deferring");
+            if buffer_on_failure {
+                let retry_buffer = RetryBuffer::new();
+                retry_buffer.write_failed(normalized, candidates, &e.to_string())?;
+                return Ok(IngestOutcome::Deferred);
+            }
+
+            // Fallback: store candidates directly if buffering is disabled
             return store_candidates_directly(
                 namespace_id,
                 memory_repo,
@@ -182,11 +184,13 @@ pub(crate) async fn process_normalized_event(
         Ok(batch) => batch,
         Err(e) => {
             tracing::warn!(error = %e, "LLM enrichment failed");
-            // Fallback: store candidates directly without LLM enrichment
             if buffer_on_failure {
                 let retry_buffer = RetryBuffer::new();
                 retry_buffer.write_failed(normalized, candidates, &e.to_string())?;
+                return Ok(IngestOutcome::Deferred);
             }
+
+            // Fallback: store candidates directly if buffering is disabled
             return store_candidates_directly(
                 namespace_id,
                 memory_repo,
