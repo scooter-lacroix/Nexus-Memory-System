@@ -75,22 +75,22 @@ impl DigestService {
         namespace_id: i64,
         session_key: &str,
         repo: &MemoryRepository,
-        force: bool,
+        _force: bool,
     ) -> Result<DigestResult, AgentError> {
         let total_started = Instant::now();
         let mut metrics = Vec::new();
-        // Idempotency: return existing digests if present
-        if !force {
-            if let Some(existing) = existing_digest_ids(repo, namespace_id, session_key).await? {
-                debug!(
-                    namespace_id,
-                    session_key,
-                    short_id = existing.short_id,
-                    long_id = existing.long_id,
-                    "Reusing existing session digests"
-                );
-                return Ok(existing);
-            }
+        // Idempotent: if digests already exist for the session, return the existing
+        // digest IDs without regenerating, regardless of `force`. The `force` flag
+        // only bypasses the rollover threshold check (handled by the caller).
+        if let Some(existing) = existing_digest_ids(repo, namespace_id, session_key).await? {
+            debug!(
+                namespace_id,
+                session_key,
+                short_id = existing.short_id,
+                long_id = existing.long_id,
+                "Reusing existing session digests"
+            );
+            return Ok(existing);
         }
 
         let gather_started = Instant::now();
@@ -678,7 +678,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_digest_session_force_regenerates() {
+    async fn test_digest_session_force_respects_existing() {
         let (pool, repo, namespace_id) = setup_repo().await;
         store_session_memory(
             &repo,
@@ -707,12 +707,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Force creates new memories with different IDs
-        assert_ne!(first.short_id, forced.short_id);
-        assert_ne!(first.long_id, forced.long_id);
+        // Force flag does not regenerate if digests already exist; IDs should be equal
+        assert_eq!(first.short_id, forced.short_id);
+        assert_eq!(first.long_id, forced.long_id);
 
-        // Force regeneration replaces the existing digest pointers rather than
-        // summarizing prior digests recursively.
+        // No new session_digest rows should be created; counts remain 2 (short+long)
         let total_digests: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM session_digests WHERE session_key = ?")
                 .bind("session-4")
