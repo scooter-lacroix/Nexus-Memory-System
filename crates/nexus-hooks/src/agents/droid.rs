@@ -153,7 +153,11 @@ impl DroidHook {
             }
             #[cfg(windows)]
             {
-                format!("\"{nexus_bin}\" {args}")
+                // On Windows, use cmd.exe with environment variable expansion.
+                // Quotes around %VAR% handle paths with spaces.
+                let session_key = "\"%FACTORY_SESSION_ID%\"";
+                let cwd = "\"%FACTORY_CWD%\"";
+                format!("cmd /c \"\"{nexus_bin}\" {args} --session-key {session_key} --cwd {cwd}\"")
             }
         };
 
@@ -168,7 +172,9 @@ impl DroidHook {
             }
             #[cfg(windows)]
             {
-                format!("\"{nexus_bin}\" {args}")
+                let session_id = "\"%FACTORY_SESSION_ID%\"";
+                let cwd = "\"%FACTORY_CWD%\"";
+                format!("cmd /c \"\"{nexus_bin}\" {args} --session-id {session_id} --cwd {cwd}\"")
             }
         };
 

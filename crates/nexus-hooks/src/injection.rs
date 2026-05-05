@@ -78,11 +78,17 @@ impl AgentInjectionTarget {
 }
 
 /// Inject Nexus references into a config file.
+///
+/// # Parameters
+/// - `config_file`: Path to the configuration file
+/// - `soul_path`: Path to the soul.md reference
+/// - `context_path`: Path to the context.md reference  
+/// - `agent_type`: Reserved for future agent-specific logic (currently unused)
 pub fn inject_reference(
     config_file: &Path,
     soul_path: &Path,
     context_path: &Path,
-    agent_type: Option<&str>,
+    _agent_type: Option<&str>,
 ) -> io::Result<()> {
     if !config_file.exists() {
         return Ok(());
@@ -99,7 +105,7 @@ pub fn inject_reference(
 
     let new_content = if is_json {
         // For JSON, add settings if not already present
-        inject_into_json(&content, config_file, soul_path, context_path, agent_type)?
+        inject_into_json(&content, config_file, soul_path, context_path)?
     } else {
         // Standard markdown-style injection
         let block = format!(
@@ -165,11 +171,8 @@ fn inject_into_json(
     config_file: &Path,
     soul_path: &Path,
     context_path: &Path,
-    _agent_type: Option<&str>,
 ) -> io::Result<String> {
-    use serde_json::Value;
-
-    let mut json: Value = serde_json::from_str(content).map_err(|e| {
+    let json: Value = serde_json::from_str(content).map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("Failed to parse JSON in {}: {}", config_file.display(), e),
@@ -194,6 +197,17 @@ fn inject_into_json(
         "source": "nexus-memory",
         "version": env!("CARGO_PKG_VERSION"),
     });
+
+    insert_nexus_into_json(json, config_file, nexus_obj)
+}
+
+/// Shared logic for inserting a Nexus reference object into a JSON config.
+fn insert_nexus_into_json(
+    mut json: Value,
+    config_file: &Path,
+    nexus_obj: serde_json::Value,
+) -> io::Result<String> {
+    use serde_json::Value;
 
     // Handle settings.json-style structure with "hooks" key
     if let Value::Object(ref mut map) = json {
@@ -266,6 +280,7 @@ fn inject_into_json(
             map.insert("nexus".to_string(), nexus_obj);
         }
     } else {
+        // Non-object JSON: this configuration format cannot support Nexus injection
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
@@ -279,10 +294,15 @@ fn inject_into_json(
 }
 
 /// Inject only the soul identity reference into a config file (no project context).
+///
+/// # Parameters
+/// - `config_file`: Path to the configuration file to modify
+/// - `soul_path`: Path to the soul.md file to reference
+/// - `agent_type`: Reserved for future agent-specific injection logic (currently unused)
 pub fn inject_soul_only(
     config_file: &Path,
     soul_path: &Path,
-    agent_type: Option<&str>,
+    _agent_type: Option<&str>,
 ) -> io::Result<()> {
     if !config_file.exists() {
         return Ok(());
@@ -297,7 +317,7 @@ pub fn inject_soul_only(
         .unwrap_or(false);
 
     let new_content = if is_json {
-        inject_into_json_soul_only(&content, soul_path, config_file, agent_type)?
+        inject_into_json_soul_only(&content, soul_path, config_file)?
     } else {
         let block = format!(
             "{}\n\
@@ -359,11 +379,8 @@ fn inject_into_json_soul_only(
     content: &str,
     soul_path: &Path,
     config_file: &Path,
-    _agent_type: Option<&str>,
 ) -> io::Result<String> {
-    use serde_json::Value;
-
-    let mut json: Value = serde_json::from_str(content).map_err(|e| {
+    let json: Value = serde_json::from_str(content).map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("Failed to parse JSON in {}: {}", config_file.display(), e),
@@ -380,85 +397,7 @@ fn inject_into_json_soul_only(
         "version": env!("CARGO_PKG_VERSION"),
     });
 
-    if let Value::Object(ref mut map) = json {
-        // Determine if hooks exists and is an object
-        let has_hooks = matches!(map.get("hooks"), Some(Value::Object(_)));
-
-        // Determine target location:
-        // Use hooks if has_hooks AND root contains no keys other than "hooks" and "nexus"
-        let target_hooks = if has_hooks {
-            let mut only_hooks = true;
-            for key in map.keys() {
-                if key != "hooks" && key != "nexus" {
-                    only_hooks = false;
-                    break;
-                }
-            }
-            only_hooks
-        } else {
-            false
-        };
-
-        if target_hooks {
-            // Clean root nexus before borrowing hooks (only if Nexus-owned)
-            if map.get("nexus").map(is_nexus_owned).unwrap_or(false) {
-                map.remove("nexus");
-            }
-
-            // Insert into hooks
-            if let Some(hooks) = map.get_mut("hooks").and_then(|v| v.as_object_mut()) {
-                if let Some(existing) = hooks.get("nexus") {
-                    if !is_nexus_owned(existing) {
-                        return Err(io::Error::new(
-                            io::ErrorKind::AlreadyExists,
-                            format!(
-                                "Refusing to overwrite non-Nexus-managed hooks.nexus in {}",
-                                config_file.display()
-                            ),
-                        ));
-                    }
-                }
-                hooks.insert("nexus".to_string(), nexus_obj);
-            } else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "Expected hooks to be an object in {}",
-                        config_file.display()
-                    ),
-                ));
-            }
-        } else {
-            // Root target: clean hooks.nexus if present (only if Nexus-owned)
-            if let Some(hooks) = map.get_mut("hooks").and_then(|v| v.as_object_mut()) {
-                if hooks.get("nexus").map(is_nexus_owned).unwrap_or(false) {
-                    hooks.remove("nexus");
-                }
-            }
-            if let Some(existing) = map.get("nexus") {
-                if !is_nexus_owned(existing) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        format!(
-                            "Refusing to overwrite non-Nexus-managed nexus key in {}",
-                            config_file.display()
-                        ),
-                    ));
-                }
-            }
-            map.insert("nexus".to_string(), nexus_obj);
-        }
-    } else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "Expected top-level JSON object for Nexus injection in {}",
-                config_file.display()
-            ),
-        ));
-    }
-
-    serde_json::to_string_pretty(&json).map_err(std::io::Error::other)
+    insert_nexus_into_json(json, config_file, nexus_obj)
 }
 
 /// Remove Nexus references from a config file.
@@ -1049,7 +988,7 @@ mod tests {
         let initial_json = r#"{"hooks": {}}"#;
         fs::write(&config, initial_json).unwrap();
 
-        let result = inject_into_json(initial_json, &config, soul, context, None).unwrap();
+        let result = inject_into_json(initial_json, &config, soul, context).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
         let hooks = parsed.get("hooks").and_then(|v| v.as_object()).unwrap();
@@ -1060,7 +999,7 @@ mod tests {
             Some("nexus-memory")
         );
         // Idempotency: second injection should yield same result
-        let result2 = inject_into_json(initial_json, &config, soul, context, None).unwrap();
+        let result2 = inject_into_json(initial_json, &config, soul, context).unwrap();
         assert_eq!(result, result2);
     }
 
@@ -1073,7 +1012,7 @@ mod tests {
         let initial_json = r#"{"some_other_key": "value"}"#;
         fs::write(&config, initial_json).unwrap();
 
-        let result = inject_into_json(initial_json, &config, soul, context, None).unwrap();
+        let result = inject_into_json(initial_json, &config, soul, context).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
         assert!(parsed.get("nexus").is_some());
@@ -1095,7 +1034,7 @@ mod tests {
             let config = dir.path().join("hooks_cleanup.json");
             let initial_json = r#"{"hooks": {}, "nexus": {"source": "other"}}"#;
             fs::write(&config, initial_json).unwrap();
-            let result = inject_into_json(initial_json, &config, soul, context, None).unwrap();
+            let result = inject_into_json(initial_json, &config, soul, context).unwrap();
             let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
             // Non-owned root nexus must be preserved (not removed)
             assert!(
@@ -1120,7 +1059,7 @@ mod tests {
             let config = dir.path().join("root_cleanup.json");
             let initial_json = r#"{"hooks": {"nexus": {"source": "other"}}, "other": 1}"#;
             fs::write(&config, initial_json).unwrap();
-            let result = inject_into_json(initial_json, &config, soul, context, None).unwrap();
+            let result = inject_into_json(initial_json, &config, soul, context).unwrap();
             let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
             // Root nexus should exist (Nexus-owned)
             assert!(parsed.get("nexus").is_some(), "root nexus should exist");
@@ -1149,13 +1088,13 @@ mod tests {
         // Non-Nexus owned entry in hooks should fail
         let initial_json = r#"{"hooks": {"nexus": {"source": "something-else"}}}"#;
         fs::write(&config, initial_json).unwrap();
-        let err = inject_into_json(initial_json, &config, soul, context, None).unwrap_err();
+        let err = inject_into_json(initial_json, &config, soul, context).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
 
         // Non-Nexus owned entry in root should fail
         let initial_json2 = r#"{"nexus": {"source": "other-source"}}"#;
         fs::write(&config, initial_json2).unwrap();
-        let err2 = inject_into_json(initial_json2, &config, soul, context, None).unwrap_err();
+        let err2 = inject_into_json(initial_json2, &config, soul, context).unwrap_err();
         assert_eq!(err2.kind(), std::io::ErrorKind::AlreadyExists);
     }
 
@@ -1168,7 +1107,7 @@ mod tests {
         // Hooks branch
         let initial_json = r#"{"hooks": {}}"#;
         fs::write(&config, initial_json).unwrap();
-        let result = inject_into_json_soul_only(initial_json, soul, &config, None).unwrap();
+        let result = inject_into_json_soul_only(initial_json, soul, &config).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         let hooks = parsed.get("hooks").and_then(|v| v.as_object()).unwrap();
         let nexus = hooks.get("nexus").unwrap();
@@ -1184,7 +1123,7 @@ mod tests {
         // Root branch
         let initial_json2 = r#"{"other": "val"}"#;
         fs::write(&config, initial_json2).unwrap();
-        let result2 = inject_into_json_soul_only(initial_json2, soul, &config, None).unwrap();
+        let result2 = inject_into_json_soul_only(initial_json2, soul, &config).unwrap();
         let parsed2: serde_json::Value = serde_json::from_str(&result2).unwrap();
         let nexus2 = parsed2.get("nexus").unwrap();
         assert_eq!(
