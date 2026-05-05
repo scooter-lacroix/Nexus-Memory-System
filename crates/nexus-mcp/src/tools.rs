@@ -405,8 +405,7 @@ fn derive_observations_tool() -> Tool {
             },
             "agent_type": {
                 "type": "string",
-                "description": "Agent namespace (defaults to the memory's namespace)",
-                "default": "general"
+                "description": "Agent namespace (defaults to the memory's namespace)"
             },
             "observer": {
                 "type": "string",
