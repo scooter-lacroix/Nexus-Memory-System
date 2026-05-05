@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Target for injecting Nexus references into an agent's configuration.
 #[derive(Debug, Clone)]
@@ -477,21 +477,48 @@ pub fn remove_reference(config_file: &Path) -> io::Result<()> {
         let mut json: Value = serde_json::from_str(&content)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
+        let mut changed = false;
+
+        // Handle wrapper case: if the file was wrapped by inject_into_json for non-object original,
+        // the structure is { "nexus": ..., "original": <original_value> }.
+        // After removing nexus, we should unwrap back to the original.
         if let Value::Object(ref mut map) = json {
-            // Remove nexus key from root
-            if map.get("nexus").map(is_nexus_owned).unwrap_or(false) {
+            // Check if this is a wrapper (has both "nexus" and "original" keys)
+            let is_wrapper = map.contains_key("nexus") && map.contains_key("original");
+
+            // Remove nexus key from wrapper root (Nexus-owned check not needed here - this nexus was created by us)
+            if is_wrapper {
                 map.remove("nexus");
+                changed = true;
+            } else {
+                // Normal case: remove nexus from root (only if Nexus-owned)
+                if map.get("nexus").map(is_nexus_owned).unwrap_or(false) {
+                    map.remove("nexus");
+                    changed = true;
+                }
             }
-            // Remove nexus key from hooks if present
+
+            // Remove nexus key from hooks if present (only if Nexus-owned)
             if let Some(hooks) = map.get_mut("hooks").and_then(|v| v.as_object_mut()) {
                 if hooks.get("nexus").map(is_nexus_owned).unwrap_or(false) {
                     hooks.remove("nexus");
+                    changed = true;
+                }
+            }
+
+            // If this was a wrapper and nexus was removed, unwrap to original
+            if is_wrapper && !map.contains_key("nexus") {
+                if let Some(original) = map.remove("original") {
+                    json = original;
+                    // Note: changed already true
                 }
             }
         }
 
-        let updated = serde_json::to_string_pretty(&json).map_err(std::io::Error::other)?;
-        atomic_write(config_file, &updated)?;
+        if changed {
+            let updated = serde_json::to_string_pretty(&json).map_err(std::io::Error::other)?;
+            atomic_write(config_file, &updated)?;
+        }
     } else {
         let content = fs::read_to_string(config_file)?;
         let start_pos = content.find(NEXUS_BLOCK_START);
@@ -830,27 +857,22 @@ pub async fn on_session_start(
         )
         .await;
 
-    // Filter out internal session lifecycle memories from recall results
-    let filtered_recalls: Vec<_> = recalls
-        .into_iter()
-        .filter(|r| !r.content.contains("Session lifecycle event"))
-        .collect();
-
     // 4. Build and Write context.md
     let window_size = nexus_agent::TokenBudget::estimate_window(agent_type) as f32;
     let max_context_tokens =
         (window_size * config.cognitive_system.context_allocation_pct) as usize;
     let context_md = nexus_agent::context_builder::build_context_md(
         &cache.hot_cache,
-        &filtered_recalls,
+        &recalls,
         max_context_tokens,
     );
 
     let context_path = nexus_dir.join("context.md");
     atomic_write(&context_path, &context_md)?;
 
-    // Promote filtered morning recall results to hot cache for future sessions
-    for recall in &filtered_recalls {
+    // Promote morning recall results to hot cache for future sessions
+    let hot_cache_max = config.cognitive_system.hot_cache_max_entries;
+    for recall in &recalls {
         let entry = nexus_agent::cognitive_cache::HotCacheEntry {
             memory_id: recall.memory_id,
             content: recall.content.clone(),
@@ -862,7 +884,7 @@ pub async fn on_session_start(
             pinned: false,
             source_agent: Some(agent_type.to_string()),
         };
-        cache.hot_cache.promote(entry, 100);
+        cache.hot_cache.promote(entry, hot_cache_max);
     }
 
     // Save updated hot cache to disk (so future sessions see these memories)
@@ -882,11 +904,29 @@ pub async fn on_session_start(
     if let Some(target) = AgentInjectionTarget::find(agent_type) {
         // Project config
         let project_config = project.root_dir.join(&target.project_config_filename);
-        inject_reference(&project_config, &soul_path, &context_path, Some(agent_type))?;
+        if let Err(e) =
+            inject_reference(&project_config, &soul_path, &context_path, Some(agent_type))
+        {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                // Non-Nexus-owned config already present; log and continue
+                warn!(file=?project_config, error=?e, "Skipping injection: config already contains non-Nexus reference");
+            } else {
+                return Err(e.into());
+            }
+        }
 
-        // Global config
+        // Global config - skip if it's the same file as project config (Droid edge case)
         if let Some(global_config) = target.global_config {
-            inject_soul_only(&global_config, &soul_path, Some(agent_type))?;
+            // Guard against overlap: if global_config resolves to the same path as project_config, skip
+            if global_config == project_config {
+                debug!(file=?global_config, "Skipping global soul-only injection: same as project config");
+            } else if let Err(e) = inject_soul_only(&global_config, &soul_path, Some(agent_type)) {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    warn!(file=?global_config, error=?e, "Skipping injection: global config already contains non-Nexus reference");
+                } else {
+                    return Err(e.into());
+                }
+            }
         }
     }
 
