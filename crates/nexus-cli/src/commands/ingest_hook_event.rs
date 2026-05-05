@@ -411,7 +411,12 @@ pub(crate) async fn store_raw_activity_memory(
     if let Some(response) = &event.tool_response_text {
         if response.len() > 50 {
             let truncated = if response.len() > 50000 {
-                format!("{}...[truncated]", &response[..49980])
+                // Find a char boundary near 49980 to avoid UTF-8 panic
+                let mut end = 49980.min(response.len());
+                while end > 0 && !response.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}...[truncated]", &response[..end])
             } else {
                 response.clone()
             };

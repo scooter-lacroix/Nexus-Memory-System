@@ -216,8 +216,10 @@ fn inject_into_json(
         };
 
         if target_hooks {
-            // Clean root nexus before borrowing hooks
-            map.remove("nexus");
+            // Clean root nexus before borrowing hooks (only if Nexus-owned)
+            if map.get("nexus").map(is_nexus_owned).unwrap_or(false) {
+                map.remove("nexus");
+            }
 
             // Insert into hooks
             if let Some(hooks) = map.get_mut("hooks").and_then(|v| v.as_object_mut()) {
@@ -244,9 +246,11 @@ fn inject_into_json(
                 ));
             }
         } else {
-            // Root target: clean hooks.nexus if present
+            // Root target: clean hooks.nexus if present (only if Nexus-owned)
             if let Some(hooks) = map.get_mut("hooks").and_then(|v| v.as_object_mut()) {
-                hooks.remove("nexus");
+                if hooks.get("nexus").map(is_nexus_owned).unwrap_or(false) {
+                    hooks.remove("nexus");
+                }
             }
             if let Some(existing) = map.get("nexus") {
                 if !is_nexus_owned(existing) {
@@ -373,6 +377,7 @@ fn inject_into_json_soul_only(
             "source": "soul.md"
         },
         "source": "nexus-memory",
+        "version": env!("CARGO_PKG_VERSION"),
     });
 
     if let Value::Object(ref mut map) = json {
@@ -395,8 +400,10 @@ fn inject_into_json_soul_only(
         };
 
         if target_hooks {
-            // Clean root nexus before borrowing hooks
-            map.remove("nexus");
+            // Clean root nexus before borrowing hooks (only if Nexus-owned)
+            if map.get("nexus").map(is_nexus_owned).unwrap_or(false) {
+                map.remove("nexus");
+            }
 
             // Insert into hooks
             if let Some(hooks) = map.get_mut("hooks").and_then(|v| v.as_object_mut()) {
@@ -422,9 +429,11 @@ fn inject_into_json_soul_only(
                 ));
             }
         } else {
-            // Root target: clean hooks.nexus if present
+            // Root target: clean hooks.nexus if present (only if Nexus-owned)
             if let Some(hooks) = map.get_mut("hooks").and_then(|v| v.as_object_mut()) {
-                hooks.remove("nexus");
+                if hooks.get("nexus").map(is_nexus_owned).unwrap_or(false) {
+                    hooks.remove("nexus");
+                }
             }
             if let Some(existing) = map.get("nexus") {
                 if !is_nexus_owned(existing) {
@@ -827,6 +836,19 @@ pub async fn on_session_start(
         .filter(|r| !r.content.contains("Session lifecycle event"))
         .collect();
 
+    // 4. Build and Write context.md
+    let window_size = nexus_agent::TokenBudget::estimate_window(agent_type) as f32;
+    let max_context_tokens =
+        (window_size * config.cognitive_system.context_allocation_pct) as usize;
+    let context_md = nexus_agent::context_builder::build_context_md(
+        &cache.hot_cache,
+        &filtered_recalls,
+        max_context_tokens,
+    );
+
+    let context_path = nexus_dir.join("context.md");
+    atomic_write(&context_path, &context_md)?;
+
     // Promote filtered morning recall results to hot cache for future sessions
     for recall in &filtered_recalls {
         let entry = nexus_agent::cognitive_cache::HotCacheEntry {
@@ -842,19 +864,6 @@ pub async fn on_session_start(
         };
         cache.hot_cache.promote(entry, 100);
     }
-
-    // 4. Build and Write context.md
-    let window_size = nexus_agent::TokenBudget::estimate_window(agent_type) as f32;
-    let max_context_tokens =
-        (window_size * config.cognitive_system.context_allocation_pct) as usize;
-    let context_md = nexus_agent::context_builder::build_context_md(
-        &cache.hot_cache,
-        &filtered_recalls,
-        max_context_tokens,
-    );
-
-    let context_path = nexus_dir.join("context.md");
-    atomic_write(&context_path, &context_md)?;
 
     // Save updated hot cache to disk (so future sessions see these memories)
     cache.save(&nexus_dir)?;
@@ -1041,33 +1050,51 @@ mod tests {
         let soul = Path::new("/tmp/soul.md");
         let context = Path::new("/tmp/context.md");
 
-        // Hooks injection: ensure root nexus is removed
+        // Hooks injection: non-owned root nexus should be preserved, hooks.nexus added
         {
             let config = dir.path().join("hooks_cleanup.json");
             let initial_json = r#"{"hooks": {}, "nexus": {"source": "other"}}"#;
             fs::write(&config, initial_json).unwrap();
             let result = inject_into_json(initial_json, &config, soul, context, None).unwrap();
             let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+            // Non-owned root nexus must be preserved (not removed)
             assert!(
-                parsed.get("nexus").is_none(),
-                "root nexus should be removed"
+                parsed.get("nexus").is_some(),
+                "root nexus (non-owned) should be preserved"
+            );
+            // Verify root nexus still has original source
+            let root_nexus = parsed.get("nexus").unwrap();
+            assert_eq!(
+                root_nexus.get("source").and_then(|v| v.as_str()),
+                Some("other")
             );
             let hooks = parsed.get("hooks").and_then(|v| v.as_object()).unwrap();
-            assert!(hooks.contains_key("nexus"), "hooks.nexus should exist");
+            assert!(
+                hooks.contains_key("nexus"),
+                "hooks.nexus should exist (Nexus-owned)"
+            );
         }
 
-        // Root injection: ensure hooks.nexus is removed
+        // Root injection: non-owned hooks.nexus should be preserved, root.nexus added
         {
             let config = dir.path().join("root_cleanup.json");
             let initial_json = r#"{"hooks": {"nexus": {"source": "other"}}, "other": 1}"#;
             fs::write(&config, initial_json).unwrap();
             let result = inject_into_json(initial_json, &config, soul, context, None).unwrap();
             let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+            // Root nexus should exist (Nexus-owned)
             assert!(parsed.get("nexus").is_some(), "root nexus should exist");
             let hooks = parsed.get("hooks").and_then(|v| v.as_object()).unwrap();
+            // Non-owned hooks.nexus must be preserved (not removed)
             assert!(
-                !hooks.contains_key("nexus"),
-                "hooks.nexus should be removed"
+                hooks.contains_key("nexus"),
+                "hooks.nexus (non-owned) should be preserved"
+            );
+            // Verify the hooks.nexus source remains "other"
+            let hooks_nexus = hooks.get("nexus").unwrap();
+            assert_eq!(
+                hooks_nexus.get("source").and_then(|v| v.as_str()),
+                Some("other")
             );
         }
     }
