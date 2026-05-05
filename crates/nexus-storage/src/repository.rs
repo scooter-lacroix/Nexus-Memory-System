@@ -2670,6 +2670,25 @@ impl NamespaceRepository {
         }))
     }
 
+    /// Get a namespace by ID
+    pub async fn get_by_id(&self, id: i64) -> Result<Option<AgentNamespace>> {
+        let row: Option<AgentNamespaceRow> =
+            sqlx::query_as("SELECT * FROM agent_namespaces WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db_error)?;
+
+        Ok(row.map(|r| AgentNamespace {
+            id: r.id,
+            name: r.name,
+            description: r.description,
+            agent_type: r.agent_type,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }))
+    }
+
     /// List all namespaces
     pub async fn list_all(&self) -> Result<Vec<AgentNamespace>> {
         let rows: Vec<AgentNamespaceRow> =

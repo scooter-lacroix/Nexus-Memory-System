@@ -35,7 +35,10 @@ pub async fn execute(agent: String, session_key: String) -> Result<()> {
 
     let llm = create_client_auto_with_fallback()?;
     let embeddings = create_embedding_service(&config).await;
-    let agent_config = AgentConfig::default();
+    let agent_config = AgentConfig {
+        namespace: agent.clone(),
+        ..AgentConfig::default()
+    };
 
     let digest_service = DigestService::new(agent_config, llm, embeddings);
     let DigestResult {

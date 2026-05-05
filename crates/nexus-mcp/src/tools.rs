@@ -1265,10 +1265,7 @@ impl ToolHandler {
             None => return CallToolResult::error("memory_id is required"),
         };
 
-        let agent_type = args
-            .get("agent_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("general");
+        let agent_type = args.get("agent_type").and_then(|v| v.as_str());
 
         let observer = args.get("observer").and_then(|v| v.as_str());
         let subject = args.get("subject").and_then(|v| v.as_str());
@@ -1277,27 +1274,50 @@ impl ToolHandler {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty());
 
-        let ns_repo = NamespaceRepository::new(self.pool.clone());
-        let namespace = match ns_repo.get_by_name(agent_type).await {
-            Ok(Some(ns)) => ns,
-            Ok(None) => return CallToolResult::error("Namespace not found"),
-            Err(e) => return CallToolResult::error(format!("Failed to get namespace: {}", e)),
-        };
         let mem_repo = MemoryRepository::new(self.pool.clone());
-
         let memory = match mem_repo.get_by_id(memory_id).await {
             Ok(Some(m)) => m,
             Ok(None) => return CallToolResult::error(format!("Memory {} not found", memory_id)),
             Err(e) => return CallToolResult::error(format!("Failed to get memory: {}", e)),
         };
 
-        // Verify the memory belongs to the requested namespace and is a derivable raw session memory
-        if memory.namespace_id != namespace.id {
-            return CallToolResult::error(format!(
-                "Memory {} belongs to namespace {} but requested namespace is {}",
-                memory_id, memory.namespace_id, namespace.id
-            ));
-        }
+        let ns_repo = NamespaceRepository::new(self.pool.clone());
+        let namespace = match agent_type {
+            Some(atype) => {
+                let ns = match ns_repo.get_by_name(atype).await {
+                    Ok(Some(ns)) => ns,
+                    Ok(None) => {
+                        return CallToolResult::error(format!("Namespace '{}' not found", atype))
+                    }
+                    Err(e) => {
+                        return CallToolResult::error(format!("Failed to get namespace: {}", e))
+                    }
+                };
+                if memory.namespace_id != ns.id {
+                    return CallToolResult::error(format!(
+                        "Memory {} belongs to namespace {} but requested namespace is {}",
+                        memory_id, memory.namespace_id, ns.id
+                    ));
+                }
+                ns
+            }
+            None => {
+                let ns = match ns_repo.get_by_id(memory.namespace_id).await {
+                    Ok(Some(ns)) => ns,
+                    Ok(None) => {
+                        return CallToolResult::error(
+                            "Namespace not found for memory's namespace_id",
+                        )
+                    }
+                    Err(e) => {
+                        return CallToolResult::error(format!("Failed to get namespace: {}", e))
+                    }
+                };
+                ns
+            }
+        };
+
+        let agent_type = namespace.name.as_str();
 
         // Check if this is a raw session memory that can be derived
         let is_raw_session = memory.category == MemoryCategory::Session
