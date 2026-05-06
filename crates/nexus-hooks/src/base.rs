@@ -168,21 +168,20 @@ impl BaseHook {
         }
     }
     /// Lazily initialize the rescorer on first use
+    /// Initialize the rescorer using the project root associated with this hook
     fn ensure_rescorer(&self) {
         let read = self.rescorer.read().unwrap();
         if read.is_none() {
             drop(read);
             let mut write = self.rescorer.write().unwrap();
             if write.is_none() {
-                if let Ok(cwd) = std::env::current_dir() {
-                    let project = nexus_core::ProjectIdentity::resolve(&cwd);
-                    let config = nexus_core::Config::from_env().unwrap_or_default();
-                    *write = Some(Arc::new(crate::rescorer::SessionRescorer::new(
-                        project,
-                        config.cognitive_system.rescore_turn_interval,
-                        config.cognitive_system.rescore_drift_threshold,
-                    )));
-                }
+                let project = nexus_core::ProjectIdentity::resolve(&self.project_root);
+                let config = nexus_core::Config::from_env().unwrap_or_default();
+                *write = Some(Arc::new(crate::rescorer::SessionRescorer::new(
+                    project,
+                    config.cognitive_system.rescore_turn_interval,
+                    config.cognitive_system.rescore_drift_threshold,
+                )));
             }
         }
     }
@@ -254,6 +253,27 @@ impl BaseHook {
                     }
                 });
             }
+        }
+    }
+
+    /// Trigger session start callbacks
+    pub fn trigger_session_start_callbacks(&self, context: SessionContext) {
+        for callback in &self.session_start_callbacks {
+            callback(context.clone());
+        }
+    }
+
+    /// Trigger checkpoint callbacks
+    pub fn trigger_checkpoint_callbacks(&self, context: SessionContext) {
+        for callback in &self.checkpoint_callbacks {
+            callback(context.clone());
+        }
+    }
+
+    /// Trigger error callbacks
+    pub fn trigger_error_callbacks(&self, context: SessionContext) {
+        for callback in &self.error_callbacks {
+            callback(context.clone());
         }
     }
 

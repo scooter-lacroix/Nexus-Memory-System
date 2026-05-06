@@ -99,6 +99,8 @@ impl SessionRescorer {
         embedder: Option<&dyn EmbeddingService>,
         agent_type: &str,
     ) -> anyhow::Result<()> {
+        // Acquire mutex to prevent concurrent rescores
+        let _guard = self.rescore_mutex.lock().await;
         let _start = std::time::Instant::now();
 
         // 1. Load current cache

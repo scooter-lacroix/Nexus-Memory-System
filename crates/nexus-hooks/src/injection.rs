@@ -183,20 +183,32 @@ fn inject_into_json(
     let context_name = "Project Context";
 
     // Create the nexus reference object
-    let nexus_obj = serde_json::json!({
-        "identity": {
-            "name": soul_name,
-            "path": soul_path.to_string_lossy(),
-            "source": "soul.md"
-        },
-        "projectContext": {
-            "name": context_name,
-            "path": context_path.to_string_lossy(),
-            "source": "context.md"
-        },
-        "source": "nexus-memory",
-        "version": env!("CARGO_PKG_VERSION"),
-    });
+    let nexus_obj = if let Some(context_path) = context_path {
+        serde_json::json!({
+            "identity": {
+                "name": soul_name,
+                "path": soul_path.to_string_lossy(),
+                "source": "soul.md"
+            },
+            "projectContext": {
+                "name": context_name,
+                "path": context_path.to_string_lossy(),
+                "source": "context.md"
+            },
+            "source": "nexus-memory",
+            "version": env!("CARGO_PKG_VERSION"),
+        })
+    } else {
+        serde_json::json!({
+            "identity": {
+                "name": soul_name,
+                "path": soul_path.to_string_lossy(),
+                "source": "soul.md"
+            },
+            "source": "nexus-memory",
+            "version": env!("CARGO_PKG_VERSION"),
+        })
+    };
 
     insert_nexus_into_json(json, config_file, nexus_obj)
 }

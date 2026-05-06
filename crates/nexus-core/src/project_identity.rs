@@ -1,9 +1,12 @@
 //! Project identity resolution logic
 
 use serde::{Deserialize, Serialize};
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::io::AsyncReadExt;
+use tokio::process::Command;
+use tokio::runtime::Runtime;
+use tokio::time::timeout;
 
 /// Unique identity for a project, used as the cache key for per-project memories.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -64,38 +67,43 @@ impl ProjectIdentity {
 
     /// Extract git remote origin URL. Never fails — returns None on error.
     fn detect_git_remote(root: &Path) -> Option<String> {
-        let mut child = std::process::Command::new("git")
-            .args(["config", "--get", "remote.origin.url"])
-            .current_dir(root)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .ok()?;
+        let rt = match Runtime::new() {
+            Ok(rt) => rt,
+            Err(_) => return None,
+        };
+        
+        rt.block_on(async {
+            let timeout_duration = Duration::from_secs(2);
+            
+            let mut child = match Command::new("git")
+                .args(["config", "--get", "remote.origin.url"])
+                .current_dir(root)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(_) => return None,
+            };
 
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    if !status.success() {
-                        return None;
-                    }
+            let stdout = match timeout(timeout_duration, child.wait()).await {
+                Ok(Ok(status)) if status.success() => {
+                    let mut stdout = child.stdout.take()?;
                     let mut buf = String::new();
-                    child.stdout?.read_to_string(&mut buf).ok()?;
-                    return Some(buf.trim().to_string());
-                }
-                Ok(None) => {
-                    if Instant::now() > deadline {
-                        let _ = child.kill();
-                        return None;
+                    if stdout.read_to_string(&mut buf).await.is_ok() {
+                        Some(buf.trim().to_string())
+                    } else {
+                        None
                     }
-                    std::thread::sleep(Duration::from_millis(50));
                 }
-                Err(_) => {
-                    let _ = child.kill();
-                    return None;
+                _ => {
+                    let _ = child.kill().await;
+                    None
                 }
-            }
-        }
+            };
+            
+            stdout
+        })
     }
 
     fn derive_display_name(root: &Path) -> String {

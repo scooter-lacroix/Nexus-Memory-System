@@ -224,6 +224,9 @@ impl Default for SemanticSearch {
 }
 
 /// Calculate cosine similarity between two vectors
+///
+/// The cosine similarity is calculated as the dot product of the vectors divided by the product of their magnitudes.
+/// The result is clamped to the range [0.0, 1.0] for use with embedding vectors, where 1.0 indicates identical vectors.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
