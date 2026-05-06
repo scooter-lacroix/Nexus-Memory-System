@@ -64,9 +64,6 @@ impl ProjectIdentity {
 
     /// Extract git remote origin URL. Never fails — returns None on error.
     fn detect_git_remote(root: &Path) -> Option<String> {
-        use std::process::Stdio;
-        use std::thread;
-
         // Spawn a blocking thread to run the git command with a timeout
         let root = root.to_path_buf();
         let handle = thread::spawn(move || {
