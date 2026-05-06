@@ -105,7 +105,7 @@ pub fn inject_reference(
 
     let new_content = if is_json {
         // For JSON, add settings if not already present
-        inject_into_json(&content, config_file, soul_path, context_path)?
+        inject_into_json(&content, config_file, soul_path, Some(context_path))?
     } else {
         // Standard markdown-style injection
         let block = format!(
@@ -170,7 +170,7 @@ fn inject_into_json(
     content: &str,
     config_file: &Path,
     soul_path: &Path,
-    context_path: &Path,
+    context_path: Option<&Path>,
 ) -> io::Result<String> {
     let json: Value = serde_json::from_str(content).map_err(|e| {
         std::io::Error::new(
@@ -183,7 +183,7 @@ fn inject_into_json(
     let context_name = "Project Context";
 
     // Create the nexus reference object
-    let nexus_obj = if let Some(context_path) = context_path {
+    let nexus_obj = if let Some(cp) = context_path {
         serde_json::json!({
             "identity": {
                 "name": soul_name,
@@ -192,7 +192,7 @@ fn inject_into_json(
             },
             "projectContext": {
                 "name": context_name,
-                "path": context_path.to_string_lossy(),
+                "path": cp.to_string_lossy(),
                 "source": "context.md"
             },
             "source": "nexus-memory",
@@ -1000,7 +1000,7 @@ mod tests {
         let initial_json = r#"{"hooks": {}}"#;
         fs::write(&config, initial_json).unwrap();
 
-        let result = inject_into_json(initial_json, &config, soul, context).unwrap();
+        let result = inject_into_json(initial_json, &config, soul, Some(context)).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
         let hooks = parsed.get("hooks").and_then(|v| v.as_object()).unwrap();
@@ -1011,7 +1011,7 @@ mod tests {
             Some("nexus-memory")
         );
         // Idempotency: second injection should yield same result
-        let result2 = inject_into_json(initial_json, &config, soul, context).unwrap();
+        let result2 = inject_into_json(initial_json, &config, soul, Some(context)).unwrap();
         assert_eq!(result, result2);
     }
 
@@ -1024,7 +1024,7 @@ mod tests {
         let initial_json = r#"{"some_other_key": "value"}"#;
         fs::write(&config, initial_json).unwrap();
 
-        let result = inject_into_json(initial_json, &config, soul, context).unwrap();
+        let result = inject_into_json(initial_json, &config, soul, Some(context)).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
         assert!(parsed.get("nexus").is_some());
@@ -1046,7 +1046,7 @@ mod tests {
             let config = dir.path().join("hooks_cleanup.json");
             let initial_json = r#"{"hooks": {}, "nexus": {"source": "other"}}"#;
             fs::write(&config, initial_json).unwrap();
-            let result = inject_into_json(initial_json, &config, soul, context).unwrap();
+            let result = inject_into_json(initial_json, &config, soul, Some(context)).unwrap();
             let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
             // Non-owned root nexus must be preserved (not removed)
             assert!(
@@ -1071,7 +1071,7 @@ mod tests {
             let config = dir.path().join("root_cleanup.json");
             let initial_json = r#"{"hooks": {"nexus": {"source": "other"}}, "other": 1}"#;
             fs::write(&config, initial_json).unwrap();
-            let result = inject_into_json(initial_json, &config, soul, context).unwrap();
+            let result = inject_into_json(initial_json, &config, soul, Some(context)).unwrap();
             let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
             // Root nexus should exist (Nexus-owned)
             assert!(parsed.get("nexus").is_some(), "root nexus should exist");
@@ -1100,13 +1100,13 @@ mod tests {
         // Non-Nexus owned entry in hooks should fail
         let initial_json = r#"{"hooks": {"nexus": {"source": "something-else"}}}"#;
         fs::write(&config, initial_json).unwrap();
-        let err = inject_into_json(initial_json, &config, soul, context).unwrap_err();
+        let err = inject_into_json(initial_json, &config, soul, Some(context)).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
 
         // Non-Nexus owned entry in root should fail
         let initial_json2 = r#"{"nexus": {"source": "other-source"}}"#;
         fs::write(&config, initial_json2).unwrap();
-        let err2 = inject_into_json(initial_json2, &config, soul, context).unwrap_err();
+        let err2 = inject_into_json(initial_json2, &config, soul, Some(context)).unwrap_err();
         assert_eq!(err2.kind(), std::io::ErrorKind::AlreadyExists);
     }
 

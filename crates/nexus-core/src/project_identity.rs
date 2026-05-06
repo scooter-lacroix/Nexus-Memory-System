@@ -2,11 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
-use tokio::runtime::Runtime;
-use tokio::time::timeout;
+use std::process::Stdio;
+use std::thread;
 
 /// Unique identity for a project, used as the cache key for per-project memories.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -67,43 +64,29 @@ impl ProjectIdentity {
 
     /// Extract git remote origin URL. Never fails — returns None on error.
     fn detect_git_remote(root: &Path) -> Option<String> {
-        let rt = match Runtime::new() {
-            Ok(rt) => rt,
-            Err(_) => return None,
-        };
+        use std::process::Stdio;
+        use std::thread;
 
-        rt.block_on(async {
-            let timeout_duration = Duration::from_secs(2);
-
-            let mut child = match Command::new("git")
+        // Spawn a blocking thread to run the git command with a timeout
+        let root = root.to_path_buf();
+        let handle = thread::spawn(move || {
+            let output = std::process::Command::new("git")
                 .args(["config", "--get", "remote.origin.url"])
-                .current_dir(root)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-            {
-                Ok(c) => c,
-                Err(_) => return None,
-            };
+                .current_dir(&root)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+                .ok()?;
 
-            let stdout = match timeout(timeout_duration, child.wait()).await {
-                Ok(Ok(status)) if status.success() => {
-                    let mut stdout = child.stdout.take()?;
-                    let mut buf = String::new();
-                    if stdout.read_to_string(&mut buf).await.is_ok() {
-                        Some(buf.trim().to_string())
-                    } else {
-                        None
-                    }
-                }
-                _ => {
-                    let _ = child.kill().await;
-                    None
-                }
-            };
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                Some(stdout.trim().to_string())
+            } else {
+                None
+            }
+        });
 
-            stdout
-        })
+        handle.join().unwrap_or(None)
     }
 
     fn derive_display_name(root: &Path) -> String {

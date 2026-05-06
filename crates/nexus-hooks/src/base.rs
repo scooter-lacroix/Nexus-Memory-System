@@ -256,26 +256,7 @@ impl BaseHook {
         }
     }
 
-    /// Trigger session start callbacks
-    pub fn trigger_session_start_callbacks(&self, context: SessionContext) {
-        for callback in &self.session_start_callbacks {
-            callback(context.clone());
-        }
-    }
 
-    /// Trigger checkpoint callbacks
-    pub fn trigger_checkpoint_callbacks(&self, context: SessionContext) {
-        for callback in &self.checkpoint_callbacks {
-            callback(context.clone());
-        }
-    }
-
-    /// Trigger error callbacks
-    pub fn trigger_error_callbacks(&self, context: SessionContext) {
-        for callback in &self.error_callbacks {
-            callback(context.clone());
-        }
-    }
 
     pub fn add_callback(&mut self, callback: SessionEndCallback) {
         self.callbacks.push(callback);
