@@ -71,10 +71,10 @@ impl ProjectIdentity {
             Ok(rt) => rt,
             Err(_) => return None,
         };
-        
+
         rt.block_on(async {
             let timeout_duration = Duration::from_secs(2);
-            
+
             let mut child = match Command::new("git")
                 .args(["config", "--get", "remote.origin.url"])
                 .current_dir(root)
@@ -101,7 +101,7 @@ impl ProjectIdentity {
                     None
                 }
             };
-            
+
             stdout
         })
     }

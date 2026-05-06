@@ -194,14 +194,17 @@ pub async fn agent_boost(
         .as_ref()
         .map(std::path::PathBuf::from)
         .ok_or_else(|| WebError::InvalidRequest("root_dir is required".to_string()))?;
-    
+
     // Check for path traversal attempts
-    if cwd.components().any(|comp| comp == std::path::Component::ParentDir) {
+    if cwd
+        .components()
+        .any(|comp| comp == std::path::Component::ParentDir)
+    {
         return Err(WebError::InvalidRequest(
             "root_dir must not contain path traversal segments".to_string(),
         ));
     }
-    
+
     // Canonicalize to resolve symlinks and reject nonexistent paths
     let cwd = cwd
         .canonicalize()
