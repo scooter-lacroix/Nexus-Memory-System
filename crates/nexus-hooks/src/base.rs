@@ -256,8 +256,6 @@ impl BaseHook {
         }
     }
 
-
-
     pub fn add_callback(&mut self, callback: SessionEndCallback) {
         self.callbacks.push(callback);
     }
