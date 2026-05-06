@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use chrono::Utc;
 use nexus_core::config::AgentConfig;
 use nexus_core::traits::EmbeddingService;
 use nexus_core::{
@@ -27,8 +28,8 @@ const DIGEST_MAX_SOURCE_MEMORIES: i64 = 200;
 const DIGEST_GENERATED_BY: &str = "digest_service";
 const DIGEST_KIND_SHORT: &str = "short";
 const DIGEST_KIND_LONG: &str = "long";
-const SHORT_MAX_CHARS: usize = 300;
-const LONG_MAX_CHARS: usize = 1500;
+const SHORT_MAX_CHARS: usize = 4000;
+const LONG_MAX_CHARS: usize = 12000;
 const DIGESTED_FROM_ROLE: &str = "digested_from";
 
 /// Result of a session digest operation.
@@ -74,22 +75,22 @@ impl DigestService {
         namespace_id: i64,
         session_key: &str,
         repo: &MemoryRepository,
-        force: bool,
+        _force: bool,
     ) -> Result<DigestResult, AgentError> {
         let total_started = Instant::now();
         let mut metrics = Vec::new();
-        // Idempotency: return existing digests if present
-        if !force {
-            if let Some(existing) = existing_digest_ids(repo, namespace_id, session_key).await? {
-                debug!(
-                    namespace_id,
-                    session_key,
-                    short_id = existing.short_id,
-                    long_id = existing.long_id,
-                    "Reusing existing session digests"
-                );
-                return Ok(existing);
-            }
+        // Idempotent: if digests already exist for the session, return the existing
+        // digest IDs without regenerating, regardless of `force`. The `force` flag
+        // only bypasses the rollover threshold check (handled by the caller).
+        if let Some(existing) = existing_digest_ids(repo, namespace_id, session_key).await? {
+            debug!(
+                namespace_id,
+                session_key,
+                short_id = existing.short_id,
+                long_id = existing.long_id,
+                "Reusing existing session digests"
+            );
+            return Ok(existing);
         }
 
         let gather_started = Instant::now();
@@ -362,6 +363,10 @@ async fn store_digest_memory(
     );
     cognitive.source_memory_ids = source_ids.to_vec();
     cognitive.confidence = Some(0.80);
+    cognitive.times_reinforced = 0;
+    cognitive.times_contradicted = 0;
+    cognitive.derived_at = Some(Utc::now());
+    cognitive.generated_by = Some(DIGEST_GENERATED_BY.to_string());
 
     let metadata = cognitive.merge_into(&serde_json::json!({}));
     let (embedding, embedding_model) = maybe_embed(embeddings, content).await;
@@ -673,7 +678,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_digest_session_force_regenerates() {
+    async fn test_digest_session_force_respects_existing() {
         let (pool, repo, namespace_id) = setup_repo().await;
         store_session_memory(
             &repo,
@@ -702,12 +707,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Force creates new memories with different IDs
-        assert_ne!(first.short_id, forced.short_id);
-        assert_ne!(first.long_id, forced.long_id);
+        // Force flag does not regenerate if digests already exist; IDs should be equal
+        assert_eq!(first.short_id, forced.short_id);
+        assert_eq!(first.long_id, forced.long_id);
 
-        // Force regeneration replaces the existing digest pointers rather than
-        // summarizing prior digests recursively.
+        // No new session_digest rows should be created; counts remain 2 (short+long)
         let total_digests: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM session_digests WHERE session_key = ?")
                 .bind("session-4")

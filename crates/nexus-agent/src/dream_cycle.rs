@@ -182,7 +182,7 @@ pub async fn run_dream(
     let nexus_dir = project_root.join(".nexus");
 
     // 1. Run standard dream cycle (includes reflect/digest)
-    let processed = drain_cognition_jobs(
+    let processed = match drain_cognition_jobs(
         services.pool.clone(),
         namespace_id,
         &services.cognition,
@@ -191,7 +191,18 @@ pub async fn run_dream(
         services.embeddings.clone(),
         "dream-threshold",
     )
-    .await?;
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::error!(
+                namespace_id = namespace_id,
+                error = %e,
+                "Failed to drain cognition jobs in dream cycle"
+            );
+            return Err(e);
+        }
+    };
 
     // 2. Load cache (reranking deferred to deep-dream cycle)
     let cache = CognitiveCache::load_or_init(&nexus_dir);
@@ -781,7 +792,7 @@ pub async fn extract_cross_project_patterns(
 
     // If we don't have embeddings for at least some memories, semantic grouping
     // won't work well. Fall back to simple exact-match grouping on lowercased content.
-    if emb_map.len() * 2 < flat_memories.len() {
+    if emb_map.len() < flat_memories.len() / 2 {
         // Fallback: original algorithm (exact match after lowercase)
         let mut pattern_map: HashMap<String, (u32, Vec<String>)> = HashMap::new();
         for (m, project) in &flat_memories {

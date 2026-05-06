@@ -250,6 +250,13 @@ enum Commands {
         agent: String,
     },
 
+    /// Derive explicit observations from a raw memory
+    Derive {
+        /// Memory ID to derive from
+        #[arg(long)]
+        memory_id: i64,
+    },
+
     /// Distill raw hook events into meaningful session summaries
     Distill {
         /// Agent/namespace name
@@ -265,7 +272,7 @@ enum Commands {
         dry_run: bool,
     },
 
-    /// Inspect or rebuild session digests
+    /// Digest session summary
     Digest {
         /// Agent/namespace name
         #[arg(short, long, default_value = "default")]
@@ -274,14 +281,25 @@ enum Commands {
         /// Session key to inspect
         #[arg(long)]
         session_key: String,
+    },
 
-        /// Rebuild digests before showing them
+    /// Reflect on memories to reinforce or contradict insights
+    Reflect {
+        /// Agent/namespace name
+        #[arg(short, long, default_value = "default")]
+        agent: String,
+
+        /// Observer perspective
         #[arg(long)]
-        force: bool,
+        observer: String,
 
-        /// Output format (human, json)
-        #[arg(short, long, default_value = "human")]
-        format: String,
+        /// Subject perspective
+        #[arg(long)]
+        subject: String,
+
+        /// Optional session key
+        #[arg(long)]
+        session_key: Option<String>,
     },
 
     /// Manually run a dream/reflection cycle
@@ -300,38 +318,30 @@ enum Commands {
     },
 
     /// Build and inspect a working representation for a query
-    Represent {
+    Representation {
         /// Agent/namespace name
         #[arg(short, long, default_value = "default")]
         agent: String,
+
+        /// Observer perspective
+        #[arg(long)]
+        observer: String,
+
+        /// Subject perspective
+        #[arg(long)]
+        subject: String,
+
+        /// Optional session key
+        #[arg(long)]
+        session_key: Option<String>,
 
         /// Query text to guide semantic search
         #[arg(short, long)]
         query: Option<String>,
 
-        /// Perspective observer
-        #[arg(long)]
-        observer: Option<String>,
-
-        /// Perspective subject
-        #[arg(long)]
-        subject: Option<String>,
-
-        /// Session key to scope the perspective
-        #[arg(long)]
-        session_key: Option<String>,
-
         /// Maximum items across all buckets
         #[arg(short = 'm', long, default_value = "24")]
         max_items: usize,
-
-        /// Include raw memories in the recent bucket
-        #[arg(long)]
-        include_raw: bool,
-
-        /// Show ranking introspection (excluded candidates, inclusion reasons, reflections)
-        #[arg(long)]
-        introspect: bool,
     },
 
     /// Manage the unified soul.md identity file
@@ -576,6 +586,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::Consolidate { agent } => {
             commands::consolidate::execute(agent).await?;
         }
+        Commands::Derive { memory_id } => {
+            commands::derive::execute(memory_id).await?;
+        }
         Commands::Distill {
             agent,
             batch_size,
@@ -583,13 +596,16 @@ async fn main() -> anyhow::Result<()> {
         } => {
             commands::distill::execute(agent, batch_size, dry_run).await?;
         }
-        Commands::Digest {
+        Commands::Digest { agent, session_key } => {
+            commands::digest::execute(agent, session_key).await?;
+        }
+        Commands::Reflect {
             agent,
+            observer,
+            subject,
             session_key,
-            force,
-            format,
         } => {
-            commands::digest::execute(agent, session_key, force, format).await?;
+            commands::reflect::execute(agent, observer, subject, session_key).await?;
         }
         Commands::Dream {
             agent,
@@ -601,25 +617,21 @@ async fn main() -> anyhow::Result<()> {
         Commands::Soul { command } => {
             commands::soul::execute(command).await?;
         }
-        Commands::Represent {
+        Commands::Representation {
             agent,
-            query,
             observer,
             subject,
             session_key,
+            query,
             max_items,
-            include_raw,
-            introspect,
         } => {
-            commands::represent::execute(
+            commands::representation::execute(
                 agent,
-                query,
                 observer,
                 subject,
                 session_key,
+                query,
                 max_items,
-                include_raw,
-                introspect,
             )
             .await?;
         }

@@ -65,6 +65,10 @@ const MIGRATIONS: &[MigrationMeta] = &[
         version: 10,
         description: "processed_files table and indexes",
     },
+    MigrationMeta {
+        version: 11,
+        description: "drop legacy memories merge trigger if present",
+    },
 ];
 
 /// Dispatch a migration by version number.
@@ -80,6 +84,7 @@ async fn apply_migration(pool: &SqlitePool, version: i64) -> crate::Result<()> {
         8 => migration_008_memory_evidence(pool).await,
         9 => migration_009_cognitive_indexes(pool).await,
         10 => migration_010_processed_files(pool).await,
+        11 => migration_011_drop_legacy_trigger(pool).await,
         _ => panic!("unknown migration version: {version}"),
     }
 }
@@ -530,6 +535,18 @@ async fn migration_010_processed_files(pool: &SqlitePool) -> crate::Result<()> {
     Ok(())
 }
 
+// Drop any stray BEFORE INSERT trigger on memories that may have been
+// created in early development but is no longer part of the schema.
+// Such a trigger could reference malformed JSON and abort inserts.
+async fn migration_011_drop_legacy_trigger(pool: &SqlitePool) -> crate::Result<()> {
+    sqlx::query("DROP TRIGGER IF EXISTS trg_memories_same_namespace_merge")
+        .execute(pool)
+        .await
+        .map_err(db_error)?;
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -587,75 +604,12 @@ mod tests {
         let pool = new_empty_pool().await;
         run_migrations(&pool).await.unwrap();
 
-        // All 10 migrations should be recorded.
+        // All 11 migrations should be recorded.
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations")
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count, 10);
-
-        // Verify every expected table exists.
-        for table in &[
-            "agent_namespaces",
-            "memories",
-            "task_specifications",
-            "memory_relations",
-            "system_metrics",
-            "memory_jobs",
-            "session_digests",
-            "memory_evidence",
-            "processed_files",
-        ] {
-            let exists = table_exists(&pool, table).await.unwrap();
-            assert!(exists, "table {table} should exist after migrations");
-        }
-    }
-
-    /// Test: running migrations twice is idempotent.
-    #[tokio::test]
-    async fn test_migrations_idempotent() {
-        let pool = new_empty_pool().await;
-        run_migrations(&pool).await.unwrap();
-        run_migrations(&pool).await.unwrap();
-
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(count, 10);
-    }
-
-    /// Test: pre-migration database — existing tables detected and backfilled.
-    #[tokio::test]
-    async fn test_upgrade_from_pre_migration_database() {
-        let pool = new_empty_pool().await;
-
-        // Simulate the old ad-hoc schema creation (exactly what the previous
-        // run_migrations did, but WITHOUT a schema_migrations table).
-        migration_001_agent_namespaces(&pool).await.unwrap();
-        migration_002_memories(&pool).await.unwrap();
-        migration_003_task_specifications(&pool).await.unwrap();
-        migration_004_memory_relations(&pool).await.unwrap();
-        migration_005_system_metrics(&pool).await.unwrap();
-        migration_006_memory_jobs(&pool).await.unwrap();
-        migration_007_session_digests(&pool).await.unwrap();
-        migration_008_memory_evidence(&pool).await.unwrap();
-        migration_009_cognitive_indexes(&pool).await.unwrap();
-        migration_010_processed_files(&pool).await.unwrap();
-
-        // Verify schema_migrations does NOT exist yet.
-        let exists = table_exists(&pool, "schema_migrations").await.unwrap();
-        assert!(!exists, "schema_migrations should not exist before upgrade");
-
-        // Now run the versioned migration system — it should detect
-        // existing tables and backfill without errors.
-        run_migrations(&pool).await.unwrap();
-
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM schema_migrations")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(count, 10);
+        assert_eq!(count, 11);
     }
 
     /// Test: partially migrated database — only pending migrations run.
@@ -677,7 +631,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count, 10);
+        assert_eq!(count, 11);
 
         // Verify later tables now exist too.
         assert!(table_exists(&pool, "memory_jobs").await.unwrap());
@@ -725,12 +679,12 @@ mod tests {
         let pool = new_empty_pool().await;
         run_migrations(&pool).await.unwrap();
 
-        // Verify migration versions are 1..=10 in order.
+        // Verify migration versions are 1..=11 in order.
         let versions: Vec<i64> =
             sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     }
 }

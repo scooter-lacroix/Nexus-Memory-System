@@ -189,6 +189,9 @@ mod tests {
             tool_response_text: None,
             assistant_message_text: None,
             user_message_text: None,
+            observer: Some("test-agent".to_string()),
+            subject: Some("test-agent".to_string()),
+            session_key: Some("session-123".to_string()),
             raw_payload: json!({}),
         }
     }

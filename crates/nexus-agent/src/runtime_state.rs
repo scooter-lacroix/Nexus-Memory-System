@@ -221,6 +221,10 @@ pub(crate) async fn store_runtime_marker(
         "runtime_controller",
     );
     cognitive.confidence = Some(1.0);
+    cognitive.times_reinforced = 0;
+    cognitive.times_contradicted = 0;
+    cognitive.derived_at = Some(Utc::now());
+    cognitive.generated_by = Some("runtime_controller".to_string());
     let metadata = cognitive.merge_into(&metadata);
 
     memory_repo

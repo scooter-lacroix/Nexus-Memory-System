@@ -19,6 +19,7 @@ pub struct SessionRescorer {
     current_topic_embedding: RwLock<Option<Vec<f32>>>,
     drift_threshold: f32,
     nexus_dir: PathBuf,
+    rescore_mutex: tokio::sync::Mutex<()>,
 }
 
 impl SessionRescorer {
@@ -31,6 +32,7 @@ impl SessionRescorer {
             current_topic_embedding: RwLock::new(None),
             drift_threshold,
             nexus_dir,
+            rescore_mutex: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -99,6 +101,7 @@ impl SessionRescorer {
         embedder: Option<&dyn EmbeddingService>,
         agent_type: &str,
     ) -> anyhow::Result<()> {
+        let _guard = self.rescore_mutex.lock().await;
         let _start = std::time::Instant::now();
 
         // 1. Load current cache

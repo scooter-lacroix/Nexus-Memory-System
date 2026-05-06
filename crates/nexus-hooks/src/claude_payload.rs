@@ -23,6 +23,9 @@ pub struct NormalizedHookEvent {
     pub tool_response_text: Option<String>,
     pub assistant_message_text: Option<String>,
     pub user_message_text: Option<String>,
+    pub observer: Option<String>,
+    pub subject: Option<String>,
+    pub session_key: Option<String>,
     pub raw_payload: Value,
 }
 
@@ -147,6 +150,26 @@ pub fn normalize_generic_payload(agent: &str, event: &str, raw: &Value) -> Norma
         .or_else(|| obj.get("workingDir"))
         .and_then(|v| v.as_str().map(String::from));
 
+    // observer: optional, defaults to agent type if not present
+    let observer = obj
+        .get("observer")
+        .and_then(|v| v.as_str().map(String::from))
+        .or_else(|| Some(agent.to_string()));
+
+    // subject: optional, defaults based on user message presence
+    let subject = if user_message_text.is_some() {
+        // If we have a user message, subject is "user"
+        Some("user".to_string())
+    } else {
+        // Check for explicit subject in payload
+        obj.get("subject")
+            .and_then(|v| v.as_str().map(String::from))
+            .or_else(|| Some(agent.to_string()))
+    };
+
+    // session_key: canonical session key, uses session_id value
+    let session_key = session_id.clone();
+
     NormalizedHookEvent {
         agent: agent.to_string(),
         event_name: event.to_string(),
@@ -159,6 +182,9 @@ pub fn normalize_generic_payload(agent: &str, event: &str, raw: &Value) -> Norma
         tool_response_text,
         assistant_message_text,
         user_message_text,
+        observer,
+        subject,
+        session_key,
         raw_payload: raw.clone(),
     }
 }
@@ -256,6 +282,19 @@ pub fn normalize_claude_payload(agent: &str, event_name: &str, raw: &Value) -> N
         ],
     );
 
+    // observer: optional, defaults to agent type if not present
+    let observer = get_string(raw, &["observer"]).or_else(|| Some(agent.to_string()));
+
+    // subject: if user message exists, set to "user"; otherwise default to agent
+    let subject = if user_message_text.is_some() {
+        Some("user".to_string())
+    } else {
+        get_string(raw, &["subject"]).or_else(|| Some(agent.to_string()))
+    };
+
+    // session_key: canonical session key, uses session_id value
+    let session_key = session_id.clone();
+
     NormalizedHookEvent {
         agent: agent.to_string(),
         event_name: extracted_event_name,
@@ -268,6 +307,9 @@ pub fn normalize_claude_payload(agent: &str, event_name: &str, raw: &Value) -> N
         tool_response_text,
         assistant_message_text,
         user_message_text,
+        observer,
+        subject,
+        session_key,
         raw_payload: raw.clone(),
     }
 }

@@ -31,13 +31,15 @@ use crate::util::{flush_metric_samples, maybe_embed, stage_metric_sample, Cognit
 // Constants
 // ---------------------------------------------------------------------------
 
+const RAW_ACTIVITY_LABEL: &str = "raw-activity";
+const LOW_SIGNAL_LABEL: &str = "low-signal";
 const REFLECT_GENERATED_BY: &str = "reflect_service";
 const REINFORCE_EVIDENCE_ROLE: &str = "reinforces";
 const CONTRADICT_EVIDENCE_ROLE: &str = "contradicts";
 const INSIGHT_EVIDENCE_ROLE: &str = "insight_support";
 const MAX_CANDIDATES: i64 = 100;
 const MIN_INSIGHT_COMPONENT_SIZE: usize = 3;
-const MAX_INSIGHT_CONTENT_CHARS: usize = 180;
+const MAX_INSIGHT_CONTENT_CHARS: usize = 8000;
 
 /// Word-level Jaccard similarity threshold for reinforcement detection.
 const REINFORCE_SIMILARITY_THRESHOLD: f32 = 0.80;
@@ -318,6 +320,7 @@ async fn gather_candidates(
         .map_err(|e| AgentError::Storage(e.to_string()))?;
 
     // Only consider Explicit and Derived level memories for reflection.
+    // Skip system lifecycle markers (session start/end, runtime markers) and raw-activity noise.
     let mut candidates: HashMap<PerspectiveKey, Vec<Memory>> = HashMap::new();
     for memory in all {
         let snapshot = CognitionSnapshot::from_memory(&memory);
@@ -326,6 +329,22 @@ async fn gather_candidates(
             CognitiveLevel::Explicit | CognitiveLevel::Derived
         ) && !is_reflection_generated(&snapshot, &memory)
         {
+            // Exclude pure system operational memories
+            if memory.metadata.get("session_lifecycle").is_some() {
+                continue;
+            }
+            if memory.metadata.get("runtime").is_some() {
+                continue;
+            }
+            // Exclude raw-activity noise (should already be filtered by include_raw=false,
+            // but double-check in case labels were preserved)
+            if memory
+                .labels
+                .iter()
+                .any(|l| l == RAW_ACTIVITY_LABEL || l == LOW_SIGNAL_LABEL)
+            {
+                continue;
+            }
             if let Some(perspective) = snapshot.perspective {
                 candidates.entry(perspective).or_default().push(memory);
             }
@@ -510,6 +529,9 @@ async fn handle_reinforcement(
     cognitive.source_memory_ids = vec![left.id, right.id];
     cognitive.confidence = Some(0.75);
     cognitive.times_reinforced = 2;
+    cognitive.times_contradicted = 0;
+    cognitive.derived_at = Some(Utc::now());
+    cognitive.generated_by = Some(REFLECT_GENERATED_BY.to_string());
 
     let metadata = cognitive.merge_into(&serde_json::json!({}));
     let (embedding, embedding_model) = maybe_embed(embeddings, &content).await;
@@ -576,6 +598,8 @@ async fn handle_contradiction(
     cognitive.source_memory_ids = vec![left.id, right.id];
     cognitive.confidence = Some(0.70);
     cognitive.times_contradicted = 1;
+    cognitive.times_reinforced = 0;
+    cognitive.derived_at = Some(Utc::now());
     cognitive.generated_by = Some(REFLECT_GENERATED_BY.to_string());
 
     let metadata = cognitive.merge_into(&serde_json::json!({
@@ -762,6 +786,9 @@ async fn synthesize_reinforcement_insights(
         cognitive.source_memory_ids = source_ids.clone();
         cognitive.confidence = Some(insight_confidence(component_memories.len()));
         cognitive.times_reinforced = component_memories.len() as i64;
+        cognitive.times_contradicted = 0;
+        cognitive.derived_at = Some(Utc::now());
+        cognitive.generated_by = Some(REFLECT_GENERATED_BY.to_string());
 
         let metadata = cognitive.merge_into(&serde_json::json!({
             "reflection_kind": "insight",

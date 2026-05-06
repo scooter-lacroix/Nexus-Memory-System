@@ -153,10 +153,28 @@ impl DroidHook {
             }
             #[cfg(windows)]
             {
-                // On Windows, invoke the binary directly without an extra
-                // shell wrapper. Session metadata falls back to derived keys
-                // when the shell-specific variables are unavailable.
-                format!("\"{nexus_bin}\" {args}")
+                // On Windows, use cmd.exe with environment variable expansion.
+                // Quotes around %VAR% handle paths with spaces.
+                let session_key = "\"%FACTORY_SESSION_ID%\"";
+                let cwd = "\"%FACTORY_CWD%\"";
+                format!("cmd /c \"\"{nexus_bin}\" {args} --session-key {session_key} --cwd {cwd}\"")
+            }
+        };
+
+        let scoped_subconscious = |args: &str| -> String {
+            #[cfg(not(windows))]
+            {
+                let session_id = "\\\"${FACTORY_SESSION_ID:-${SESSION_ID:-}}\\\"";
+                let cwd = "\\\"${FACTORY_CWD:-${PWD:-}}\\\"";
+                format!(
+                    "bash -lc \"exec '{nexus_bin}' {args} --session-id {session_id} --cwd {cwd}\""
+                )
+            }
+            #[cfg(windows)]
+            {
+                let session_id = "\"%FACTORY_SESSION_ID%\"";
+                let cwd = "\"%FACTORY_CWD%\"";
+                format!("cmd /c \"\"{nexus_bin}\" {args} --session-id {session_id} --cwd {cwd}\"")
             }
         };
 
@@ -171,7 +189,8 @@ impl DroidHook {
             ),
             (
                 CHECKPOINT_EVENT.to_string(),
-                scoped("session event --agent droid --kind checkpoint"),
+                // Capture actual tool usage via ingest-hook-event (payload includes tool_name, tool_input, tool_response)
+                scoped("ingest-hook-event --agent droid --event PostToolUse"),
             ),
             (
                 COMPACT_EVENT.to_string(),
@@ -179,7 +198,9 @@ impl DroidHook {
             ),
             (
                 ERROR_EVENT.to_string(),
-                scoped("session event --agent droid --kind error"),
+                // Capture full conversation transcript via subconscious ingest-transcript
+                // The Stop payload contains transcript_path; this reads the JSONL and ingests it
+                scoped_subconscious("subconscious ingest-transcript --agent droid"),
             ),
         ]
     }
@@ -400,7 +421,9 @@ impl DroidHook {
         let command = command.to_ascii_lowercase();
         command.contains("nexus")
             && command.contains("--agent droid")
-            && (command.contains(" session ") || command.contains("ingest-hook-event"))
+            && (command.contains(" session ")
+                || command.contains("ingest-hook-event")
+                || command.contains("subconscious"))
     }
 
     fn ensure_mutable(&self) -> Result<()> {
@@ -540,10 +563,21 @@ mod tests {
                     "{event} command should keep shell expansion: {command}"
                 );
             }
-            assert!(
-                command.contains("session"),
-                "{event} command should invoke a session subcommand"
-            );
+            match event.as_str() {
+                "SessionStart" | "SessionEnd" | "PreCompact" => assert!(
+                    command.contains("session"),
+                    "{event} command should invoke a session subcommand: {command}"
+                ),
+                "PostToolUse" => assert!(
+                    command.contains("ingest-hook-event"),
+                    "{event} command should invoke ingest-hook-event: {command}"
+                ),
+                "Stop" => assert!(
+                    command.contains("subconscious ingest-transcript"),
+                    "{event} command should invoke ingest-transcript: {command}"
+                ),
+                _ => panic!("unexpected lifecycle event: {event}"),
+            }
             assert!(
                 command.contains("--agent droid"),
                 "{event} command should target droid"

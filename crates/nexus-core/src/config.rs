@@ -76,14 +76,22 @@ impl Default for AgentConfig {
 /// Cognition and runtime orchestration configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CognitionConfig {
+    /// Enable the cognition system overall
+    pub enabled: bool,
     /// Enable session-scoped runtime orchestration for hook-driven agent sessions
     pub auto_runtime_enabled: bool,
     /// Enable derivation of explicit observations from raw memories
     pub derive_enabled: bool,
+    /// Interval, in seconds, between derivation cycles
+    pub derive_interval_secs: u64,
     /// Enable session digest generation
     pub digest_enabled: bool,
+    /// Interval, in seconds, between digest cycles
+    pub digest_interval_secs: u64,
     /// Enable reflective/dream processing
     pub reflect_enabled: bool,
+    /// Interval, in seconds, between reflection cycles
+    pub reflect_interval_secs: u64,
     /// Enable low-signal activity distillation into higher-level summaries
     pub activity_distill_enabled: bool,
     /// Whether to trigger a bounded dream pass when a session ends
@@ -97,7 +105,7 @@ pub struct CognitionConfig {
     /// Lease TTL, in seconds, for claimed cognition jobs
     pub lease_ttl_secs: u64,
     /// Maximum memories to include when building a working representation
-    pub representation_max_items: usize,
+    pub working_representation_max_items: usize,
     /// Target token budget for short digests
     pub digest_short_target_tokens: usize,
     /// Target token budget for long digests
@@ -135,17 +143,21 @@ pub struct CognitionConfig {
 impl Default for CognitionConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             auto_runtime_enabled: true,
             derive_enabled: true,
+            derive_interval_secs: 60,
             digest_enabled: true,
+            digest_interval_secs: 300,
             reflect_enabled: true,
+            reflect_interval_secs: 600,
             activity_distill_enabled: true,
             dream_on_session_end: true,
             checkpoint_flush_enabled: true,
             runtime_idle_timeout_secs: 900,
             max_job_batch: 8,
             lease_ttl_secs: 120,
-            representation_max_items: 24,
+            working_representation_max_items: 24,
             digest_short_target_tokens: 600,
             digest_long_target_tokens: 1800,
             direct_enrichment_timeout_secs: 8,
@@ -373,17 +385,35 @@ impl Config {
                 .unwrap_or(AgentConfig::default().scan_interval_secs);
         }
 
+        if let Ok(enabled) = std::env::var("NEXUS_COGNITION_ENABLED") {
+            config.cognition.enabled = enabled.parse().unwrap_or(true);
+        }
         if let Ok(enabled) = std::env::var("NEXUS_COGNITION_AUTO_RUNTIME_ENABLED") {
             config.cognition.auto_runtime_enabled = enabled.parse().unwrap_or(true);
         }
         if let Ok(enabled) = std::env::var("NEXUS_COGNITION_DERIVE_ENABLED") {
             config.cognition.derive_enabled = enabled.parse().unwrap_or(true);
         }
+        if let Ok(interval) = std::env::var("NEXUS_COGNITION_DERIVE_INTERVAL_SECS") {
+            config.cognition.derive_interval_secs = interval
+                .parse()
+                .unwrap_or(CognitionConfig::default().derive_interval_secs);
+        }
         if let Ok(enabled) = std::env::var("NEXUS_COGNITION_DIGEST_ENABLED") {
             config.cognition.digest_enabled = enabled.parse().unwrap_or(true);
         }
+        if let Ok(interval) = std::env::var("NEXUS_COGNITION_DIGEST_INTERVAL_SECS") {
+            config.cognition.digest_interval_secs = interval
+                .parse()
+                .unwrap_or(CognitionConfig::default().digest_interval_secs);
+        }
         if let Ok(enabled) = std::env::var("NEXUS_COGNITION_REFLECT_ENABLED") {
             config.cognition.reflect_enabled = enabled.parse().unwrap_or(true);
+        }
+        if let Ok(interval) = std::env::var("NEXUS_COGNITION_REFLECT_INTERVAL_SECS") {
+            config.cognition.reflect_interval_secs = interval
+                .parse()
+                .unwrap_or(CognitionConfig::default().reflect_interval_secs);
         }
         if let Ok(enabled) = std::env::var("NEXUS_COGNITION_ACTIVITY_DISTILL_ENABLED") {
             config.cognition.activity_distill_enabled = enabled.parse().unwrap_or(true);
@@ -409,10 +439,10 @@ impl Config {
                 .parse()
                 .unwrap_or(CognitionConfig::default().lease_ttl_secs);
         }
-        if let Ok(items) = std::env::var("NEXUS_COGNITION_REPRESENTATION_MAX_ITEMS") {
-            config.cognition.representation_max_items = items
+        if let Ok(items) = std::env::var("NEXUS_COGNITION_WORKING_REPRESENTATION_MAX_ITEMS") {
+            config.cognition.working_representation_max_items = items
                 .parse()
-                .unwrap_or(CognitionConfig::default().representation_max_items);
+                .unwrap_or(CognitionConfig::default().working_representation_max_items);
         }
         if let Ok(tokens) = std::env::var("NEXUS_COGNITION_DIGEST_SHORT_TARGET_TOKENS") {
             config.cognition.digest_short_target_tokens = tokens
@@ -717,11 +747,15 @@ mod tests {
     #[test]
     fn test_cognition_config_defaults() {
         let config = Config::default();
+        assert!(config.cognition.enabled);
         assert!(config.cognition.derive_enabled);
         assert!(config.cognition.digest_enabled);
         assert!(config.cognition.reflect_enabled);
         assert!(config.cognition.activity_distill_enabled);
-        assert_eq!(config.cognition.representation_max_items, 24);
+        assert_eq!(config.cognition.derive_interval_secs, 60);
+        assert_eq!(config.cognition.digest_interval_secs, 300);
+        assert_eq!(config.cognition.reflect_interval_secs, 600);
+        assert_eq!(config.cognition.working_representation_max_items, 24);
         assert!(!config.cognition.include_raw_by_default);
         assert!(config.cognition.contradiction_belief_revision_enabled);
         assert!((config.cognition.contradiction_confidence_penalty - 0.15).abs() < f32::EPSILON);
@@ -735,20 +769,47 @@ mod tests {
     #[test]
     #[serial]
     fn test_cognition_config_from_env() {
+        std::env::set_var("NEXUS_COGNITION_ENABLED", "false");
         std::env::set_var("NEXUS_COGNITION_DERIVE_ENABLED", "false");
+        std::env::set_var("NEXUS_COGNITION_DERIVE_INTERVAL_SECS", "120");
+        std::env::set_var("NEXUS_COGNITION_DIGEST_ENABLED", "false");
+        std::env::set_var("NEXUS_COGNITION_DIGEST_INTERVAL_SECS", "600");
+        std::env::set_var("NEXUS_COGNITION_REFLECT_ENABLED", "false");
+        std::env::set_var("NEXUS_COGNITION_REFLECT_INTERVAL_SECS", "900");
         std::env::set_var("NEXUS_COGNITION_MAX_JOB_BATCH", "16");
-        std::env::set_var("NEXUS_COGNITION_REPRESENTATION_MAX_ITEMS", "42");
+        std::env::set_var("NEXUS_COGNITION_LEASE_TTL_SECS", "240");
+        std::env::set_var("NEXUS_COGNITION_WORKING_REPRESENTATION_MAX_ITEMS", "42");
+        std::env::set_var("NEXUS_COGNITION_DIGEST_SHORT_TARGET_TOKENS", "800");
+        std::env::set_var("NEXUS_COGNITION_DIGEST_LONG_TARGET_TOKENS", "2000");
         std::env::set_var("NEXUS_COGNITION_INCLUDE_RAW_BY_DEFAULT", "true");
 
         let config = Config::from_env().expect("config from env");
+        assert!(!config.cognition.enabled);
         assert!(!config.cognition.derive_enabled);
+        assert_eq!(config.cognition.derive_interval_secs, 120);
+        assert!(!config.cognition.digest_enabled);
+        assert_eq!(config.cognition.digest_interval_secs, 600);
+        assert!(!config.cognition.reflect_enabled);
+        assert_eq!(config.cognition.reflect_interval_secs, 900);
         assert_eq!(config.cognition.max_job_batch, 16);
-        assert_eq!(config.cognition.representation_max_items, 42);
+        assert_eq!(config.cognition.lease_ttl_secs, 240);
+        assert_eq!(config.cognition.working_representation_max_items, 42);
+        assert_eq!(config.cognition.digest_short_target_tokens, 800);
+        assert_eq!(config.cognition.digest_long_target_tokens, 2000);
         assert!(config.cognition.include_raw_by_default);
 
+        std::env::remove_var("NEXUS_COGNITION_ENABLED");
         std::env::remove_var("NEXUS_COGNITION_DERIVE_ENABLED");
+        std::env::remove_var("NEXUS_COGNITION_DERIVE_INTERVAL_SECS");
+        std::env::remove_var("NEXUS_COGNITION_DIGEST_ENABLED");
+        std::env::remove_var("NEXUS_COGNITION_DIGEST_INTERVAL_SECS");
+        std::env::remove_var("NEXUS_COGNITION_REFLECT_ENABLED");
+        std::env::remove_var("NEXUS_COGNITION_REFLECT_INTERVAL_SECS");
         std::env::remove_var("NEXUS_COGNITION_MAX_JOB_BATCH");
-        std::env::remove_var("NEXUS_COGNITION_REPRESENTATION_MAX_ITEMS");
+        std::env::remove_var("NEXUS_COGNITION_LEASE_TTL_SECS");
+        std::env::remove_var("NEXUS_COGNITION_WORKING_REPRESENTATION_MAX_ITEMS");
+        std::env::remove_var("NEXUS_COGNITION_DIGEST_SHORT_TARGET_TOKENS");
+        std::env::remove_var("NEXUS_COGNITION_DIGEST_LONG_TARGET_TOKENS");
         std::env::remove_var("NEXUS_COGNITION_INCLUDE_RAW_BY_DEFAULT");
     }
 

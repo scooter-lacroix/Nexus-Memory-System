@@ -151,6 +151,25 @@ pub struct CognitiveCache {
 }
 
 impl CognitiveCache {
+    /// Check if a memory is a system-generated memory that should be excluded from context.
+    fn is_system_memory(memory: &Memory) -> bool {
+        // Check metadata for session_lifecycle or runtime markers
+        if let Some(obj) = memory.metadata.as_object() {
+            if obj.get("session_lifecycle").is_some() || obj.get("runtime").is_some() {
+                return true;
+            }
+        }
+        // Also check labels for system tags
+        if memory
+            .labels
+            .iter()
+            .any(|l| l == "session" || l == "runtime")
+        {
+            return true;
+        }
+        false
+    }
+
     /// Perform morning recall to surface project-relevant memories.
     pub async fn morning_recall(
         &self,
@@ -229,6 +248,10 @@ impl CognitiveCache {
                             let mut recalls = Vec::new();
                             for r in filtered_results {
                                 if let Some(m) = memory_by_id.get(&r.id) {
+                                    // Skip system-generated memories (session lifecycle, runtime markers)
+                                    if Self::is_system_memory(m) {
+                                        continue;
+                                    }
                                     recalls.push(ColdRecall {
                                         memory_id: r.id,
                                         content: m.content.clone(),
@@ -265,7 +288,7 @@ impl CognitiveCache {
             if let Ok(memories) = memory_repo.list_filtered(namespace_id, filters).await {
                 results = memories
                     .into_iter()
-                    .filter(|m| !hot_ids.contains(&m.id))
+                    .filter(|m| !hot_ids.contains(&m.id) && !Self::is_system_memory(m))
                     .take(10)
                     .map(|m| ColdRecall {
                         memory_id: m.id,
@@ -300,6 +323,10 @@ impl CognitiveCache {
 
                             for cold_entry in sorted_cold.iter().take(10) {
                                 if let Some(m) = cold_memory_by_id.get(&cold_entry.memory_id) {
+                                    // Skip system-generated memories
+                                    if Self::is_system_memory(m) {
+                                        continue;
+                                    }
                                     results.push(ColdRecall {
                                         memory_id: m.id,
                                         content: m.content.clone(),

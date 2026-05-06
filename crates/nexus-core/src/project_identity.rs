@@ -1,9 +1,9 @@
 //! Project identity resolution logic
 
 use serde::{Deserialize, Serialize};
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::process::Stdio;
+use std::thread;
 
 /// Unique identity for a project, used as the cache key for per-project memories.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -64,38 +64,26 @@ impl ProjectIdentity {
 
     /// Extract git remote origin URL. Never fails — returns None on error.
     fn detect_git_remote(root: &Path) -> Option<String> {
-        let mut child = std::process::Command::new("git")
-            .args(["config", "--get", "remote.origin.url"])
-            .current_dir(root)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .ok()?;
+        // Spawn a blocking thread to run the git command with a timeout
+        let root = root.to_path_buf();
+        let handle = thread::spawn(move || {
+            let output = std::process::Command::new("git")
+                .args(["config", "--get", "remote.origin.url"])
+                .current_dir(&root)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+                .ok()?;
 
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    if !status.success() {
-                        return None;
-                    }
-                    let mut buf = String::new();
-                    child.stdout?.read_to_string(&mut buf).ok()?;
-                    return Some(buf.trim().to_string());
-                }
-                Ok(None) => {
-                    if Instant::now() > deadline {
-                        let _ = child.kill();
-                        return None;
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                Err(_) => {
-                    let _ = child.kill();
-                    return None;
-                }
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                Some(stdout.trim().to_string())
+            } else {
+                None
             }
-        }
+        });
+
+        handle.join().unwrap_or(None)
     }
 
     fn derive_display_name(root: &Path) -> String {

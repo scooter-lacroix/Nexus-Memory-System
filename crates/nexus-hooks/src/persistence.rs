@@ -7,6 +7,7 @@ use nexus_core::{
     infer_perspective, CognitiveLevel, CognitiveMetadata, MemoryCategory, MemoryLaneType,
     PerspectiveSource,
 };
+use nexus_storage::models::EnqueueJobParams;
 use nexus_storage::repository::MemoryRepository;
 use serde_json::json;
 use std::collections::HashMap;
@@ -94,15 +95,20 @@ pub async fn persist_enriched_memories(
                 .map(|s| s.chars().take(200).collect::<String>()),
         });
 
-        // Build rich metadata
+        // Build rich metadata with cognitive envelope
+        // Hook-ingested memories are RAW - they need to be derived into explicit observations
         let mut cognitive = CognitiveMetadata::new(
-            CognitiveLevel::Explicit,
+            CognitiveLevel::Raw,
             perspective.observer.clone(),
             perspective.subject.clone(),
             perspective.session_key.clone(),
             "hook_persistence",
         );
         cognitive.confidence = Some(enriched.confidence);
+        cognitive.times_reinforced = 0;
+        cognitive.times_contradicted = 0;
+        cognitive.derived_at = Some(Utc::now());
+        cognitive.generated_by = Some("hook_ingest".to_string());
 
         let metadata = cognitive.merge_into(&json!({
             "source": {
@@ -153,6 +159,32 @@ pub async fn persist_enriched_memories(
                     enriched.category,
                     enriched.memory_text.chars().take(50).collect::<String>()
                 );
+
+                // Enqueue a DeriveMemory job to process this raw memory
+                let job_payload = serde_json::json!({
+                    "memory_id": memory.id,
+                });
+                let perspective_json = serde_json::to_value(&perspective)
+                    .map_err(|e| {
+                        warn!("Failed to serialize perspective for job enqueue: {}", e);
+                        e
+                    })
+                    .ok();
+                if let Err(e) = memory_repo
+                    .enqueue_job(EnqueueJobParams {
+                        namespace_id,
+                        job_type: "derive_memory",
+                        priority: 100,
+                        perspective: perspective_json.as_ref(),
+                        payload: &job_payload,
+                    })
+                    .await
+                {
+                    warn!(
+                        "Failed to enqueue derive job for memory {}: {}",
+                        memory.id, e
+                    );
+                }
             }
             Err(e) => {
                 warn!(
@@ -272,6 +304,9 @@ mod tests {
             tool_response_text: Some("Tool response text".to_string()),
             assistant_message_text: Some("Assistant message text that might be quite long and need truncation for the evidence excerpt".to_string()),
             user_message_text: Some("User message text that might also be quite long and need truncation for the evidence excerpt".to_string()),
+            observer: None,
+            subject: None,
+            session_key: None,
             raw_payload: json!({}),
         }
     }

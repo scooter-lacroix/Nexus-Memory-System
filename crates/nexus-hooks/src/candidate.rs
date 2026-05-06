@@ -56,7 +56,7 @@ const HIGH_SIGNAL_PATTERNS: &[&str] = &[
 ///
 /// Returns a vector of candidates (typically 0-1). Returns empty if:
 /// - The event has no extractable content
-/// - The signal score is below threshold (0.4)
+/// - The signal score is below threshold (0.3)
 /// - The event is a duplicate (based on fingerprint)
 pub fn derive_candidates(
     event: &NormalizedHookEvent,
@@ -84,12 +84,12 @@ pub fn derive_candidates(
             true
         } else if let Some(response) = &event.tool_response_text {
             // Check for high-signal patterns in response
-            let has_facts = HIGH_SIGNAL_PATTERNS
+            let pattern_matches = HIGH_SIGNAL_PATTERNS
                 .iter()
-                .any(|&pattern| response.to_lowercase().contains(pattern));
-            if has_facts {
-                signal_score += 0.3;
-            }
+                .filter(|&&pattern| response.to_lowercase().contains(pattern))
+                .count();
+            // Score proportional to number of high-signal patterns found
+            signal_score += 0.2 + (pattern_matches as f32 * 0.1).min(0.4);
             false
         } else {
             false
@@ -109,26 +109,38 @@ pub fn derive_candidates(
         if event.tool_name.is_some() && has_tool_input {
             signal_score += 0.3;
         }
+
+        // File operations (Read, Write, Edit) are inherently high-signal
+        if let Some(tool) = &event.tool_name {
+            let tool_lower = tool.to_lowercase();
+            if tool_lower == "read"
+                || tool_lower == "write"
+                || tool_lower == "edit"
+                || tool_lower == "multi_edit"
+                || tool_lower == "glob"
+                || tool_lower == "grep"
+            {
+                signal_score += 0.2;
+            }
+        }
     }
 
-    // Assistant message contributes
-    if event
-        .assistant_message_text
-        .as_ref()
-        .map(|s| s.len() > 20)
-        .unwrap_or(false)
-    {
-        signal_score += 0.2;
+    // Assistant message contributes (reduced minimum threshold, reward length)
+    if let Some(msg) = &event.assistant_message_text {
+        if msg.len() > 50 {
+            signal_score += 0.3;
+        } else if msg.len() > 20 {
+            signal_score += 0.15;
+        }
     }
 
-    // User message contributes
-    if event
-        .user_message_text
-        .as_ref()
-        .map(|s| s.len() > 20)
-        .unwrap_or(false)
-    {
-        signal_score += 0.2;
+    // User message contributes (reduced minimum threshold, reward length)
+    if let Some(msg) = &event.user_message_text {
+        if msg.len() > 100 {
+            signal_score += 0.35;
+        } else if msg.len() > 20 {
+            signal_score += 0.2;
+        }
     }
 
     // User prompt submit is high signal only if it has actual content
@@ -139,6 +151,22 @@ pub fn derive_candidates(
     // Plan and review events are high signal
     let event_lower = event.event_name.to_lowercase();
     if event_lower.contains("plan") || event_lower.contains("review") {
+        signal_score += 0.2;
+    }
+
+    // Error/failure events are always high signal
+    if event_lower.contains("error")
+        || event_lower.contains("fail")
+        || event_lower.contains("crash")
+    {
+        signal_score += 0.25;
+    }
+
+    // Build/compile/test events are high signal
+    if event_lower.contains("build")
+        || event_lower.contains("test")
+        || event_lower.contains("compile")
+    {
         signal_score += 0.2;
     }
 
@@ -164,8 +192,8 @@ pub fn derive_candidates(
         return Vec::new();
     }
 
-    // Skip if signal score is too low
-    if signal_score < 0.4 {
+    // Skip if signal score is too low (reduced from 0.4 to 0.3 to capture more useful events)
+    if signal_score < 0.3 {
         return Vec::new();
     }
 
@@ -232,7 +260,7 @@ fn derive_memory_text(event: &NormalizedHookEvent) -> String {
         let excerpt = event
             .tool_response_text
             .as_ref()
-            .map(|s| truncate_str(s, 100))
+            .map(|s| truncate_str(s, 12000))
             .unwrap_or_default();
 
         if !excerpt.is_empty() {
@@ -266,7 +294,7 @@ fn derive_memory_text(event: &NormalizedHookEvent) -> String {
             || msg.to_lowercase().contains("will")
             || msg.to_lowercase().contains("going to")
         {
-            let excerpt = truncate_str(msg, 150);
+            let excerpt = truncate_str(msg, 12000);
             return format!("Decision: {}", excerpt);
         }
     }

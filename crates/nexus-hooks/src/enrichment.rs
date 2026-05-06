@@ -47,7 +47,9 @@ const ENRICHMENT_SYSTEM_PROMPT: &str = r#"You are enriching agent hook events in
 
 Decide whether each candidate is worth storing.
 
-Only keep information that is durable, decision-relevant, preference-revealing, specification-bearing, contextual in a useful way, or session-significant.
+Keep information that is durable, decision-relevant, preference-revealing, specification-bearing, contextual in a useful way, session-significant, or contains learned patterns.
+
+Be permissive: when in doubt, store it. The retrieval system benefits from having more context available.
 
 Allowed categories:
 - general
@@ -63,10 +65,9 @@ For each accepted memory:
 - produce 2-5 labels
 - optionally assign a memory_lane_type from: correction, decision, commitment, insight, learning, confidence, pattern_seed, cross_agent, workflow_note, gap
 - produce a comment explaining why the memory is worth keeping
+- set store to true
 
-The comment must be model-authored and should explain why the memory is worth keeping, what retrieval value it has, or how it should be interpreted later.
-
-Reject low-signal operational noise.
+Only reject candidates that are truly meaningless noise (e.g., "ls" output with no interesting files, empty responses).
 
 Return strict JSON only. No markdown fences."#;
 
@@ -278,6 +279,9 @@ mod tests {
             tool_response_text: None,
             assistant_message_text: None,
             user_message_text: None,
+            observer: Some("claude-code".to_string()),
+            subject: Some("claude-code".to_string()),
+            session_key: Some("session-123".to_string()),
             raw_payload: json!({}),
         };
 

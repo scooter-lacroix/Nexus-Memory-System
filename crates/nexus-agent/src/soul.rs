@@ -181,6 +181,16 @@ impl SoulBuilder {
             return Ok(current_soul.to_string());
         }
 
+        // Validate compressed soul before returning
+        if new_soul.len() / 4 > SOUL_MAX_TOKENS {
+            warn!(
+                "Compressed soul exceeds token budget: {} estimated tokens > {}",
+                new_soul.len() / 4,
+                SOUL_MAX_TOKENS
+            );
+            return Ok(current_soul.to_string());
+        }
+
         Ok(new_soul)
     }
 

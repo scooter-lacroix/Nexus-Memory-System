@@ -13,14 +13,17 @@
 
 use crate::protocol::{CallToolResult, Tool};
 use chrono::{DateTime, Utc};
-use nexus_agent::{ReflectService, RepresentationService};
+use nexus_agent::{DeriveService, RecallToolService, ReflectService, RepresentationService};
 use nexus_core::config::{AgentConfig, CognitionConfig};
-use nexus_core::{AgentNamespace, Memory, MemoryCategory, MemoryLaneType};
-use nexus_core::{PerspectiveKey, WorkingRepresentationRequest};
+use nexus_core::{
+    AgentNamespace, CognitiveLevel, Memory, MemoryCategory, MemoryLaneType, PerspectiveKey,
+    WorkingRepresentationRequest,
+};
 use nexus_storage::repository::StoreMemoryParams;
 use nexus_storage::{MemoryRepository, NamespaceRepository};
 use serde_json::Value as JsonValue;
 use sqlx::SqlitePool;
+const RAW_ACTIVITY_LABEL: &str = "raw-activity";
 
 /// All available MCP tools
 pub fn get_tools() -> Vec<Tool> {
@@ -37,6 +40,7 @@ pub fn get_tools() -> Vec<Tool> {
         explain_memory_lineage_tool(),
         build_working_representation_tool(),
         search_perspective_memories_tool(),
+        derive_observations_tool(),
         initialize_system_tool(),
         tool_help_tool(),
         tool_schema_tool(),
@@ -386,6 +390,40 @@ fn search_perspective_memories_tool() -> Tool {
     }))
 }
 
+/// Derive observations tool definition
+fn derive_observations_tool() -> Tool {
+    Tool::new(
+        "derive_observations",
+        "Convert a raw session memory into explicit observations using LLM analysis",
+    )
+    .with_schema(serde_json::json!({
+        "type": "object",
+        "properties": {
+            "memory_id": {
+                "type": "integer",
+                "description": "ID of the raw memory to derive observations from"
+            },
+            "agent_type": {
+                "type": "string",
+                "description": "Agent namespace (defaults to the memory's namespace)"
+            },
+            "observer": {
+                "type": "string",
+                "description": "Observer for derived memories (defaults to agent_type)"
+            },
+            "subject": {
+                "type": "string",
+                "description": "Subject for derived memories (defaults to agent_type)"
+            },
+            "session_key": {
+                "type": ["string", "null"],
+                "description": "Session key to associate with derived memories"
+            }
+        },
+        "required": ["memory_id"]
+    }))
+}
+
 /// Initialize system tool definition
 fn initialize_system_tool() -> Tool {
     Tool::new(
@@ -467,6 +505,7 @@ impl ToolHandler {
             "explain_memory_lineage" => self.handle_explain_memory_lineage(args).await,
             "build_working_representation" => self.handle_build_working_representation(args).await,
             "search_perspective_memories" => self.handle_search_perspective_memories(args).await,
+            "derive_observations" => self.handle_derive_observations(args).await,
             "initialize_nexus_system" => self.handle_initialize_system(args).await,
             "tool_help" => self.handle_tool_help(args).await,
             "tool_schema" => self.handle_tool_schema(args).await,
@@ -882,31 +921,21 @@ impl ToolHandler {
             Err(e) => return CallToolResult::error(format!("Failed to get namespace: {}", e)),
         };
         let mem_repo = MemoryRepository::new(self.pool.clone());
-
+        let service = RecallToolService::new();
+        let (short_opt, long_opt) = match service
+            .get_session_digest(&mem_repo, namespace.id, session_key)
+            .await
+        {
+            Ok((short, long)) => (short, long),
+            Err(e) => return CallToolResult::error(format!("Failed to get session digest: {}", e)),
+        };
         let short = if matches!(digest_kind, "short" | "both") {
-            match mem_repo
-                .latest_digest_for_session(namespace.id, session_key, "short")
-                .await
-            {
-                Ok(memory) => memory.map(|memory| memory_to_json(&memory)),
-                Err(e) => {
-                    return CallToolResult::error(format!("Failed to load short digest: {}", e))
-                }
-            }
+            short_opt.map(|m| memory_to_json(&m))
         } else {
             None
         };
-
         let long = if matches!(digest_kind, "long" | "both") {
-            match mem_repo
-                .latest_digest_for_session(namespace.id, session_key, "long")
-                .await
-            {
-                Ok(memory) => memory.map(|memory| memory_to_json(&memory)),
-                Err(e) => {
-                    return CallToolResult::error(format!("Failed to load long digest: {}", e))
-                }
-            }
+            long_opt.map(|m| memory_to_json(&m))
         } else {
             None
         };
@@ -985,8 +1014,9 @@ impl ToolHandler {
         };
 
         let mem_repo = MemoryRepository::new(self.pool.clone());
-        let lineage = match mem_repo.load_lineage(memory_id).await {
-            Ok(lineage) => lineage,
+        let service = RecallToolService::new();
+        let lineage = match service.get_memory_lineage(&mem_repo, memory_id).await {
+            Ok(l) => l,
             Err(e) => return CallToolResult::error(format!("Failed to load lineage: {}", e)),
         };
 
@@ -1167,35 +1197,39 @@ impl ToolHandler {
             Err(e) => return CallToolResult::error(format!("Failed to get namespace: {}", e)),
         };
         let mem_repo = MemoryRepository::new(self.pool.clone());
-
         let perspective = PerspectiveKey::new(
             observer.to_string(),
             subject.to_string(),
             session_key.map(String::from),
         );
 
-        let memories = if let Some(level_str) = cognitive_level {
-            let level = match nexus_core::CognitiveLevel::parse(level_str) {
-                Some(l) => l,
-                None => {
-                    return CallToolResult::error(format!("Invalid cognitive level: {}", level_str))
-                }
-            };
-            match mem_repo
-                .get_by_cognitive_level_with_perspective(namespace.id, level, &perspective, limit)
-                .await
-            {
-                Ok(mems) => mems,
-                Err(e) => {
-                    return CallToolResult::error(format!(
-                        "Failed to search by cognitive level: {}",
-                        e
-                    ))
+        let service = RecallToolService::new();
+        let memories = match cognitive_level {
+            Some(level_str) => {
+                let level = match nexus_core::CognitiveLevel::parse(level_str) {
+                    Some(l) => l,
+                    None => {
+                        return CallToolResult::error(format!(
+                            "Invalid cognitive level: {}",
+                            level_str
+                        ))
+                    }
+                };
+                match service
+                    .search_memory(&mem_repo, namespace.id, &perspective, Some(level), limit)
+                    .await
+                {
+                    Ok(mems) => mems,
+                    Err(e) => {
+                        return CallToolResult::error(format!(
+                            "Failed to search perspective memories: {}",
+                            e
+                        ))
+                    }
                 }
             }
-        } else {
-            match mem_repo
-                .get_recent_by_perspective(namespace.id, &perspective, limit)
+            None => match service
+                .search_memory(&mem_repo, namespace.id, &perspective, None, limit)
                 .await
             {
                 Ok(mems) => mems,
@@ -1205,7 +1239,7 @@ impl ToolHandler {
                         e
                     ))
                 }
-            }
+            },
         };
 
         CallToolResult::json(serde_json::json!({
@@ -1218,6 +1252,138 @@ impl ToolHandler {
             },
             "count": memories.len(),
             "memories": memories_to_json(&memories),
+        }))
+    }
+
+    async fn handle_derive_observations(
+        &self,
+        args: &serde_json::Map<String, JsonValue>,
+    ) -> CallToolResult {
+        let memory_id = match args.get("memory_id").and_then(|v| v.as_i64()) {
+            Some(id) => id,
+            None => return CallToolResult::error("memory_id is required"),
+        };
+
+        let agent_type = args.get("agent_type").and_then(|v| v.as_str());
+
+        let observer = args.get("observer").and_then(|v| v.as_str());
+        let subject = args.get("subject").and_then(|v| v.as_str());
+        let session_key = args
+            .get("session_key")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+
+        let mem_repo = MemoryRepository::new(self.pool.clone());
+        let memory = match mem_repo.get_by_id(memory_id).await {
+            Ok(Some(m)) => m,
+            Ok(None) => return CallToolResult::error(format!("Memory {} not found", memory_id)),
+            Err(e) => return CallToolResult::error(format!("Failed to get memory: {}", e)),
+        };
+
+        let ns_repo = NamespaceRepository::new(self.pool.clone());
+        let namespace = match agent_type {
+            Some(atype) => {
+                let ns = match ns_repo.get_by_name(atype).await {
+                    Ok(Some(ns)) => ns,
+                    Ok(None) => {
+                        return CallToolResult::error(format!("Namespace '{}' not found", atype))
+                    }
+                    Err(e) => {
+                        return CallToolResult::error(format!("Failed to get namespace: {}", e))
+                    }
+                };
+                if memory.namespace_id != ns.id {
+                    return CallToolResult::error(format!(
+                        "Memory {} belongs to namespace {} but requested namespace is {}",
+                        memory_id, memory.namespace_id, ns.id
+                    ));
+                }
+                ns
+            }
+            None => {
+                let ns = match ns_repo.get_by_id(memory.namespace_id).await {
+                    Ok(Some(ns)) => ns,
+                    Ok(None) => {
+                        return CallToolResult::error(
+                            "Namespace not found for memory's namespace_id",
+                        )
+                    }
+                    Err(e) => {
+                        return CallToolResult::error(format!("Failed to get namespace: {}", e))
+                    }
+                };
+                ns
+            }
+        };
+
+        let agent_type = namespace.name.as_str();
+
+        // Check if this is a raw session memory that can be derived
+        let is_raw_session = memory.category == MemoryCategory::Session
+            && memory.labels.iter().any(|l| l == RAW_ACTIVITY_LABEL)
+            && memory
+                .metadata
+                .get("cognitive")
+                .and_then(|c| c.get("level"))
+                .and_then(|l| l.as_str())
+                .map(|l| l == CognitiveLevel::Raw.as_str())
+                .unwrap_or(false);
+
+        if !is_raw_session {
+            return CallToolResult::error(format!(
+                "Memory {} is not a raw session memory; only raw session memories can be derived",
+                memory_id
+            ));
+        }
+
+        let agent_config = AgentConfig {
+            namespace: agent_type.to_string(),
+            ..AgentConfig::default()
+        };
+
+        // Create LLM client
+        let llm_client = match nexus_llm::factory::create_client_auto() {
+            Ok(client) => client,
+            Err(e) => {
+                return CallToolResult::error(format!(
+                    "Failed to create LLM client for derivation: {}. Ensure NEXUS_LLM_* environment variables are set.",
+                    e
+                ))
+            }
+        };
+
+        let service = DeriveService::new(agent_config, llm_client, None);
+
+        let perspective = if let (Some(obs), Some(sub)) = (observer, subject) {
+            Some(PerspectiveKey::new(
+                obs.to_string(),
+                sub.to_string(),
+                session_key.map(String::from),
+            ))
+        } else {
+            // Default to agent_type for both observer and subject
+            Some(PerspectiveKey::new(
+                agent_type.to_string(),
+                agent_type.to_string(),
+                session_key.map(String::from),
+            ))
+        };
+
+        let derived_ids = match service
+            .derive_memory_with_perspective(&memory, perspective.as_ref(), &mem_repo)
+            .await
+        {
+            Ok(ids) => ids,
+            Err(e) => return CallToolResult::error(format!("Derivation failed: {}", e)),
+        };
+
+        CallToolResult::json(serde_json::json!({
+            "success": true,
+            "memory_id": memory_id,
+            "agent_type": agent_type,
+            "derived_count": derived_ids.len(),
+            "derived_memory_ids": derived_ids,
+            "message": format!("Derived {} observations from raw memory", derived_ids.len()),
         }))
     }
 }
@@ -1281,6 +1447,9 @@ mod tests {
         assert!(tool_names.contains(&"get_session_digest"));
         assert!(tool_names.contains(&"run_reflective_cycle"));
         assert!(tool_names.contains(&"explain_memory_lineage"));
+        assert!(tool_names.contains(&"build_working_representation"));
+        assert!(tool_names.contains(&"search_perspective_memories"));
+        assert!(tool_names.contains(&"derive_observations"));
         assert!(tool_names.contains(&"tool_help"));
         assert!(tool_names.contains(&"tool_schema"));
     }
